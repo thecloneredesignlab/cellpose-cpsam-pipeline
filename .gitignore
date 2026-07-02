@@ -1,0 +1,27 @@
+# Python/cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# OS/editor files
+.DS_Store
+*.swp
+
+# Local pipeline outputs and data
+cellpose_pipeline/classification/
+cellpose_pipeline/eval_off_the_shelf/raw/
+cellpose_pipeline/qc/
+cellpose_pipeline/tmp/
+cellpose_pipeline/workflow_runs/
+cellpose_pipeline/annotation_images/
+cellpose_pipeline/train/
+cellpose_pipeline/test/
+cellpose_pipeline/segmentations/
+
+# Large microscopy data
+*.tif
+*.tiff
+*.nd2
+
+# Logs
+*.log
