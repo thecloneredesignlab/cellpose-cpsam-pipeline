@@ -1,0 +1,37 @@
+{
+  "version": "dead_combined_blue_consensus_v1",
+  "calibration": {
+    "dead_mode": "bounded-background",
+    "source": "full-cohort Dead and paired Combined scan",
+    "combined_blue_normalization": "cohort-fixed"
+  },
+  "dead_primary": {
+    "model": "cpsam_v2",
+    "diameter": 22.0,
+    "cellprob_threshold": -2.75,
+    "flow_threshold": 0.0,
+    "min_size": 12,
+    "postprocess": "dead_raw_signal"
+  },
+  "combined_blue": {
+    "model": "cpsam",
+    "signal_transform": "blue_excess_mean",
+    "formula": "max(B - (R + G) / 2, 0)",
+    "diameter": 22.0,
+    "cellprob_threshold": -3.0,
+    "flow_threshold": 0.0,
+    "min_size": 10
+  },
+  "consensus": {
+    "match_distance": 20.0,
+    "min_overlap_pixels": 3,
+    "retain_filtered_dead_primary": true,
+    "rescue_min_area": 20,
+    "rescue_max_area": 2500,
+    "rescue_min_dead_p90": 15.0,
+    "rescue_min_dead_p90_delta": 1.0,
+    "rescue_min_dead_snr": 1.5,
+    "rescue_max_primary_overlap": 0.1
+  },
+  "selection_note": "Combined blue was chosen from 26 coarse and 14 fine GPU candidates. The mean blue-excess transform had better worst-field agreement and aggregate F1 than raw B or max blue-excess; cpsam diameter 22 at cellprob -3.0 was on the stable performance plateau. Dead was chosen from 15 calibrated candidates; bounded-background, cpsam_v2 diameter 22, cellprob -2.75 retained 99.5% of legacy objects while improving nuclear support and raw-signal filter retention among calibrated candidates."
+}

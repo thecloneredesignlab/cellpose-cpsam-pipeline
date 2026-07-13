@@ -1,0 +1,200 @@
+[
+  {
+    "tag": "dead_raw_d22_cp-2p0_min8_pct0p1-99p5",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 22,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -2.0,
+    "min_size": 8,
+    "low_percentile": 0.1,
+    "high_percentile": 99.5
+  },
+  {
+    "tag": "dead_raw_d22_cp-2p25_min8_pct0p1-99p5",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 22,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -2.25,
+    "min_size": 8,
+    "low_percentile": 0.1,
+    "high_percentile": 99.5
+  },
+  {
+    "tag": "dead_raw_d22_cp-2p5_min8_pct0p1-99p5",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 22,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -2.5,
+    "min_size": 8,
+    "low_percentile": 0.1,
+    "high_percentile": 99.5
+  },
+  {
+    "tag": "dead_raw_d22_cp-2p75_min8_pct0p1-99p5",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 22,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -2.75,
+    "min_size": 8,
+    "low_percentile": 0.1,
+    "high_percentile": 99.5
+  },
+  {
+    "tag": "dead_raw_d22_cp-3p0_min8_pct0p1-99p5",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 22,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -3.0,
+    "min_size": 8,
+    "low_percentile": 0.1,
+    "high_percentile": 99.5
+  },
+  {
+    "tag": "dead_raw_d22_cp-2p0_min12_pct0p1-99p5",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 22,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -2.0,
+    "min_size": 12,
+    "low_percentile": 0.1,
+    "high_percentile": 99.5
+  },
+  {
+    "tag": "dead_raw_d22_cp-2p25_min12_pct0p1-99p5",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 22,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -2.25,
+    "min_size": 12,
+    "low_percentile": 0.1,
+    "high_percentile": 99.5
+  },
+  {
+    "tag": "dead_raw_d22_cp-2p5_min12_pct0p1-99p5",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 22,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -2.5,
+    "min_size": 12,
+    "low_percentile": 0.1,
+    "high_percentile": 99.5
+  },
+  {
+    "tag": "dead_raw_d22_cp-2p75_min12_pct0p1-99p5",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 22,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -2.75,
+    "min_size": 12,
+    "low_percentile": 0.1,
+    "high_percentile": 99.5
+  },
+  {
+    "tag": "dead_raw_d22_cp-3p0_min12_pct0p1-99p5",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 22,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -3.0,
+    "min_size": 12,
+    "low_percentile": 0.1,
+    "high_percentile": 99.5
+  },
+  {
+    "tag": "dead_raw_d22_cp-2p25_min12_pct0p1-99p7",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 22,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -2.25,
+    "min_size": 12,
+    "low_percentile": 0.1,
+    "high_percentile": 99.7
+  },
+  {
+    "tag": "dead_raw_d22_cp-2p5_min12_pct0p1-99p7",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 22,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -2.5,
+    "min_size": 12,
+    "low_percentile": 0.1,
+    "high_percentile": 99.7
+  },
+  {
+    "tag": "dead_raw_d22_cp-2p75_min12_pct0p1-99p7",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 22,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -2.75,
+    "min_size": 12,
+    "low_percentile": 0.1,
+    "high_percentile": 99.7
+  },
+  {
+    "tag": "dead_raw_d22_cp-3p0_min12_pct0p1-99p7",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 22,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -3.0,
+    "min_size": 12,
+    "low_percentile": 0.1,
+    "high_percentile": 99.7
+  },
+  {
+    "tag": "dead_raw_d20_cp-2p5_min8_pct0p1-99p5",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 20,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -2.5,
+    "min_size": 8,
+    "low_percentile": 0.1,
+    "high_percentile": 99.5
+  },
+  {
+    "tag": "dead_raw_d20_cp-2p75_min8_pct0p1-99p5",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 20,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -2.75,
+    "min_size": 8,
+    "low_percentile": 0.1,
+    "high_percentile": 99.5
+  },
+  {
+    "tag": "dead_raw_d24_cp-2p5_min12_pct0p1-99p5",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 24,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -2.5,
+    "min_size": 12,
+    "low_percentile": 0.1,
+    "high_percentile": 99.5
+  },
+  {
+    "tag": "dead_raw_d24_cp-2p75_min12_pct0p1-99p5",
+    "folder": "Dead",
+    "model": "cpsam_v2",
+    "diameter": 24,
+    "flow_threshold": 0.0,
+    "cellprob_threshold": -2.75,
+    "min_size": 12,
+    "low_percentile": 0.1,
+    "high_percentile": 99.5
+  }
+]

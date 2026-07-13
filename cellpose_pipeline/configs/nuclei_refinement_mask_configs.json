@@ -1,0 +1,21 @@
+[
+  {"tag": "cp-2p75_f0_min5", "cellprob_threshold": -2.75, "flow_threshold": 0.0, "min_size": 5},
+  {"tag": "cp-2p5_f0_min5", "cellprob_threshold": -2.5, "flow_threshold": 0.0, "min_size": 5},
+  {"tag": "cp-2p25_f0_min5", "cellprob_threshold": -2.25, "flow_threshold": 0.0, "min_size": 5},
+  {"tag": "cp-2p0_f0_min5", "cellprob_threshold": -2.0, "flow_threshold": 0.0, "min_size": 5},
+  {"tag": "cp-1p75_f0_min5", "cellprob_threshold": -1.75, "flow_threshold": 0.0, "min_size": 5},
+  {"tag": "cp-1p5_f0_min5", "cellprob_threshold": -1.5, "flow_threshold": 0.0, "min_size": 5},
+  {"tag": "cp-1p25_f0_min5", "cellprob_threshold": -1.25, "flow_threshold": 0.0, "min_size": 5},
+  {"tag": "cp-1p0_f0_min5", "cellprob_threshold": -1.0, "flow_threshold": 0.0, "min_size": 5},
+  {"tag": "cp-2p25_f0_min10", "cellprob_threshold": -2.25, "flow_threshold": 0.0, "min_size": 10},
+  {"tag": "cp-2p0_f0_min10", "cellprob_threshold": -2.0, "flow_threshold": 0.0, "min_size": 10},
+  {"tag": "cp-1p75_f0_min10", "cellprob_threshold": -1.75, "flow_threshold": 0.0, "min_size": 10},
+  {"tag": "cp-1p5_f0_min10", "cellprob_threshold": -1.5, "flow_threshold": 0.0, "min_size": 10},
+  {"tag": "cp-1p25_f0_min10", "cellprob_threshold": -1.25, "flow_threshold": 0.0, "min_size": 10},
+  {"tag": "cp-1p0_f0_min10", "cellprob_threshold": -1.0, "flow_threshold": 0.0, "min_size": 10},
+  {"tag": "cp-2p0_f0_min15", "cellprob_threshold": -2.0, "flow_threshold": 0.0, "min_size": 15},
+  {"tag": "cp-1p75_f0_min15", "cellprob_threshold": -1.75, "flow_threshold": 0.0, "min_size": 15},
+  {"tag": "cp-1p5_f0_min15", "cellprob_threshold": -1.5, "flow_threshold": 0.0, "min_size": 15},
+  {"tag": "cp-1p25_f0_min15", "cellprob_threshold": -1.25, "flow_threshold": 0.0, "min_size": 15},
+  {"tag": "cp-1p0_f0_min15", "cellprob_threshold": -1.0, "flow_threshold": 0.0, "min_size": 15}
+]

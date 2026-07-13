@@ -25,7 +25,7 @@ dependencies:
   - typing-extensions
   - pytorch>=2.0   # Use conda installation from the pytorch channel
   - pip:
-    - cellpose==4.0.7
+    - cellpose==4.2.1.1
     - fastremap
     - easyocr
     - llvmlite

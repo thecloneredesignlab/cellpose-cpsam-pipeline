@@ -4,20 +4,15 @@ This runbook describes how to run the SUM159 CellposeSAM segmentation and first-
 
 ## What the Pipeline Does
 
-For each selected RGB Incucyte TIFF:
+For each selected SeparateImages Incucyte TIFF:
 
-1. Run CellposeSAM `cpsam` segmentation.
+1. Select a CellposeSAM model and tuned parameters from the parent folder name.
 2. Save Cellpose mask TIFFs.
-3. Classify each segmented object as:
-   - `live`
-   - `dead`
-   - `transitional`
-   - `artifact`
-   - `uncertain`
-4. Write per-cell features and per-image summaries.
-5. Generate missing segmentation and classification overlays.
+3. Write per-image metadata containing Cellpose version, model, parameters, and preprocessing settings.
+4. Generate segmentation QC overlays.
+5. Run the retained first-pass cell-state classifier and write features, predictions, summaries, and label overlays.
 
-The current classifier is a first-pass rule baseline. It uses whole-mask color features and hard thresholds. Interior-mask erosion and local-background correction are documented as next improvements before final full-dataset analysis.
+Set `SEGMENTATION_ONLY=1` only when masks and metadata are needed without QC/classification outputs.
 
 ## Required Files
 
@@ -32,7 +27,7 @@ docs/
 The raw TIFFs are expected under:
 
 ```text
-20260619_SUM159_Doxorubicin_Cyclophosphamide/20260626_SUM159_AC_Exp_1/
+20260619_SUM159_Doxorubicin_Cyclophosphamide/20260626_SUM159_AC_Exp1_SeparateImages/
 ```
 
 If the raw TIFF directory differs, rerun inventory and pass explicit paths to the scripts.
@@ -42,7 +37,7 @@ If the raw TIFF directory differs, rerun inventory and pass explicit paths to th
 Use Python `3.10` if possible. The current working environment used:
 
 ```text
-cellpose 4.0.7
+cellpose 4.2.1.1
 torch 2.7.1
 numpy
 pandas
@@ -56,13 +51,16 @@ matplotlib
 The model used is:
 
 ```text
-cpsam
+Brightfield -> cpsam
+Dead -> cpsam_v2
+Nuclei -> cpsam_v2
 ```
 
 On the current machine, `cpsam` was already cached in:
 
 ```text
 ~/.cellpose/models/cpsam
+~/.cellpose/models/cpsam_v2
 ```
 
 On a new server, Cellpose may download the model on first use if it is not cached. If the server has no internet access, copy the cached `cpsam` file into the server user's `~/.cellpose/models/` directory.
@@ -74,7 +72,7 @@ One working conda setup is:
 ```bash
 conda create -n cellpose python=3.10 -y
 conda activate cellpose
-pip install "cellpose==4.0.7" tifffile pandas scikit-image scikit-learn opencv-python matplotlib
+pip install "cellpose==4.2.1.1" tifffile pandas scikit-image scikit-learn opencv-python matplotlib
 ```
 
 Verify the environment:
@@ -126,31 +124,28 @@ cellpose_pipeline/eval_off_the_shelf/raw/
 cellpose_pipeline/eval_off_the_shelf/manifests/eval_sample.csv
 ```
 
-## Run Segmentation + Classification
+## Run Segmentation
 
 Start a resumable sequential run:
 
 ```bash
 KMP_DUPLICATE_LIB_OK=TRUE MPLCONFIGDIR=cellpose_pipeline/tmp/matplotlib \
 conda run -n cellpose python cellpose_pipeline/scripts/18_run_segmentation_classification_workflow.py \
-  --dir cellpose_pipeline/eval_off_the_shelf/raw \
-  --run-name overnight_cpsam_192 \
+  --dir /share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Test1/20260619_SUM159_Doxorubicin_Cyclophosphamide/20260626_SUM159_AC_Exp1_SeparateImages \
+  --recursive \
+  --skip-unknown-profiles \
+  --force-classification \
+  --run-name separate_images_cpsam_profiles \
   --continue-on-error
 ```
 
-For a detached run using `screen`:
+For an HPC Slurm array run:
 
 ```bash
-mkdir -p cellpose_pipeline/workflow_runs/overnight_cpsam_192
-screen -dmS cpsam_overnight bash -lc '
-cd /path/to/N01_Incucyte_SUM159_Doxorubicin_Test1 &&
-KMP_DUPLICATE_LIB_OK=TRUE MPLCONFIGDIR=cellpose_pipeline/tmp/matplotlib \
-conda run -n cellpose python cellpose_pipeline/scripts/18_run_segmentation_classification_workflow.py \
-  --dir cellpose_pipeline/eval_off_the_shelf/raw \
-  --run-name overnight_cpsam_192 \
-  --continue-on-error \
-  > cellpose_pipeline/workflow_runs/overnight_cpsam_192/overnight.log 2>&1
-'
+PYTHON_BIN=/path/to/cellpose/python \
+bash cellpose_pipeline/hpc/submit_separate_images_segmentation.sh \
+  /share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Test1/20260619_SUM159_Doxorubicin_Cyclophosphamide/20260626_SUM159_AC_Exp1_SeparateImages \
+  separate_images_cpsam_profiles
 ```
 
 ## Generate Missing Overlays

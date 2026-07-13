@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1450" viewBox="0 0 1200 1450" role="img" aria-labelledby="title desc">
+  <title id="title">Recommended Analysis Workflow</title>
+  <desc id="desc">Recommended production workflow with parallel nuclei segmentation and full-cohort Dead calibration, density-aware cell segmentation, Dead and Combined-blue consensus, and two downstream analysis branches.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8.5" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#526579"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#17324D" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .title { font-family: Arial, Helvetica, sans-serif; font-size: 34px; font-weight: 700; fill: #17324D; }
+      .subtitle { font-family: Arial, Helvetica, sans-serif; font-size: 16px; font-weight: 400; fill: #607388; }
+      .label { font-family: Arial, Helvetica, sans-serif; font-size: 18px; font-weight: 700; fill: #17324D; }
+      .text { font-family: Arial, Helvetica, sans-serif; font-size: 14px; font-weight: 400; fill: #42586D; }
+      .small { font-family: Arial, Helvetica, sans-serif; font-size: 13px; font-weight: 400; fill: #607388; }
+      .white { fill: #FFFFFF; }
+      .line { fill: none; stroke: #526579; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+      .arrow { fill: none; stroke: #526579; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+      .arrowhead { fill: #526579; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="1450" fill="#F7FAFD"/>
+  <rect x="24" y="24" width="1152" height="1402" rx="26" fill="#FFFFFF" stroke="#DCE5ED" stroke-width="2"/>
+
+  <text class="title" x="600" y="72" text-anchor="middle">Recommended Analysis Workflow</text>
+  <text class="subtitle" x="600" y="102" text-anchor="middle">Full-cohort calibration, dual-channel Dead consensus, and nucleus-aware analysis</text>
+
+  <!-- Preflight -->
+  <g filter="url(#shadow)">
+    <rect x="390" y="140" width="420" height="70" rx="16" fill="#EEF2F6" stroke="#6E8296" stroke-width="2.5"/>
+  </g>
+  <text class="label" x="600" y="171" text-anchor="middle">Environment &amp; Input Preflight</text>
+  <text class="small" x="600" y="194" text-anchor="middle">Validate environment, inputs, models, and output paths</text>
+
+  <!-- Parallel split -->
+  <path class="line" d="M600 210 V245 M305 245 H895 M305 245 V275 M895 245 V275"/>
+  <circle cx="600" cy="245" r="5" fill="#526579"/>
+
+  <!-- Left lane -->
+  <g filter="url(#shadow)">
+    <rect x="90" y="275" width="430" height="88" rx="16" fill="#EAF3FF" stroke="#3478B9" stroke-width="2.5"/>
+  </g>
+  <text class="label" x="305" y="309" text-anchor="middle">Nuclei Segmentation</text>
+  <text class="text" x="305" y="334" text-anchor="middle">GPU | optimized extent + conservative core</text>
+
+  <path class="arrow" d="M305 363 V405"/>
+  <polygon class="arrowhead" points="295,392 315,392 305,408"/>
+  <g filter="url(#shadow)">
+    <rect x="90" y="410" width="430" height="78" rx="16" fill="#EAF7F0" stroke="#2E8A62" stroke-width="2.5"/>
+  </g>
+  <text class="label" x="305" y="442" text-anchor="middle">Nuclear Density Table</text>
+  <text class="text" x="305" y="467" text-anchor="middle">Low- and high-density field calls</text>
+
+  <!-- Right lane -->
+  <g filter="url(#shadow)">
+    <rect x="680" y="275" width="430" height="88" rx="16" fill="#EAF7F0" stroke="#2E8A62" stroke-width="2.5"/>
+  </g>
+  <text class="label" x="895" y="306" text-anchor="middle">Full-Cohort Calibration</text>
+  <text class="text" x="895" y="331" text-anchor="middle">Dead + Combined-blue channel statistics</text>
+  <text class="small" x="895" y="351" text-anchor="middle">CPU array across all images</text>
+
+  <path class="arrow" d="M895 363 V405"/>
+  <polygon class="arrowhead" points="885,392 905,392 895,408"/>
+  <g filter="url(#shadow)">
+    <rect x="680" y="410" width="430" height="78" rx="16" fill="#FFF4E5" stroke="#D28316" stroke-width="2.5"/>
+  </g>
+  <text class="label" x="895" y="442" text-anchor="middle">Calibration Parameters &amp; QC</text>
+  <text class="text" x="895" y="467" text-anchor="middle">Global priors, bounded normalization, and outliers</text>
+
+  <!-- Dependency join -->
+  <path class="line" d="M305 488 V525 H600 M895 488 V525 H600"/>
+  <path class="arrow" d="M600 525 V560"/>
+  <polygon class="arrowhead" points="590,547 610,547 600,563"/>
+  <rect x="375" y="565" width="450" height="52" rx="26" fill="#173B5D"/>
+  <text x="600" y="598" text-anchor="middle" style="font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:700;fill:#FFFFFF">afterok: density table + calibration artifacts</text>
+
+  <path class="arrow" d="M600 617 V650"/>
+  <polygon class="arrowhead" points="590,637 610,637 600,653"/>
+
+  <!-- Segmentation stage -->
+  <g filter="url(#shadow)">
+    <rect x="155" y="655" width="890" height="170" rx="20" fill="#EAF3FF" stroke="#3478B9" stroke-width="2.5"/>
+  </g>
+  <text class="label" x="600" y="691" text-anchor="middle">Density-Aware Image Segmentation - GPU</text>
+  <rect x="195" y="718" width="245" height="74" rx="14" fill="#FFFFFF" stroke="#3478B9" stroke-width="2"/>
+  <text class="label" x="317" y="749" text-anchor="middle">Brightfield</text>
+  <text class="small" x="317" y="774" text-anchor="middle">Low/high-density profiles</text>
+  <rect x="478" y="718" width="245" height="74" rx="14" fill="#FFFFFF" stroke="#7858BA" stroke-width="2"/>
+  <text class="label" x="600" y="749" text-anchor="middle">Combined Cells</text>
+  <text class="small" x="600" y="774" text-anchor="middle">Low/high-density profiles</text>
+  <rect x="760" y="706" width="245" height="98" rx="14" fill="#FFF7EC" stroke="#D28316" stroke-width="2"/>
+  <text class="label" x="882" y="735" text-anchor="middle">Final Dead Masks</text>
+  <text class="small" x="882" y="758" text-anchor="middle">Dead channel + Combined-blue</text>
+  <text class="small" x="882" y="779" text-anchor="middle">Conservative consensus</text>
+
+  <path class="arrow" d="M600 825 V858"/>
+  <polygon class="arrowhead" points="590,845 610,845 600,861"/>
+  <g filter="url(#shadow)">
+    <rect x="345" y="863" width="510" height="64" rx="16" fill="#EEF2F6" stroke="#6E8296" stroke-width="2.5"/>
+  </g>
+  <text class="label" x="600" y="891" text-anchor="middle">Segmentation Results Merge</text>
+  <text class="small" x="600" y="914" text-anchor="middle">Completeness and provenance checks</text>
+
+  <!-- Branch split -->
+  <path class="line" d="M600 927 V960 M315 960 H885 M315 960 V990 M885 960 V990"/>
+  <circle cx="600" cy="960" r="5" fill="#526579"/>
+
+  <!-- All-cell branch -->
+  <rect x="70" y="990" width="490" height="350" rx="20" fill="#F7FAFD" stroke="#3478B9" stroke-width="2.5"/>
+  <rect x="70" y="990" width="490" height="62" rx="20" fill="#3478B9"/>
+  <path d="M70 1028 V1052 H560 V1028" fill="#3478B9"/>
+  <text x="315" y="1028" text-anchor="middle" style="font-family:Arial,Helvetica,sans-serif;font-size:19px;font-weight:700;fill:#FFFFFF">All Segmented Cells</text>
+
+  <rect x="120" y="1080" width="390" height="58" rx="14" fill="#F1ECFF" stroke="#7858BA" stroke-width="2"/>
+  <text class="label" x="315" y="1115" text-anchor="middle">Fusion Classification</text>
+  <path class="arrow" d="M315 1138 V1160"/>
+  <polygon class="arrowhead" points="305,1147 325,1147 315,1163"/>
+  <rect x="120" y="1165" width="390" height="58" rx="14" fill="#F1ECFF" stroke="#7858BA" stroke-width="2"/>
+  <text class="label" x="315" y="1200" text-anchor="middle">shape_strict Analysis</text>
+  <path class="arrow" d="M315 1223 V1245"/>
+  <polygon class="arrowhead" points="305,1232 325,1232 315,1248"/>
+  <rect x="120" y="1250" width="390" height="58" rx="14" fill="#EAF7F0" stroke="#2E8A62" stroke-width="2"/>
+  <text class="label" x="315" y="1276" text-anchor="middle">QC, Tables &amp; Reports</text>
+  <text class="small" x="315" y="1297" text-anchor="middle">All-cell branch outputs</text>
+
+  <!-- Nucleus-supported branch -->
+  <rect x="640" y="990" width="490" height="350" rx="20" fill="#FFFDF9" stroke="#D28316" stroke-width="2.5"/>
+  <rect x="640" y="990" width="490" height="62" rx="20" fill="#D28316"/>
+  <path d="M640 1028 V1052 H1130 V1028" fill="#D28316"/>
+  <text x="885" y="1018" text-anchor="middle" style="font-family:Arial,Helvetica,sans-serif;font-size:18px;font-weight:700;fill:#FFFFFF">Nucleus-Supported Cells Only</text>
+  <text x="885" y="1040" text-anchor="middle" style="font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:400;fill:#FFFFFF">Remove BF/Combined masks without nuclear evidence</text>
+
+  <rect x="690" y="1069" width="390" height="54" rx="14" fill="#FFF4E5" stroke="#D28316" stroke-width="2"/>
+  <text class="label" x="885" y="1102" text-anchor="middle">Nuclear-Evidence Filter</text>
+  <path class="arrow" d="M885 1123 V1138"/>
+  <polygon class="arrowhead" points="875,1125 895,1125 885,1141"/>
+  <rect x="690" y="1143" width="390" height="54" rx="14" fill="#F1ECFF" stroke="#7858BA" stroke-width="2"/>
+  <text class="label" x="885" y="1176" text-anchor="middle">Fusion Classification</text>
+  <path class="arrow" d="M885 1197 V1212"/>
+  <polygon class="arrowhead" points="875,1199 895,1199 885,1215"/>
+  <rect x="690" y="1217" width="390" height="54" rx="14" fill="#F1ECFF" stroke="#7858BA" stroke-width="2"/>
+  <text class="label" x="885" y="1250" text-anchor="middle">shape_strict Analysis</text>
+  <path class="arrow" d="M885 1271 V1286"/>
+  <polygon class="arrowhead" points="875,1273 895,1273 885,1289"/>
+  <rect x="690" y="1291" width="390" height="48" rx="14" fill="#EAF7F0" stroke="#2E8A62" stroke-width="2"/>
+  <text class="label" x="885" y="1312" text-anchor="middle">QC, Tables &amp; Reports</text>
+  <text class="small" x="885" y="1331" text-anchor="middle">Filtered-branch outputs</text>
+
+  <text class="small" x="600" y="1395" text-anchor="middle">Cellpose-CPSAM pipeline | Recommended workflow</text>
+</svg>
