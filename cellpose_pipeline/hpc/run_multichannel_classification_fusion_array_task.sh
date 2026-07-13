@@ -46,7 +46,7 @@ mkdir -p "$MPLCONFIGDIR" "$OUT_DIR"
 cd "$PROJECT_DIR"
 
 ARGS=(
-  cellpose_pipeline/scripts/29_fuse_multichannel_classification.py
+  cellpose_pipeline/scripts/08_fuse_multichannel_classification.py
   --run-root "$RUN_ROOT"
   --input-root "$INPUT_ROOT"
   --out-dir "$OUT_DIR"

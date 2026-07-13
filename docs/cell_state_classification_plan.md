@@ -240,7 +240,7 @@ For the first image, tune the rule-based baseline against the manual expectation
 
 ## First-Pass Implementation Limitation
 
-The current first-pass classifier in `cellpose_pipeline/scripts/17_classify_cell_states.py` uses whole-mask color features and hard-coded rule thresholds. It does not yet implement the plan's interior-mask erosion or local-background correction.
+The current first-pass classifier in `cellpose_pipeline/scripts/analysisi/02_classify_cell_states.py` uses whole-mask color features and hard-coded rule thresholds. It does not yet implement the plan's interior-mask erosion or local-background correction.
 
 This is acceptable for the first benchmark image, where the output was qualitatively reasonable and produced zero transitional calls as expected. It should not be treated as final for full-dataset analysis. Before scaling across wells, timepoints, and treatment conditions, update the classifier to:
 

@@ -43,7 +43,7 @@ environment preflight
                                   nucleated shape_strict
 ```
 
-Use `cellpose_pipeline/hpc/submit_cellpose_cpsam_full_array.sh`. Its defaults
+Use `cellpose_pipeline/hpc/orchestrate_cellpose_cpsam_full_array.sh`. Its defaults
 request `xxlarge`, a 12-hour wall time, and an A30 GPU only for segmentation
 arrays. Calibration, density, fusion, branch filtering, merge, and shape jobs
 explicitly remove inherited GPU requests.

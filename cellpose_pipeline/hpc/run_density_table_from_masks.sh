@@ -48,7 +48,7 @@ if [[ "$ENABLE_NUCLEI_MASK_FRACTION_TRIGGER" == "1" ]]; then
   MASK_FRACTION_ARGS=(--enable-mask-fraction-trigger)
 fi
 
-"$PYTHON_BIN" -I cellpose_pipeline/scripts/28_call_high_density_from_nuclei_masks.py \
+"$PYTHON_BIN" -I cellpose_pipeline/scripts/02_call_high_density_from_nuclei_masks.py \
   --run-dir "$RUN_DIR" \
   --out-csv "$DENSITY_CALLS_CSV" \
   --nuclei-count-threshold "$NUCLEI_COUNT_THRESHOLD" \

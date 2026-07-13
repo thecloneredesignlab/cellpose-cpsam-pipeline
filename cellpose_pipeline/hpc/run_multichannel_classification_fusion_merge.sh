@@ -23,7 +23,7 @@ mkdir -p "$MPLCONFIGDIR" "$OUT_DIR"
 cd "$PROJECT_DIR"
 
 ARGS=(
-  cellpose_pipeline/scripts/29_fuse_multichannel_classification.py
+  cellpose_pipeline/scripts/08_fuse_multichannel_classification.py
   --out-dir "$OUT_DIR"
   --merge-summaries-only
 )

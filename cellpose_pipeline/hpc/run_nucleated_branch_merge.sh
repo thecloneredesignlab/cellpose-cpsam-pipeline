@@ -19,7 +19,7 @@ echo "host=$(hostname)"
 echo "run_root=$RUN_ROOT"
 echo "branch_root=$BRANCH_ROOT"
 ARGS=(
-  cellpose_pipeline/scripts/47_build_nucleated_cell_branch.py
+  cellpose_pipeline/scripts/07_build_nucleated_cell_branch.py
   --run-root "$RUN_ROOT"
   --input-root "$INPUT_ROOT"
   --out-root "$BRANCH_ROOT"

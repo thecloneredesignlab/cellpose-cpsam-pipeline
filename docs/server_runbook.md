@@ -107,14 +107,14 @@ Build or refresh the inventory:
 
 ```bash
 KMP_DUPLICATE_LIB_OK=TRUE MPLCONFIGDIR=cellpose_pipeline/tmp/matplotlib \
-conda run -n cellpose python cellpose_pipeline/scripts/00_inventory.py
+conda run -n cellpose python cellpose_pipeline/scripts/analysisi/01_inventory.py
 ```
 
 Select the 192-image off-the-shelf evaluation set:
 
 ```bash
 KMP_DUPLICATE_LIB_OK=TRUE MPLCONFIGDIR=cellpose_pipeline/tmp/matplotlib \
-conda run -n cellpose python cellpose_pipeline/scripts/06_select_off_the_shelf_eval_images.py --n-images 192
+conda run -n cellpose python cellpose_pipeline/scripts/Parameter_calibration/03_select_off_the_shelf_eval_images.py --n-images 192
 ```
 
 This writes:
@@ -130,7 +130,7 @@ Start a resumable sequential run:
 
 ```bash
 KMP_DUPLICATE_LIB_OK=TRUE MPLCONFIGDIR=cellpose_pipeline/tmp/matplotlib \
-conda run -n cellpose python cellpose_pipeline/scripts/18_run_segmentation_classification_workflow.py \
+conda run -n cellpose python cellpose_pipeline/scripts/01_segment_images.py \
   --dir /share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Test1/20260619_SUM159_Doxorubicin_Cyclophosphamide/20260626_SUM159_AC_Exp1_SeparateImages \
   --recursive \
   --skip-unknown-profiles \
@@ -143,7 +143,7 @@ For an HPC Slurm array run:
 
 ```bash
 PYTHON_BIN=/path/to/cellpose/python \
-bash cellpose_pipeline/hpc/submit_separate_images_segmentation.sh \
+bash cellpose_pipeline/hpc/Parameter_calibration/01_submit_separate_images_segmentation.sh \
   /share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Test1/20260619_SUM159_Doxorubicin_Cyclophosphamide/20260626_SUM159_AC_Exp1_SeparateImages \
   separate_images_cpsam_profiles
 ```
@@ -154,7 +154,7 @@ This can be run at any time while the workflow is still running. It skips overla
 
 ```bash
 KMP_DUPLICATE_LIB_OK=TRUE MPLCONFIGDIR=cellpose_pipeline/tmp/matplotlib \
-conda run -n cellpose python cellpose_pipeline/scripts/19_make_missing_workflow_overlays.py \
+conda run -n cellpose python cellpose_pipeline/scripts/analysisi/03_make_missing_workflow_overlays.py \
   --run-dir cellpose_pipeline/workflow_runs/overnight_cpsam_192 \
   --manifest cellpose_pipeline/eval_off_the_shelf/manifests/eval_sample.csv
 ```
@@ -172,7 +172,7 @@ To repair or regenerate overlays for a single image stem:
 
 ```bash
 KMP_DUPLICATE_LIB_OK=TRUE MPLCONFIGDIR=cellpose_pipeline/tmp/matplotlib \
-conda run -n cellpose python cellpose_pipeline/scripts/19_make_missing_workflow_overlays.py \
+conda run -n cellpose python cellpose_pipeline/scripts/analysisi/03_make_missing_workflow_overlays.py \
   --run-dir cellpose_pipeline/workflow_runs/overnight_cpsam_192 \
   --manifest cellpose_pipeline/eval_off_the_shelf/manifests/eval_sample.csv \
   --overlay-type classification \
@@ -185,7 +185,7 @@ conda run -n cellpose python cellpose_pipeline/scripts/19_make_missing_workflow_
 Check active processes:
 
 ```bash
-pgrep -af "cpsam_overnight|18_run_segmentation_classification_workflow.py|cellpose --image_path"
+pgrep -af "cpsam_overnight|01_segment_images.py|cellpose --image_path"
 ```
 
 Count completed segmentations:
@@ -260,7 +260,7 @@ To force overlay regeneration, pass:
 --force
 ```
 
-to `19_make_missing_workflow_overlays.py`.
+to `analysisi/03_make_missing_workflow_overlays.py`.
 
 ## Known Limitations
 

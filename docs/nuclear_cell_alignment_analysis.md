@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`cellpose_pipeline/scripts/31_analyze_nuclear_cell_alignment.py` analyzes the
+`cellpose_pipeline/scripts/analysisi/05_analyze_nuclear_cell_alignment.py` analyzes the
 existing instance masks without rerunning Cellpose. It addresses five linked
 questions:
 
@@ -23,7 +23,7 @@ classification thresholds can be recalibrated after manual review.
 
 ```bash
 PYENV_VERSION=CellPose python \
-  cellpose_pipeline/scripts/31_analyze_nuclear_cell_alignment.py \
+  cellpose_pipeline/scripts/analysisi/05_analyze_nuclear_cell_alignment.py \
   --run-root segmentation_parameter_tuning/largetest_full_fusion_20260708_213504 \
   --input-root SUM159_AC_Exp1_SeparateImages_largetest \
   --out-dir segmentation_parameter_tuning/largetest_full_fusion_20260708_213504/nuclear_cell_alignment_analysis

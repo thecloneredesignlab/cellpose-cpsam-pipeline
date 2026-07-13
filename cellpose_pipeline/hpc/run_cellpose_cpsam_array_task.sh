@@ -126,7 +126,7 @@ if [[ "$GROUP_NAME" == "Dead" && "${ENABLE_DEAD_CONSENSUS:-0}" == "1" ]]; then
     DEAD_OUT_ROOT="$TASK_OUT_ROOT/$RUN_NAME"
   fi
   DEAD_CONSENSUS_ARGS=(
-    cellpose_pipeline/scripts/49_segment_dead_with_combined_blue_consensus.py
+    cellpose_pipeline/scripts/04_segment_dead_with_combined_blue_consensus.py
     --dead-image "$IMAGE_PATH"
     --combined-image "$COMBINED_IMAGE"
     --out-root "$DEAD_OUT_ROOT"
@@ -158,7 +158,7 @@ fi
 
 nvidia-smi || echo "nvidia_smi_unavailable=1"
 
-"$PYTHON_BIN" -I cellpose_pipeline/scripts/18_run_segmentation_classification_workflow.py \
+"$PYTHON_BIN" -I cellpose_pipeline/scripts/01_segment_images.py \
   --image-path "$IMAGE_PATH" \
   --run-name "$RUN_NAME" \
   --out-root "$TASK_OUT_ROOT" \

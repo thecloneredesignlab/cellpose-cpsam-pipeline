@@ -167,20 +167,22 @@ Slurm `18337576` 在 A30 节点上完成了 20 张图的生产流程重跑；Slu
 
 ## 代码入口
 
-- `cellpose_pipeline/scripts/nuclei_segmentation_utils.py`：核芯生成与校准指标。
-- `cellpose_pipeline/scripts/32_tune_nuclei_segmentation.py`：Cellpose flow 复用、参数筛选和稳健评分。
-- `cellpose_pipeline/scripts/18_run_segmentation_classification_workflow.py`：生产分割和 extent/core 双输出。
-- `cellpose_pipeline/scripts/28_call_high_density_from_nuclei_masks.py`：稳健密度调用。
-- `cellpose_pipeline/scripts/29_fuse_multichannel_classification.py`：下游融合优先使用 core 质心/计数证据。
-- `cellpose_pipeline/scripts/31_analyze_nuclear_cell_alignment.py`：核形态、多核、核质比和多通道一致性分析。
-- `cellpose_pipeline/scripts/33_diagnose_registration_and_refine_cell_masks.py`：全局位移诊断与核引导局部边界候选。
-- `cellpose_pipeline/scripts/34_score_nucleus_aware_cell_refinement.py`：原图边缘、面积、拓扑和跨方法一致性 guardrail。
-- `cellpose_pipeline/scripts/35_render_nucleus_aware_cell_refinement_qc.py`：逐区域前后对照图。
-- `cellpose_pipeline/hpc/run_nucleus_aware_cell_refinement_*.sh`：HPC 筛查、验证和最终 QC 入口。
-- `cellpose_pipeline/scripts/36_screen_shape_aware_nucleus_splits.py`：形状门控、稳定双峰检测和候选拆分。
-- `cellpose_pipeline/scripts/37_score_shape_aware_nucleus_splits.py`：核前景、core、密度、多核和形态 guardrail。
-- `cellpose_pipeline/scripts/38_render_shape_aware_nucleus_split_qc.py`：逐拆分对象的 Nuclei/Combined/BF 四联图。
-- `cellpose_pipeline/hpc/run_shape_aware_nucleus_split_*.sh`：形状筛查、验证和最终 QC 入口。
+- `cellpose_pipeline/scripts/_shared/nuclei_segmentation_utils.py`：核芯生成与校准指标。
+- `cellpose_pipeline/scripts/Parameter_calibration/14_tune_nuclei_segmentation.py`：Cellpose flow 复用、参数筛选和稳健评分。
+- `cellpose_pipeline/scripts/01_segment_images.py`：生产分割和 extent/core 双输出。
+- `cellpose_pipeline/scripts/02_call_high_density_from_nuclei_masks.py`：稳健密度调用。
+- `cellpose_pipeline/scripts/08_fuse_multichannel_classification.py`：下游融合优先使用 core 质心/计数证据。
+- `cellpose_pipeline/scripts/analysisi/05_analyze_nuclear_cell_alignment.py`：核形态、多核、核质比和多通道一致性分析。
+- `cellpose_pipeline/scripts/Parameter_calibration/15_diagnose_registration_and_refine_cell_masks.py`：全局位移诊断与核引导局部边界候选。
+- `cellpose_pipeline/scripts/Parameter_calibration/16_score_nucleus_aware_cell_refinement.py`：原图边缘、面积、拓扑和跨方法一致性 guardrail。
+- `cellpose_pipeline/scripts/Parameter_calibration/17_render_nucleus_aware_cell_refinement_qc.py`：逐区域前后对照图。
+- `cellpose_pipeline/hpc/Parameter_calibration/13_run_nucleus_aware_cell_refinement_screen.sh` 至
+  `cellpose_pipeline/hpc/Parameter_calibration/15_run_nucleus_aware_cell_refinement_final_qc.sh`：HPC 筛查、验证和最终 QC 入口。
+- `cellpose_pipeline/scripts/09_apply_shape_aware_nucleus_splits.py`：形状门控、稳定双峰检测和候选拆分。
+- `cellpose_pipeline/scripts/Parameter_calibration/18_score_shape_aware_nucleus_splits.py`：核前景、core、密度、多核和形态 guardrail。
+- `cellpose_pipeline/scripts/11_render_shape_aware_nucleus_split_qc.py`：逐拆分对象的 Nuclei/Combined/BF 四联图。
+- `cellpose_pipeline/hpc/Parameter_calibration/16_run_shape_aware_nucleus_split_screen.sh` 至
+  `cellpose_pipeline/hpc/Parameter_calibration/19_run_shape_aware_nucleus_split_final_qc.sh`：形状筛查、验证和最终 QC 入口。
 
 ## 限制
 

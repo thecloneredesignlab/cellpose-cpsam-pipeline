@@ -18,7 +18,7 @@ export PYTHONNOUSERSITE=1
 PYTHON_BIN="$CONDA_PREFIX/bin/python"
 
 ARGS=(
-  cellpose_pipeline/scripts/50_merge_dead_consensus_outputs.py
+  cellpose_pipeline/scripts/05_merge_dead_consensus_outputs.py
   --dead-run "$DEAD_RUN"
 )
 if [[ -n "$EXPECTED_KEYS" ]]; then

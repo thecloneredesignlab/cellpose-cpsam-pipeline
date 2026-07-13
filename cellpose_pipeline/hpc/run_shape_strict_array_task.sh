@@ -60,7 +60,7 @@ if [[ "${FORCE_SHAPE_STRICT:-0}" == "1" ]]; then
   rm -f "$SHARD_ROOT/_SUCCESS"
 fi
 
-"$PYTHON_BIN" -I cellpose_pipeline/scripts/36_screen_shape_aware_nucleus_splits.py \
+"$PYTHON_BIN" -I cellpose_pipeline/scripts/09_apply_shape_aware_nucleus_splits.py \
   --run-root "$RUN_ROOT" \
   --cell-run-root "$CELL_RUN_ROOT" \
   --classification-root "$FUSION_ROOT" \

@@ -278,10 +278,10 @@ Fine-tune Cellpose if:
 ## Original Proposed Implementation Steps
 
 This section records the initial off-the-shelf evaluation plan. The active implementation now uses
-`cellpose_pipeline/scripts/18_run_segmentation_classification_workflow.py` for CellposeSAM segmentation plus
-classification and `cellpose_pipeline/scripts/19_make_missing_workflow_overlays.py` for overlay backfill.
+`cellpose_pipeline/scripts/01_segment_images.py` for CellposeSAM segmentation plus
+classification and `cellpose_pipeline/scripts/analysisi/03_make_missing_workflow_overlays.py` for overlay backfill.
 
-1. Add `06_select_off_the_shelf_eval_images.py`.
+1. Add `Parameter_calibration/03_select_off_the_shelf_eval_images.py`.
    - Read `cellpose_pipeline/manifests/image_inventory.csv`.
    - Select 192 representative images.
    - Create symlinks in `cellpose_pipeline/eval_off_the_shelf/raw`.

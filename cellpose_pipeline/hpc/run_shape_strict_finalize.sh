@@ -36,7 +36,7 @@ echo "task_list_shape=$TASK_LIST_SHAPE"
 echo "field_manifest_dir=$FIELD_MANIFEST_DIR"
 echo "cell_mask_branch=$CELL_MASK_BRANCH"
 
-"$PYTHON_BIN" -I cellpose_pipeline/scripts/42_merge_shape_strict_shards.py \
+"$PYTHON_BIN" -I cellpose_pipeline/scripts/10_merge_shape_strict_shards.py \
   --run-root "$RUN_ROOT" \
   --cell-run-root "$CELL_RUN_ROOT" \
   --fusion-root "$FUSION_ROOT" \
@@ -47,7 +47,7 @@ echo "cell_mask_branch=$CELL_MASK_BRANCH"
 
 mapfile -t QC_KEYS < "$SHAPE_ROOT/qc/qc_keys.txt"
 if [[ "${#QC_KEYS[@]}" -gt 0 ]]; then
-  "$PYTHON_BIN" -I cellpose_pipeline/scripts/38_render_shape_aware_nucleus_split_qc.py \
+  "$PYTHON_BIN" -I cellpose_pipeline/scripts/11_render_shape_aware_nucleus_split_qc.py \
     --baseline-run-root "$RUN_ROOT" \
     --candidate-run-root "$SHAPE_ROOT" \
     --cell-run-root "$CELL_RUN_ROOT" \
@@ -62,7 +62,7 @@ if [[ "${#QC_KEYS[@]}" -gt 0 ]]; then
     --keys "${QC_KEYS[@]}"
 fi
 
-"$PYTHON_BIN" -I cellpose_pipeline/scripts/43_finalize_shape_strict_qc.py \
+"$PYTHON_BIN" -I cellpose_pipeline/scripts/12_finalize_shape_strict_qc.py \
   --shape-root "$SHAPE_ROOT" \
   --candidate-tag shape_strict
 

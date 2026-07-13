@@ -185,7 +185,7 @@ size: 1233587898 bytes
 Main workflow script:
 
 ```text
-cellpose_pipeline/scripts/18_run_segmentation_classification_workflow.py
+cellpose_pipeline/scripts/01_segment_images.py
 ```
 
 Current pipeline behavior from prior work:
@@ -194,7 +194,7 @@ Current pipeline behavior from prior work:
 - Default model: `cpsam`.
 - Mask output: `segmentations/{image_stem}_cp_masks.tif`.
 - Segmentation overlay output: `qc/segmentation_overlays/{image_stem}_segmentation_overlay.png`.
-- Classification then runs via `17_classify_cell_states.py`.
+- Classification then runs via `analysisi/02_classify_cell_states.py`.
 
 There is no separate nucleus/cytoplasm segmentation logic in the current pipeline. If input is `Nuclei`, the same model is applied to that image; biological meaning depends on image content.
 
@@ -347,7 +347,7 @@ done
 The prior chat created and synced HPC scripts under `hpc/` in the original local worktree and in the HPC repo. They included:
 
 ```text
-hpc/submit_cellpose_cpsam_full_array.sh
+hpc/orchestrate_cellpose_cpsam_full_array.sh
 hpc/run_cellpose_cpsam_array_task.sh
 hpc/submit_cellpose_cpsam_test.sh
 ```
@@ -388,7 +388,7 @@ ssh 4482173@red.moffitt.org "bash -lc 'squeue -j 18030946 -o %.18i,%.9P,%.24j,%.
 Check HPC submit script:
 
 ```bash
-ssh 4482173@red.moffitt.org "bash -lc 'bash -n /share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Test1/cellpose-cpsam-pipeline/hpc/submit_cellpose_cpsam_full_array.sh'"
+ssh 4482173@red.moffitt.org "bash -lc 'bash -n /share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Test1/cellpose-cpsam-pipeline/hpc/orchestrate_cellpose_cpsam_full_array.sh'"
 ```
 
 Check HPC worker script:

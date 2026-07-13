@@ -29,7 +29,7 @@ echo "input_root=$INPUT_ROOT"
 echo "calibration_root=$CALIBRATION_ROOT"
 echo "calibration_shard_count=$CALIBRATION_SHARD_COUNT"
 
-"$PYTHON_BIN" -I cellpose_pipeline/scripts/45_calibrate_dead_combined_blue.py scan \
+"$PYTHON_BIN" -I cellpose_pipeline/scripts/03_calibrate_dead_combined_blue.py scan \
   --input-root "$INPUT_ROOT" \
   --out-dir "$CALIBRATION_ROOT/scan" \
   --shard-index "$SLURM_ARRAY_TASK_ID" \

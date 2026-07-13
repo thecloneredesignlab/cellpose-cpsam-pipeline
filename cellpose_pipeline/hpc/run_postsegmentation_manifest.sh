@@ -17,7 +17,7 @@ PYTHON_BIN="$CONDA_PREFIX/bin/python"
 
 cd "$PROJECT_DIR"
 ARGS=(
-  cellpose_pipeline/scripts/52_build_postsegmentation_field_manifest.py
+  cellpose_pipeline/scripts/06_build_postsegmentation_field_manifest.py
   --input-root "$INPUT_ROOT"
   --run-root "$RUN_ROOT"
   --task-list "$TASK_LIST_FUSION"

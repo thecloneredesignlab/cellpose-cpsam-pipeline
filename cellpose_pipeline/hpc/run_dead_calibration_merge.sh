@@ -22,7 +22,7 @@ if [[ -n "$CALIBRATION_EXPECTED_PAIRS" ]]; then
   PAIR_ARGS+=(--expected-pairs "$CALIBRATION_EXPECTED_PAIRS")
 fi
 
-"$PYTHON_BIN" -I cellpose_pipeline/scripts/45_calibrate_dead_combined_blue.py merge \
+"$PYTHON_BIN" -I cellpose_pipeline/scripts/03_calibrate_dead_combined_blue.py merge \
   --scan-dir "$CALIBRATION_ROOT/scan" \
   --out-dir "$CALIBRATION_ROOT/final" \
   --expected-shards "$CALIBRATION_SHARD_COUNT" \
