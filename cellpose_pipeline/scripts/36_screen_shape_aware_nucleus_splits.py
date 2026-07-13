@@ -41,6 +41,15 @@ UTILS_SPEC.loader.exec_module(UTILS_MODULE)
 NucleusCoreConfig = UTILS_MODULE.NucleusCoreConfig
 build_nucleus_core_seeds = UTILS_MODULE.build_nucleus_core_seeds
 
+SCHEMA_PATH = Path(__file__).with_name("shape_strict_schema.py")
+SCHEMA_SPEC = importlib.util.spec_from_file_location("shape_strict_schema_local", SCHEMA_PATH)
+if SCHEMA_SPEC is None or SCHEMA_SPEC.loader is None:
+    raise ImportError(f"Cannot load shape-strict schema from {SCHEMA_PATH}")
+SCHEMA_MODULE = importlib.util.module_from_spec(SCHEMA_SPEC)
+sys.modules[SCHEMA_SPEC.name] = SCHEMA_MODULE
+SCHEMA_SPEC.loader.exec_module(SCHEMA_MODULE)
+SHAPE_MULTIPEAK_DIAGNOSTIC_FIELDS = SCHEMA_MODULE.SHAPE_MULTIPEAK_DIAGNOSTIC_FIELDS
+
 
 KEY_RE = re.compile(r"([A-H]\d+_\d+_\d{2}d\d{2}h\d{2}m)")
 PERTURBATION_SIGMAS = (0.8, 1.0, 1.2, 1.5)
@@ -321,20 +330,25 @@ def write_mask(path: Path, labels: np.ndarray) -> None:
     os.replace(temporary, path)
 
 
-def write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+def write_rows(
+    path: Path,
+    rows: list[dict[str, Any]],
+    fields: tuple[str, ...] | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
-    if not rows:
+    if not rows and fields is None:
         temporary.write_text("")
         os.replace(temporary, path)
         return
-    fields: list[str] = []
-    for row in rows:
-        for field in row:
-            if field not in fields:
-                fields.append(field)
+    resolved_fields = list(fields or ())
+    if fields is None:
+        for row in rows:
+            for field in row:
+                if field not in resolved_fields:
+                    resolved_fields.append(field)
     with temporary.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer = csv.DictWriter(handle, fieldnames=resolved_fields)
         writer.writeheader()
         writer.writerows(rows)
     os.replace(temporary, path)
@@ -894,7 +908,11 @@ def main() -> int:
             summary_accumulator[config.tag]["n_fields"] += 1
             summary_accumulator[config.tag]["n_candidate_nuclei"] += int(output.max())
 
-    write_rows(args.out_root / "shape_multipeak_diagnostics.csv", diagnostic_rows)
+    write_rows(
+        args.out_root / "shape_multipeak_diagnostics.csv",
+        diagnostic_rows,
+        fields=SHAPE_MULTIPEAK_DIAGNOSTIC_FIELDS,
+    )
     write_rows(args.out_root / "split_events.csv", event_rows)
     write_json(args.out_root / "split_configs.json", [asdict(config) for config in configs])
 
