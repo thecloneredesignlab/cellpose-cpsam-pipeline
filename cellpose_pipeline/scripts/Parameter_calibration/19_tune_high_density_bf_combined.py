@@ -4,7 +4,7 @@
 Only fields marked high density by the supplied production density table are
 processed by default.  Nuclear masks are not modified.  This script performs
 inference and records complete configuration metadata; cross-channel and
-nucleus-aware scoring is handled by script 40.
+nucleus-aware scoring is handled by 20_score_high_density_bf_combined.py.
 """
 
 from __future__ import annotations

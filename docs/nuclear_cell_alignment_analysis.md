@@ -120,7 +120,7 @@ boundary crossings, and BF–Combined assignment conflicts.
 ## Optional nucleus-aware boundary calibration
 
 The original BF and Combined masks remain the primary segmentation outputs.
-When a sensitivity analysis is needed, scripts 33–35 provide a separate,
+When a sensitivity analysis is needed, scripts `Parameter_calibration/15`–`17` provide a separate,
 traceable calibration layer:
 
 1. search ±6 px for a systematic channel offset;

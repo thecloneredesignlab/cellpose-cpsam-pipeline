@@ -26,7 +26,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Score existing Dead global-filter candidate masks without rerunning Cellpose.")
     parser.add_argument("--input-root", type=Path, required=True)
     parser.add_argument("--baseline-run", type=Path, required=True)
-    parser.add_argument("--run-root", type=Path, required=True, help="Directory containing candidate_masks/ from script 23.")
+    parser.add_argument(
+        "--run-root",
+        type=Path,
+        required=True,
+        help="Directory containing candidate_masks/ from 09_largetest_dead_global_filter_tune.py.",
+    )
     parser.add_argument("--write-key-overlays", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--make-contact-sheets", action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args()

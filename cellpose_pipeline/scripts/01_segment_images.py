@@ -1140,12 +1140,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dead-calibration-json",
         type=Path,
-        help="Full-cohort calibration JSON produced by script 45.",
+        help="Full-cohort calibration JSON produced by 03_calibrate_dead_combined_blue.py.",
     )
     parser.add_argument(
         "--dead-calibration-map",
         type=Path,
-        help="Per-image calibration map produced by script 45.",
+        help="Per-image calibration map produced by 03_calibrate_dead_combined_blue.py.",
     )
     parser.add_argument(
         "--dead-calibration-mode",
