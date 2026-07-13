@@ -11,16 +11,28 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import json
 import os
 import re
 import statistics
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
 
 KEY_RE = re.compile(r"^[A-H]\d+_\d+_\d+d\d+h\d+m$")
+
+SCHEMA_PATH = Path(__file__).with_name("shape_strict_schema.py")
+SCHEMA_SPEC = importlib.util.spec_from_file_location("shape_strict_schema_local", SCHEMA_PATH)
+if SCHEMA_SPEC is None or SCHEMA_SPEC.loader is None:
+    raise ImportError(f"Cannot load shape-strict schema from {SCHEMA_PATH}")
+SCHEMA_MODULE = importlib.util.module_from_spec(SCHEMA_SPEC)
+sys.modules[SCHEMA_SPEC.name] = SCHEMA_MODULE
+SCHEMA_SPEC.loader.exec_module(SCHEMA_MODULE)
+SHAPE_MULTIPEAK_DIAGNOSTIC_FIELDS = SCHEMA_MODULE.SHAPE_MULTIPEAK_DIAGNOSTIC_FIELDS
+SHAPE_MULTIPEAK_REQUIRED_FIELDS = SCHEMA_MODULE.SHAPE_MULTIPEAK_REQUIRED_FIELDS
 
 
 def parse_args() -> argparse.Namespace:
@@ -173,10 +185,17 @@ def main() -> int:
     diagnostics_temporary = diagnostics_path.with_name(
         f".{diagnostics_path.name}.tmp.{os.getpid()}"
     )
-    diagnostic_fields: list[str] | None = None
+    diagnostic_fields = list(SHAPE_MULTIPEAK_DIAGNOSTIC_FIELDS)
+    diagnostic_field_set = set(diagnostic_fields)
+    diagnostic_required_fields = set(SHAPE_MULTIPEAK_REQUIRED_FIELDS)
     diagnostic_count = 0
     with diagnostics_temporary.open("w", newline="") as diagnostic_handle:
-        diagnostic_writer: csv.DictWriter[str] | None = None
+        diagnostic_writer = csv.DictWriter(
+            diagnostic_handle,
+            fieldnames=diagnostic_fields,
+            extrasaction="raise",
+        )
+        diagnostic_writer.writeheader()
         for index, key in enumerate(keys, start=1):
             shard = shards_root / key
             marker = shard / "_SUCCESS"
@@ -197,23 +216,25 @@ def main() -> int:
                 with shard_diagnostics_path.open(newline="") as shard_handle:
                     reader = csv.DictReader(shard_handle)
                     current_fields = list(reader.fieldnames or [])
-                    if diagnostic_fields is None:
-                        diagnostic_fields = current_fields
-                        diagnostic_writer = csv.DictWriter(
-                            diagnostic_handle,
-                            fieldnames=diagnostic_fields,
-                            extrasaction="ignore",
-                        )
-                        diagnostic_writer.writeheader()
-                    elif set(current_fields) != set(diagnostic_fields):
+                    if len(current_fields) != len(set(current_fields)):
                         raise RuntimeError(
-                            f"Diagnostic schema mismatch in {shard_diagnostics_path}: "
-                            f"expected={diagnostic_fields} found={current_fields}"
+                            f"Duplicate diagnostic columns in {shard_diagnostics_path}: "
+                            f"fields={current_fields}"
                         )
-                    if diagnostic_writer is not None:
-                        for row in reader:
-                            diagnostic_writer.writerow(row)
-                            diagnostic_count += 1
+                    current_field_set = set(current_fields)
+                    missing_required = sorted(
+                        diagnostic_required_fields - current_field_set
+                    )
+                    unexpected = sorted(current_field_set - diagnostic_field_set)
+                    if missing_required or unexpected:
+                        raise RuntimeError(
+                            f"Unsupported diagnostic schema in {shard_diagnostics_path}: "
+                            f"missing_required={missing_required} unexpected={unexpected} "
+                            f"found={current_fields}"
+                        )
+                    for row in reader:
+                        diagnostic_writer.writerow(row)
+                        diagnostic_count += 1
             shard_events = [
                 row
                 for row in read_csv(shard / "split_events.csv")
