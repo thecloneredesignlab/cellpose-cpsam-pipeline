@@ -61,7 +61,7 @@ The following sections describe the full workflow launched by the production HPC
 ### Step 8: Multichannel fusion classification on the original cell-mask branch
 
 - **Reads:** The Combined raw image and Combined cell mask, Brightfield mask, Dead-consensus mask, Nuclei extent/core masks, and the field record from Step 7.
-- **Process:** Use Combined cell instances as the primary objects, match Brightfield, Dead, and Nuclei evidence to each cell, extract multichannel per-cell features, and assign `live`, `dead`, `transitional`, `artifact`, or `uncertain` states.
+- **Process:** Use Combined cell instances as the primary objects, match Brightfield, Dead, and Nuclei evidence to each cell, and extract multichannel per-cell features. The RGB baseline retains `transitional` and `uncertain` as intermediate labels, while final fusion states are currently `live`, `dead`, or `artifact`.
 - **Produces:** Per-cell feature tables, per-cell state tables, per-field summaries, a cohort cell-count summary, failure records, and state QC overlays under `classification_fusion/`.
 - **Purpose:** A single-channel color threshold is not sufficient for stable cell-state classification. Fusion combines morphology, dead-signal, and nuclear evidence on the same cell instance and is the primary cell-state result.
 
@@ -199,16 +199,28 @@ Add `--force --stem <image-stem>` to regenerate one field.
 
 ### 3.4 `04_plot_well_counts_over_time.py`: Plot well-level cell counts over time
 
-- **Function:** Read standalone `classification/predictions/*_summary.csv` files, aggregate live/dead/transitional and other state counts by well and time, and generate time-course plots.
-- **Reads:** A result root or run directory containing `classification/predictions/`.
-- **Produces:** Per-image counts, well-by-time aggregated counts, and PNG/PDF time-course figures.
-- **Use:** Compare cell-state trajectories across treatment wells. This script reads the standalone classification format and does not directly read `classification_fusion/summaries/`.
+- **Function:** Select the primary fusion, nucleated-only sensitivity, or legacy Combined RGB-only classification; validate count identities and experiment completeness; aggregate imaging sites by well and time; and plot live/dead trajectories.
+- **Reads:** By default, `classification_fusion/summaries/cell_count_summary.csv` under a production run. It can also read `classification_fusion_nucleated_only/` or legacy `Combined/classification/predictions/*_summary.csv` outputs.
+- **Produces:** Per-image counts, well-by-time aggregated counts with treatment metadata, and PNG/PDF time-course figures in a branch-specific output directory.
+- **Use:** Compare cell-state trajectories while preserving the physical 8-by-12 plate arrangement. The plate layout labels doxorubicin concentration, ploidy, cyclophosphamide condition, and replicate. Columns 1 and 12 are retained as empty plate positions; `--layout compact` omits them.
 
 ```bash
 "$PYTHON_BIN" -I cellpose_pipeline/scripts/analysisi/04_plot_well_counts_over_time.py \
-  /path/to/standalone_workflow_run \
-  --out-dir "$ANALYSIS_ROOT/well_count_timecourses"
+  "$RUN_ROOT" \
+  --branch fusion \
+  --layout plate \
+  --y-axis shared \
+  --strict-completeness \
+  --expected-timepoints 85 \
+  --expected-sites 4
 ```
+
+`--branch auto` is the default and prefers the primary fusion summary. Use
+`--branch fusion-nucleated-only` for the sensitivity branch or
+`--branch legacy-combined` only when reproducing the earlier RGB-only result.
+The default machine-readable plate map is
+`cellpose_pipeline/scripts/analysisi/resources/SUM159_AC_Experiment1_PlateMap.csv`;
+the original Excel workbook is retained beside it as the source document.
 
 ### 3.5 `05_analyze_nuclear_cell_alignment.py`: Analyze nuclear morphology and nucleus-to-cell alignment
 
