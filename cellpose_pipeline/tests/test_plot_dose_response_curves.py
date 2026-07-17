@@ -49,6 +49,23 @@ def well_time_rows(
 
 
 class DoseResponseTests(unittest.TestCase):
+    def test_default_analysis_specs_include_auc_day4_and_day5(self) -> None:
+        data = pd.DataFrame({"elapsed_hours": [0.0, 168.0]})
+
+        specs = DOSE_RESPONSE.build_analysis_specs(
+            data,
+            primary_metric="auc",
+            start_hours=None,
+            endpoint_hours=None,
+            endpoint_window_hours=0.0,
+            additional_endpoint_days=[4.0, 5.0],
+        )
+
+        self.assertEqual([spec.output_key for spec in specs], ["auc", "day4", "day5"])
+        self.assertEqual([spec.metric for spec in specs], ["auc", "endpoint", "endpoint"])
+        self.assertEqual([spec.endpoint_hours for spec in specs], [168.0, 96.0, 120.0])
+        self.assertEqual([spec.endpoint_day for spec in specs], [None, 4.0, 5.0])
+
     def test_auc_is_baseline_corrected_and_normalized_to_paired_vehicle(self) -> None:
         rows = []
         rows.extend(well_time_rows("A2", "A", 2, 0.0, 1, [100, 200, 300]))

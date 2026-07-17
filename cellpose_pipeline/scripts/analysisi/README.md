@@ -21,4 +21,6 @@ cyclophosphamide. Columns 2-11 contain 0, 3.125, 6.25, 12.5, 25, 50, 100, 200,
 live-cell AUC divided by the matched vehicle AUC within each replicate plate
 row. It writes separate doxorubicin-alone and doxorubicin-plus-cyclophosphamide
 2N-versus-4N Hill plots together with the underlying normalized values and fit
-parameters.
+parameters. A default run creates parallel `auc/`, `day4/`, and `day5/` output
+directories; Day 4 and Day 5 use exact 96 h and 120 h live-cell responses with
+the same baseline and paired-vehicle normalization.

@@ -256,7 +256,7 @@ the original Excel workbook is retained beside it as the source document.
 - **Function:** Convert the live-cell time courses into one normalized response per well, fit bounded four-parameter Hill curves, and compare 2N with 4N separately for doxorubicin alone and doxorubicin plus cyclophosphamide.
 - **Reads:** The branch-specific `well_time_cell_state_counts.csv` produced by `04_plot_well_counts_over_time.py`, supplied directly or discovered under a production run.
 - **Normalization:** The default `auc` metric divides each well's live-cell trajectory by its own starting count, integrates that trajectory over time, and divides the result by the 0 nM well from the same plate-row replicate. Thus every replicate's vehicle response is 1 before fitting. `--metric endpoint` applies the same baseline and paired-vehicle normalization to the endpoint or a configurable late-time window.
-- **Produces:** Exactly two distinct dose-response plots, each as PNG and PDF: one for doxorubicin alone and one for doxorubicin plus cyclophosphamide. Each compares 2N with 4N, shows individual replicate wells and dose means, and annotates EC50, Hill slope, 95% confidence intervals, and R-squared. Per-well normalized responses, dose summaries, and fit parameters are also written as CSV files.
+- **Produces:** Two condition plots per response definition, each as PNG and PDF: one for doxorubicin alone and one for doxorubicin plus cyclophosphamide. By default the script generates AUC, exact Day 4 (96 h), and exact Day 5 (120 h) response sets under `auc/`, `day4/`, and `day5/`. Every plot compares 2N with 4N, shows individual replicate wells and dose means, and annotates EC50, Hill slope, 95% confidence intervals, and R-squared. Each response directory also contains per-well normalized responses, dose summaries, and fit parameters as CSV files.
 - **Interpretation:** Fits use both plate-row replicates at every dose. The confidence intervals quantify nonlinear-fit uncertainty but should be interpreted cautiously because there are only two replicate series per ploidy and treatment condition.
 
 ```bash
@@ -266,9 +266,12 @@ the original Excel workbook is retained beside it as the source document.
   --metric auc
 ```
 
-To fit the final live-cell response instead, use `--metric endpoint`. Add
-`--endpoint-hours <hours>` to choose an earlier endpoint or
-`--endpoint-window-hours <hours>` to average a late-time window.
+The default command generates the AUC analysis together with exact Day 4 and
+Day 5 endpoint analyses. Use `--additional-endpoint-days` with a different list
+to change those days, or pass that option without values to disable them. To use
+another endpoint as the primary analysis, specify `--metric endpoint` and
+`--endpoint-hours <hours>`; `--endpoint-window-hours <hours>` averages a
+late-time window for that primary endpoint.
 
 ## 4. Parameter-Calibration Scripts
 

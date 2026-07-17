@@ -70,6 +70,70 @@ class HillFit:
     r_squared: float
 
 
+@dataclass(frozen=True)
+class AnalysisSpec:
+    output_key: str
+    metric: str
+    start_hours: float
+    endpoint_hours: float
+    endpoint_window_hours: float
+    endpoint_day: float | None
+
+
+def format_number(value: float) -> str:
+    return f"{value:g}"
+
+
+def day_output_key(day: float) -> str:
+    text = format_number(day).replace(".", "p")
+    return f"day{text}"
+
+
+def build_analysis_specs(
+    data: pd.DataFrame,
+    primary_metric: str,
+    start_hours: float | None,
+    endpoint_hours: float | None,
+    endpoint_window_hours: float,
+    additional_endpoint_days: list[float],
+) -> list[AnalysisSpec]:
+    observed_start = float(data["elapsed_hours"].min())
+    observed_endpoint = float(data["elapsed_hours"].max())
+    start = observed_start if start_hours is None else float(start_hours)
+    primary_endpoint = observed_endpoint if endpoint_hours is None else float(endpoint_hours)
+    specs = [
+        AnalysisSpec(
+            output_key=primary_metric,
+            metric=primary_metric,
+            start_hours=start,
+            endpoint_hours=primary_endpoint,
+            endpoint_window_hours=endpoint_window_hours if primary_metric == "endpoint" else 0.0,
+            endpoint_day=None,
+        )
+    ]
+    seen = {(primary_metric, primary_endpoint, specs[0].endpoint_window_hours)}
+    for day in additional_endpoint_days:
+        day = float(day)
+        if day <= 0:
+            raise SystemExit(f"Additional endpoint days must be positive, found {day:g}")
+        endpoint = day * 24.0
+        identity = ("endpoint", endpoint, 0.0)
+        if identity in seen:
+            continue
+        specs.append(
+            AnalysisSpec(
+                output_key=day_output_key(day),
+                metric="endpoint",
+                start_hours=start,
+                endpoint_hours=endpoint,
+                endpoint_window_hours=0.0,
+                endpoint_day=day,
+            )
+        )
+        seen.add(identity)
+    return specs
+
+
 def branch_directory(branch: str) -> str:
     return branch
 
@@ -414,11 +478,22 @@ def fit_all_curves(response: pd.DataFrame) -> tuple[list[HillFit], pd.DataFrame]
     return fits, fit_table
 
 
-def metric_description(metric: str, start_hours: float, endpoint_hours: float, window_hours: float) -> str:
+def metric_description(
+    metric: str,
+    start_hours: float,
+    endpoint_hours: float,
+    window_hours: float,
+    endpoint_day: float | None,
+) -> str:
     if metric == "auc":
         return (
             f"Live-cell AUC from {start_hours:g}-{endpoint_hours:g} h; each trajectory divided by its "
             "baseline, then by its paired 0 nM control"
+        )
+    if endpoint_day is not None and window_hours == 0:
+        return (
+            f"Day {format_number(endpoint_day)} ({endpoint_hours:g} h) live-cell response; "
+            "divided by baseline and paired 0 nM control"
         )
     window = f"mean over the final {window_hours:g} h" if window_hours > 0 else f"at {endpoint_hours:g} h"
     return f"Live-cell growth {window}; divided by baseline and paired 0 nM control"
@@ -443,6 +518,7 @@ def plot_condition(
     start_hours: float,
     endpoint_hours: float,
     endpoint_window_hours: float,
+    endpoint_day: float | None,
     out_png: Path,
     out_pdf: Path,
     dpi: int,
@@ -519,7 +595,11 @@ def plot_condition(
     ax.grid(True, which="major", linewidth=0.45, alpha=0.32)
     ax.tick_params(labelsize=8)
     ax.legend(loc="lower left", frameon=False, fontsize=9)
-    ax.set_title(metric_description(metric, start_hours, endpoint_hours, endpoint_window_hours), fontsize=8.5, pad=8)
+    ax.set_title(
+        metric_description(metric, start_hours, endpoint_hours, endpoint_window_hours, endpoint_day),
+        fontsize=8.5,
+        pad=8,
+    )
     fig.suptitle(condition, fontsize=15, y=0.98)
 
     annotations = "\n\n".join(fit_annotation(condition_fits[ploidy]) for ploidy in ("2N", "4N"))
@@ -577,46 +657,63 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="For --metric endpoint, average this many hours ending at the endpoint.",
     )
+    parser.add_argument(
+        "--additional-endpoint-days",
+        type=float,
+        nargs="*",
+        default=[4.0, 5.0],
+        help=(
+            "Also fit exact endpoint responses on these days (default: 4 5). "
+            "Pass the option with no values to disable additional endpoints."
+        ),
+    )
     parser.add_argument("--allow-incomplete", action="store_true")
     parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument("--dpi", type=int, default=220)
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    if args.endpoint_window_hours < 0:
-        raise SystemExit("--endpoint-window-hours must be nonnegative")
-    resolved = resolve_well_time_csv(args.input_path.resolve(), args.branch)
-    data = load_well_time_table(resolved.csv_path)
+def run_analysis(
+    data: pd.DataFrame,
+    spec: AnalysisSpec,
+    out_dir: Path,
+    allow_incomplete: bool,
+    dpi: int,
+) -> list[HillFit]:
     selected, start_hours, endpoint_hours = select_time_range(
         data,
-        args.start_hours,
-        args.endpoint_hours,
+        spec.start_hours,
+        spec.endpoint_hours,
     )
-    if args.metric == "endpoint" and args.endpoint_window_hours > endpoint_hours - start_hours:
-        raise SystemExit("--endpoint-window-hours cannot exceed the selected time range")
-
+    if spec.metric == "endpoint" and spec.endpoint_window_hours > endpoint_hours - start_hours:
+        raise SystemExit(
+            f"Endpoint window for {spec.output_key} cannot exceed its selected time range"
+        )
     raw_response = extract_raw_responses(
         selected,
-        metric=args.metric,
+        metric=spec.metric,
         start_hours=start_hours,
         endpoint_hours=endpoint_hours,
-        endpoint_window_hours=args.endpoint_window_hours,
+        endpoint_window_hours=spec.endpoint_window_hours,
     )
     response = normalize_to_paired_vehicle(raw_response)
-    validate_response_design(response, args.allow_incomplete)
+    response.insert(0, "analysis_key", spec.output_key)
+    response.insert(1, "endpoint_day", spec.endpoint_day)
+    validate_response_design(response, allow_incomplete)
     summary = summarize_responses(response)
+    summary.insert(0, "analysis_key", spec.output_key)
+    summary.insert(1, "metric", spec.metric)
+    summary.insert(2, "start_hours", start_hours)
+    summary.insert(3, "endpoint_hours", endpoint_hours)
+    summary.insert(4, "endpoint_day", spec.endpoint_day)
     fits, fit_table = fit_all_curves(response)
+    fit_table.insert(0, "analysis_key", spec.output_key)
+    fit_table.insert(1, "metric", spec.metric)
+    fit_table.insert(2, "start_hours", start_hours)
+    fit_table.insert(3, "endpoint_hours", endpoint_hours)
+    fit_table.insert(4, "endpoint_day", spec.endpoint_day)
 
-    if args.out_dir is not None:
-        out_dir = args.out_dir.resolve()
-    elif resolved.run_dir is not None:
-        out_dir = resolved.run_dir / "analysis" / "dose_response" / args.branch / args.metric
-    else:
-        out_dir = resolved.csv_path.parent / f"dose_response_{args.metric}"
     out_dir.mkdir(parents=True, exist_ok=True)
-
     response_path = out_dir / "dose_response_normalized_values.csv"
     summary_path = out_dir / "dose_response_summary.csv"
     fit_path = out_dir / "hill_fit_parameters.csv"
@@ -631,20 +728,24 @@ def main() -> None:
             summary,
             fits,
             cyclophosphamide=cyclophosphamide,
-            metric=args.metric,
+            metric=spec.metric,
             start_hours=start_hours,
             endpoint_hours=endpoint_hours,
-            endpoint_window_hours=args.endpoint_window_hours,
+            endpoint_window_hours=spec.endpoint_window_hours,
+            endpoint_day=spec.endpoint_day,
             out_png=out_dir / f"{stem}.png",
             out_pdf=out_dir / f"{stem}.pdf",
-            dpi=args.dpi,
+            dpi=dpi,
         )
-
-    print(f"input_csv={resolved.csv_path}", flush=True)
-    print(f"metric={args.metric} time_range_hours={start_hours:g}-{endpoint_hours:g}", flush=True)
+    print(
+        f"analysis={spec.output_key} metric={spec.metric} "
+        f"time_range_hours={start_hours:g}-{endpoint_hours:g}",
+        flush=True,
+    )
     for fit in fits:
         print(
-            f"fit condition={fit.condition!r} ploidy={fit.ploidy} ec50_nm={fit.ec50_nm:.6g} "
+            f"fit analysis={spec.output_key} condition={fit.condition!r} ploidy={fit.ploidy} "
+            f"ec50_nm={fit.ec50_nm:.6g} "
             f"hill_slope={fit.hill_slope:.6g} r_squared={fit.r_squared:.6g}",
             flush=True,
         )
@@ -652,6 +753,40 @@ def main() -> None:
     print(f"dose_summary={summary_path}", flush=True)
     print(f"hill_parameters={fit_path}", flush=True)
     print(f"output_dir={out_dir}", flush=True)
+    return fits
+
+
+def main() -> None:
+    args = parse_args()
+    if args.endpoint_window_hours < 0:
+        raise SystemExit("--endpoint-window-hours must be nonnegative")
+    resolved = resolve_well_time_csv(args.input_path.resolve(), args.branch)
+    data = load_well_time_table(resolved.csv_path)
+    specs = build_analysis_specs(
+        data,
+        primary_metric=args.metric,
+        start_hours=args.start_hours,
+        endpoint_hours=args.endpoint_hours,
+        endpoint_window_hours=args.endpoint_window_hours,
+        additional_endpoint_days=args.additional_endpoint_days,
+    )
+    if args.out_dir is not None:
+        base_out_dir = args.out_dir.resolve()
+    elif resolved.run_dir is not None:
+        base_out_dir = resolved.run_dir / "analysis" / "dose_response" / args.branch
+    else:
+        base_out_dir = resolved.csv_path.parent / "dose_response"
+
+    print(f"input_csv={resolved.csv_path}", flush=True)
+    print(f"analyses={','.join(spec.output_key for spec in specs)}", flush=True)
+    for spec in specs:
+        run_analysis(
+            data,
+            spec,
+            out_dir=base_out_dir / spec.output_key,
+            allow_incomplete=args.allow_incomplete,
+            dpi=args.dpi,
+        )
 
 
 if __name__ == "__main__":
