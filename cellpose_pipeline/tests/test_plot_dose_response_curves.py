@@ -124,6 +124,295 @@ class DoseResponseTests(unittest.TestCase):
         self.assertAlmostEqual(fit.hill_slope, expected_slope, delta=0.12)
         self.assertGreater(fit.r_squared, 0.999)
 
+    def test_endpoint_gr_value_has_expected_biological_scale(self) -> None:
+        self.assertAlmostEqual(DOSE_RESPONSE.endpoint_gr_value(4.0, 4.0), 1.0)
+        self.assertAlmostEqual(
+            DOSE_RESPONSE.endpoint_gr_value(2.0, 4.0),
+            np.sqrt(2.0) - 1.0,
+        )
+        self.assertAlmostEqual(DOSE_RESPONSE.endpoint_gr_value(1.0, 4.0), 0.0)
+        self.assertAlmostEqual(DOSE_RESPONSE.endpoint_gr_value(0.0, 4.0), -1.0)
+        with self.assertRaises(ValueError):
+            DOSE_RESPONSE.endpoint_gr_value(2.0, 1.0)
+
+    def test_gr_fit_recovers_known_fixed_top_parameters(self) -> None:
+        doses = np.array([0, 3.125, 6.25, 12.5, 25, 50, 100, 200, 400, 800], dtype=float)
+        expected_gr_inf = -0.2
+        expected_gec50 = 42.0
+        expected_slope = 2.1
+        base_response = DOSE_RESPONSE.gr_model_parameterized(
+            doses,
+            expected_gr_inf,
+            np.log10(expected_gec50),
+            expected_slope,
+        )
+        rows = []
+        for replicate, offset in ((1, -0.006), (2, 0.006)):
+            for dose, value in zip(doses, base_response):
+                rows.append(
+                    {
+                        "well": f"R{replicate}_{dose:g}",
+                        "doxorubicin_nm": dose,
+                        "gr_value": value if dose == 0 else value + offset,
+                    }
+                )
+        data = pd.DataFrame(rows)
+
+        fit = DOSE_RESPONSE.fit_gr_curve(
+            data,
+            condition="synthetic",
+            cyclophosphamide=False,
+            ploidy="2N",
+            analysis_key="day4",
+            endpoint_day=4.0,
+            endpoint_hours=96.0,
+        )
+
+        self.assertAlmostEqual(fit.gr_inf, expected_gr_inf, delta=0.02)
+        self.assertAlmostEqual(fit.gec50_nm, expected_gec50, delta=1.0)
+        self.assertAlmostEqual(fit.hill_slope, expected_slope, delta=0.1)
+        self.assertGreater(fit.r_squared, 0.999)
+
+    def test_paired_gr_difference_is_four_n_minus_two_n(self) -> None:
+        rows = pd.DataFrame(
+            [
+                {"doxorubicin_nm": 25.0, "replicate": 1, "ploidy": "2N", "gr_value": 0.6},
+                {"doxorubicin_nm": 25.0, "replicate": 1, "ploidy": "4N", "gr_value": 0.8},
+                {"doxorubicin_nm": 25.0, "replicate": 2, "ploidy": "2N", "gr_value": 0.7},
+                {"doxorubicin_nm": 25.0, "replicate": 2, "ploidy": "4N", "gr_value": 0.65},
+            ]
+        )
+
+        paired = DOSE_RESPONSE.paired_gr_differences(rows).sort_values("replicate")
+
+        np.testing.assert_allclose(paired["delta_gr"], [0.2, -0.05])
+
+    def test_gr_bootstrap_returns_curve_bands_and_delta_interval(self) -> None:
+        doses = np.array([0, 3.125, 6.25, 12.5, 25, 50, 100, 200, 400, 800], dtype=float)
+        rows = []
+        fits = []
+        for ploidy, gr_inf, gec50 in (("2N", -0.3, 35.0), ("4N", -0.15, 48.0)):
+            base_response = DOSE_RESPONSE.gr_model_parameterized(
+                doses,
+                gr_inf,
+                np.log10(gec50),
+                2.0,
+            )
+            for replicate, offset in ((1, -0.008), (2, 0.008)):
+                for dose, value in zip(doses, base_response):
+                    rows.append(
+                        {
+                            "analysis_key": "day4",
+                            "endpoint_day": 4.0,
+                            "endpoint_hours": 96.0,
+                            "condition": "Doxorubicin alone",
+                            "cyclophosphamide": False,
+                            "ploidy": ploidy,
+                            "replicate": replicate,
+                            "doxorubicin_nm": dose,
+                            "gr_value": value if dose == 0 else value + offset,
+                        }
+                    )
+        response = pd.DataFrame(rows)
+        for ploidy in ("2N", "4N"):
+            fits.append(
+                DOSE_RESPONSE.fit_gr_curve(
+                    response[response["ploidy"] == ploidy],
+                    condition="Doxorubicin alone",
+                    cyclophosphamide=False,
+                    ploidy=ploidy,
+                    analysis_key="day4",
+                    endpoint_day=4.0,
+                    endpoint_hours=96.0,
+                )
+            )
+
+        bands, intervals, delta = DOSE_RESPONSE.bootstrap_gr_curves(
+            response,
+            nominal_fits=fits,
+            iterations=20,
+            seed=17,
+        )
+
+        self.assertEqual(set(bands["series"]), {"2N", "4N", "delta"})
+        self.assertEqual(set(intervals["ploidy"]), {"2N", "4N"})
+        self.assertGreater(float(delta.iloc[0]["mean_delta_gr_log_dose"]), 0.0)
+        self.assertEqual(int(delta.iloc[0]["bootstrap_successes"]), 20)
+
+    def test_excess_lethal_fraction_uses_matched_control(self) -> None:
+        rows = pd.DataFrame(
+            [
+                {
+                    "analysis_key": "day4",
+                    "endpoint_day": 4.0,
+                    "endpoint_hours": 96.0,
+                    "well": "A2",
+                    "plate_row": "A",
+                    "doxorubicin_nm": 0.0,
+                    "ploidy": "2N",
+                    "cyclophosphamide": False,
+                    "replicate": 1,
+                    "live_count": 90,
+                    "dead_count": 10,
+                    "transitional_count": 0,
+                    "uncertain_count": 0,
+                },
+                {
+                    "analysis_key": "day4",
+                    "endpoint_day": 4.0,
+                    "endpoint_hours": 96.0,
+                    "well": "A3",
+                    "plate_row": "A",
+                    "doxorubicin_nm": 25.0,
+                    "ploidy": "2N",
+                    "cyclophosphamide": False,
+                    "replicate": 1,
+                    "live_count": 40,
+                    "dead_count": 10,
+                    "transitional_count": 5,
+                    "uncertain_count": 5,
+                },
+            ]
+        )
+
+        response = DOSE_RESPONSE.normalize_death_to_matched_control(rows).set_index("well")
+
+        self.assertAlmostEqual(float(response.loc["A3", "lethal_fraction"]), 0.2)
+        self.assertAlmostEqual(float(response.loc["A3", "lethal_fraction_lower"]), 1 / 6)
+        self.assertAlmostEqual(float(response.loc["A3", "lethal_fraction_upper"]), 1 / 3)
+        self.assertAlmostEqual(
+            float(response.loc["A3", "excess_lethal_fraction"]),
+            1.0 - 0.8 / 0.9,
+        )
+        self.assertEqual(response.loc["A3", "control_well"], "A2")
+
+    def test_death_fit_recovers_known_fixed_zero_parameters(self) -> None:
+        doses = np.array([0, 3.125, 6.25, 12.5, 25, 50, 100, 200, 400, 800], dtype=float)
+        expected_lf_inf = 0.72
+        expected_lec50 = 48.0
+        expected_slope = 2.2
+        base_response = DOSE_RESPONSE.lethal_fraction_model_parameterized(
+            doses,
+            expected_lf_inf,
+            np.log10(expected_lec50),
+            expected_slope,
+        )
+        rows = []
+        for replicate, offset in ((1, -0.005), (2, 0.005)):
+            for dose, value in zip(doses, base_response):
+                rows.append(
+                    {
+                        "well": f"R{replicate}_{dose:g}",
+                        "doxorubicin_nm": dose,
+                        "excess_lethal_fraction": value if dose == 0 else value + offset,
+                    }
+                )
+        data = pd.DataFrame(rows)
+
+        fit = DOSE_RESPONSE.fit_death_curve(
+            data,
+            condition="synthetic",
+            cyclophosphamide=False,
+            ploidy="2N",
+            analysis_key="day4",
+            endpoint_day=4.0,
+            endpoint_hours=96.0,
+        )
+
+        self.assertAlmostEqual(fit.lf_inf, expected_lf_inf, delta=0.02)
+        self.assertAlmostEqual(fit.lec50_nm, expected_lec50, delta=1.0)
+        self.assertAlmostEqual(fit.hill_slope, expected_slope, delta=0.1)
+        self.assertGreater(fit.r_squared, 0.999)
+
+    def test_paired_death_difference_is_four_n_minus_two_n(self) -> None:
+        rows = pd.DataFrame(
+            [
+                {
+                    "doxorubicin_nm": 25.0,
+                    "replicate": 1,
+                    "ploidy": "2N",
+                    "excess_lethal_fraction": 0.1,
+                },
+                {
+                    "doxorubicin_nm": 25.0,
+                    "replicate": 1,
+                    "ploidy": "4N",
+                    "excess_lethal_fraction": 0.3,
+                },
+                {
+                    "doxorubicin_nm": 25.0,
+                    "replicate": 2,
+                    "ploidy": "2N",
+                    "excess_lethal_fraction": 0.2,
+                },
+                {
+                    "doxorubicin_nm": 25.0,
+                    "replicate": 2,
+                    "ploidy": "4N",
+                    "excess_lethal_fraction": 0.15,
+                },
+            ]
+        )
+
+        paired = DOSE_RESPONSE.paired_death_differences(rows).sort_values("replicate")
+
+        np.testing.assert_allclose(paired["delta_excess_lf"], [0.2, -0.05])
+
+    def test_death_bootstrap_returns_curve_bands_and_delta_interval(self) -> None:
+        doses = np.array([0, 3.125, 6.25, 12.5, 25, 50, 100, 200, 400, 800], dtype=float)
+        rows = []
+        fits = []
+        for ploidy, lf_inf, lec50 in (("2N", 0.65, 45.0), ("4N", 0.78, 35.0)):
+            base_response = DOSE_RESPONSE.lethal_fraction_model_parameterized(
+                doses,
+                lf_inf,
+                np.log10(lec50),
+                2.0,
+            )
+            for replicate, offset in ((1, -0.006), (2, 0.006)):
+                for dose, value in zip(doses, base_response):
+                    rows.append(
+                        {
+                            "analysis_key": "day4",
+                            "endpoint_day": 4.0,
+                            "endpoint_hours": 96.0,
+                            "condition": "Doxorubicin alone",
+                            "cyclophosphamide": False,
+                            "ploidy": ploidy,
+                            "replicate": replicate,
+                            "doxorubicin_nm": dose,
+                            "excess_lethal_fraction": value if dose == 0 else value + offset,
+                        }
+                    )
+        response = pd.DataFrame(rows)
+        for ploidy in ("2N", "4N"):
+            fits.append(
+                DOSE_RESPONSE.fit_death_curve(
+                    response[response["ploidy"] == ploidy],
+                    condition="Doxorubicin alone",
+                    cyclophosphamide=False,
+                    ploidy=ploidy,
+                    analysis_key="day4",
+                    endpoint_day=4.0,
+                    endpoint_hours=96.0,
+                )
+            )
+
+        bands, intervals, delta = DOSE_RESPONSE.bootstrap_death_curves(
+            response,
+            nominal_fits=fits,
+            iterations=20,
+            seed=18,
+        )
+
+        self.assertEqual(set(bands["series"]), {"2N", "4N", "delta"})
+        self.assertEqual(set(intervals["ploidy"]), {"2N", "4N"})
+        self.assertGreater(
+            float(delta.iloc[0]["mean_delta_excess_lf_log_dose"]),
+            0.0,
+        )
+        self.assertEqual(int(delta.iloc[0]["bootstrap_successes"]), 20)
+
     def test_endpoint_window_averages_baseline_normalized_live_counts(self) -> None:
         rows = well_time_rows("A2", "A", 2, 0.0, 1, [100, 150, 200])
         data = pd.DataFrame(rows)

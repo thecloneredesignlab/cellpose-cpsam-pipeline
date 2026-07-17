@@ -251,13 +251,18 @@ the original Excel workbook is retained beside it as the source document.
   --pipeline-log /path/to/pipeline.log
 ```
 
-### 3.7 `07_plot_dose_response_curves.py`: Compare 2N and 4N Hill responses
+### 3.7 `07_plot_dose_response_curves.py`: Compare 2N and 4N dose responses
 
-- **Function:** Convert the live-cell time courses into one normalized response per well, fit bounded four-parameter Hill curves, and compare 2N with 4N separately for doxorubicin alone and doxorubicin plus cyclophosphamide.
+- **Function:** Convert the classified-cell time courses into normalized responses, retain the bounded four-parameter Hill analyses, and add growth-rate inhibition (GR) and excess-lethal-fraction comparisons between 2N and 4N for doxorubicin alone and doxorubicin plus cyclophosphamide.
 - **Reads:** The branch-specific `well_time_cell_state_counts.csv` produced by `04_plot_well_counts_over_time.py`, supplied directly or discovered under a production run.
 - **Normalization:** The default `auc` metric divides each well's live-cell trajectory by its own starting count, integrates that trajectory over time, and divides the result by the 0 nM well from the same plate-row replicate. Thus every replicate's vehicle response is 1 before fitting. `--metric endpoint` applies the same baseline and paired-vehicle normalization to the endpoint or a configurable late-time window.
-- **Produces:** Two condition plots per response definition, each as PNG and PDF: one for doxorubicin alone and one for doxorubicin plus cyclophosphamide. By default the script generates AUC, exact Day 4 (96 h), and exact Day 5 (120 h) response sets under `auc/`, `day4/`, and `day5/`. Every plot compares 2N with 4N, shows individual replicate wells and dose means, and annotates EC50, Hill slope, 95% confidence intervals, and R-squared. Each response directory also contains per-well normalized responses, dose summaries, and fit parameters as CSV files.
-- **Interpretation:** Fits use both plate-row replicates at every dose. The confidence intervals quantify nonlinear-fit uncertainty but should be interpreted cautiously because there are only two replicate series per ploidy and treatment condition.
+- **GR calculation:** For each exact endpoint, GR is `2^[log2(treated endpoint / treated baseline) / log2(vehicle endpoint / vehicle baseline)] - 1`. GR = 1 means control-rate growth, GR = 0 means cytostasis, and GR < 0 means net cell loss. The fixed-top GR fit estimates GR50, GEC50, GRmax, and the GR Hill coefficient without allowing the normalized top to drift away from 1.
+- **Death calculation:** At each exact endpoint, viable fraction is `FV = live / (live + dead)` and lethal fraction is `LF = 1 - FV`. The matched-control adjustment is `excess LF = 1 - FV(treated) / FV(control)`, which removes the basal death observed in the corresponding replicate and treatment background. The fixed-zero increasing fit reports LF50, LEC50, LFmax, and the lethal-fraction Hill coefficient.
+- **Produces:** The existing AUC, exact Day 4 (96 h), and exact Day 5 (120 h) Hill response sets remain under `auc/`, `day4/`, and `day5/`. The `gr/` directory contains two condition figures as PNG and PDF. Each figure has Day 4 and Day 5 GR curves above a paired `Delta GR = GR(4N) - GR(2N)` panel; positive Delta GR favors 4N and negative Delta GR favors 2N. The `death/` directory contains the corresponding excess-lethal-fraction figures above `Delta excess LF = excess LF(4N) - excess LF(2N)` panels; positive values indicate more adjusted death in 4N. Both directories include per-well values, dose summaries, fit parameters, bootstrap curve bands, paired differences, and integrated ploidy-difference summaries as CSV files.
+- **Controls:** Doxorubicin-alone GR and death curves use the matched untreated well in the same replicate. Combination curves use the matched cyclophosphamide-only well at 0 nM doxorubicin, so they measure the incremental doxorubicin response on a cyclophosphamide background rather than the total combination effect relative to a completely untreated well.
+- **Cell-state handling:** Lethal fractions use only cells classified as live or dead; artifacts are excluded. Transitional and uncertain cells are excluded from the point estimate and retained as lower/upper ambiguity bounds in `death_fraction_values.csv`.
+- **Uncertainty:** GR curves, death curves, and ploidy-difference summaries use a paired replicate bootstrap that resamples the same replicate IDs for 2N and 4N. The default is 500 resamples. These intervals remain exploratory because the plate contains only two replicate series per ploidy and treatment condition.
+- **Scope:** Excess lethal fraction is an endpoint snapshot of classified-cell composition. It does not estimate cumulative killing, death rate, or the division-normalized death term used by GRADE; those require time-resolved event or kinetic modeling.
 
 ```bash
 "$PYTHON_BIN" -I cellpose_pipeline/scripts/analysisi/07_plot_dose_response_curves.py \
@@ -267,11 +272,16 @@ the original Excel workbook is retained beside it as the source document.
 ```
 
 The default command generates the AUC analysis together with exact Day 4 and
-Day 5 endpoint analyses. Use `--additional-endpoint-days` with a different list
-to change those days, or pass that option without values to disable them. To use
-another endpoint as the primary analysis, specify `--metric endpoint` and
-`--endpoint-hours <hours>`; `--endpoint-window-hours <hours>` averages a
-late-time window for that primary endpoint.
+Day 5 endpoint analyses and the cross-day GR and excess-lethal-fraction figures. Use
+`--additional-endpoint-days` with a different list to change those days, or pass
+that option without values to disable them. To use another endpoint as the
+primary analysis, specify `--metric endpoint` and `--endpoint-hours <hours>`;
+`--endpoint-window-hours <hours>` averages a late-time window for that primary
+endpoint. GR and death comparisons are generated only for exact endpoints, not
+averaged endpoint windows. Use `--gr-bootstrap-iterations`,
+`--gr-bootstrap-seed`, `--death-bootstrap-iterations`, and
+`--death-bootstrap-seed` to control resampling. Use `--skip-gr-comparison` or
+`--skip-death-comparison` to disable either comparison.
 
 ## 4. Parameter-Calibration Scripts
 

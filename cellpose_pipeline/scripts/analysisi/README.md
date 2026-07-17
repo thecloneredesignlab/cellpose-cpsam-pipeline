@@ -24,3 +24,30 @@ row. It writes separate doxorubicin-alone and doxorubicin-plus-cyclophosphamide
 parameters. A default run creates parallel `auc/`, `day4/`, and `day5/` output
 directories; Day 4 and Day 5 use exact 96 h and 120 h live-cell responses with
 the same baseline and paired-vehicle normalization.
+
+The default run also creates `gr/` with two cross-day growth-rate inhibition
+figures: one for doxorubicin alone and one for doxorubicin plus
+cyclophosphamide. Each figure places fixed-top Day 4 and Day 5 GR curves above
+paired `Delta GR = GR(4N) - GR(2N)` panels. GR = 1 denotes growth at the matched
+control rate, GR = 0 denotes cytostasis, and GR < 0 denotes net cell loss. The
+doxorubicin-alone reference is the matched untreated well; the combination
+reference is the matched cyclophosphamide-only well at 0 nM doxorubicin. CSV
+outputs retain per-well GR values, fit parameters, paired-replicate bootstrap
+bands, paired differences, and integrated Delta-GR summaries. With only two
+replicate series, bootstrap intervals are descriptive rather than strong
+inferential evidence.
+
+The same run creates `death/` with endpoint excess-lethal-fraction figures for
+the two treatment conditions. At each exact endpoint, viable fraction is
+`live / (live + dead)`, and the plotted response is
+`1 - viable_fraction(treated) / viable_fraction(matched_control)`. Untreated
+wells are the doxorubicin-alone controls; cyclophosphamide-only wells are the
+combination controls. Each figure places Day 4 and Day 5 fixed-zero lethal
+fraction curves above `Delta excess LF = excess LF(4N) - excess LF(2N)` panels,
+where positive values indicate more adjusted death in 4N. Annotations report
+LF50, LEC50, and LFmax, and CSV outputs retain raw and adjusted fractions,
+ambiguity bounds, fits, paired bootstrap bands, paired differences, and
+integrated Delta excess-LF summaries. Artifacts are excluded; transitional and
+uncertain cells are omitted from the point estimate and represented in the
+stored ambiguity bounds. This endpoint analysis does not estimate cumulative
+death, a death rate, or the division-normalized death term used by GRADE.
