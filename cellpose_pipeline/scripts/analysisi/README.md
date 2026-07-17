@@ -15,3 +15,10 @@ replicate block: A/B are 2N with cyclophosphamide, C/D are 2N without
 cyclophosphamide, E/F are 4N without cyclophosphamide, and G/H are 4N with
 cyclophosphamide. Columns 2-11 contain 0, 3.125, 6.25, 12.5, 25, 50, 100, 200,
 400, and 800 nM doxorubicin, respectively.
+
+`07_plot_dose_response_curves.py` consumes the normalized well-time table from
+`04_plot_well_counts_over_time.py`. Its default response is baseline-normalized
+live-cell AUC divided by the matched vehicle AUC within each replicate plate
+row. It writes separate doxorubicin-alone and doxorubicin-plus-cyclophosphamide
+2N-versus-4N Hill plots together with the underlying normalized values and fit
+parameters.

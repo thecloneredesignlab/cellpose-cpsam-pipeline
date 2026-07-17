@@ -251,6 +251,25 @@ the original Excel workbook is retained beside it as the source document.
   --pipeline-log /path/to/pipeline.log
 ```
 
+### 3.7 `07_plot_dose_response_curves.py`: Compare 2N and 4N Hill responses
+
+- **Function:** Convert the live-cell time courses into one normalized response per well, fit bounded four-parameter Hill curves, and compare 2N with 4N separately for doxorubicin alone and doxorubicin plus cyclophosphamide.
+- **Reads:** The branch-specific `well_time_cell_state_counts.csv` produced by `04_plot_well_counts_over_time.py`, supplied directly or discovered under a production run.
+- **Normalization:** The default `auc` metric divides each well's live-cell trajectory by its own starting count, integrates that trajectory over time, and divides the result by the 0 nM well from the same plate-row replicate. Thus every replicate's vehicle response is 1 before fitting. `--metric endpoint` applies the same baseline and paired-vehicle normalization to the endpoint or a configurable late-time window.
+- **Produces:** Exactly two distinct dose-response plots, each as PNG and PDF: one for doxorubicin alone and one for doxorubicin plus cyclophosphamide. Each compares 2N with 4N, shows individual replicate wells and dose means, and annotates EC50, Hill slope, 95% confidence intervals, and R-squared. Per-well normalized responses, dose summaries, and fit parameters are also written as CSV files.
+- **Interpretation:** Fits use both plate-row replicates at every dose. The confidence intervals quantify nonlinear-fit uncertainty but should be interpreted cautiously because there are only two replicate series per ploidy and treatment condition.
+
+```bash
+"$PYTHON_BIN" -I cellpose_pipeline/scripts/analysisi/07_plot_dose_response_curves.py \
+  "$RUN_ROOT" \
+  --branch fusion \
+  --metric auc
+```
+
+To fit the final live-cell response instead, use `--metric endpoint`. Add
+`--endpoint-hours <hours>` to choose an earlier endpoint or
+`--endpoint-window-hours <hours>` to average a late-time window.
+
 ## 4. Parameter-Calibration Scripts
 
 Parameter-calibration scripts are stored in `cellpose_pipeline/scripts/Parameter_calibration/`. Their numbering follows the logical sequence of data preparation, broad screening, focused validation, and final QC. They are not called by the default production workflow. Use a new output directory for each calibration run, and update production configuration only after reviewing the calibration results.
