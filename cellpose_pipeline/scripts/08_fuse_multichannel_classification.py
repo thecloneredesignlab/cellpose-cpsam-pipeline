@@ -140,6 +140,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dead-min-p90-abs", type=float, default=15.0)
     parser.add_argument("--dead-min-snr", type=float, default=3.00)
     parser.add_argument("--dead-bg-margin", type=int, default=14)
+    parser.add_argument("--dead-live-rgb-max-area", type=int, default=500)
+    parser.add_argument("--dead-live-rgb-min-combined-overlap-fraction", type=float, default=0.60)
+    parser.add_argument("--dead-live-rgb-min-p90-delta", type=float, default=20.0)
+    parser.add_argument("--dead-live-rgb-min-snr", type=float, default=50.0)
+    parser.add_argument("--dead-direct-min-p90-delta", type=float, default=35.0)
+    parser.add_argument("--dead-direct-min-snr", type=float, default=90.0)
+    parser.add_argument("--dead-uncertain-min-combined-overlap-fraction", type=float, default=0.45)
+    parser.add_argument("--dead-uncertain-min-p90-delta", type=float, default=10.0)
     args = parser.parse_args()
     if not args.merge_summaries_only and not args.field_record and not args.run_root and not args.combined_run:
         raise SystemExit("Provide --field-record, --run-root, or --combined-run.")
@@ -866,6 +874,39 @@ def compute_dead_evidence(
     return best_by_combined
 
 
+def should_apply_dead_override(
+    row: dict[str, Any],
+    dead: DeadEvidence,
+    args: argparse.Namespace,
+) -> tuple[bool, str, str]:
+    rgb_state = str(row["rgb_state"])
+    area = int(row["area"])
+    if rgb_state == "dead":
+        return True, "rgb_dead_with_dead_channel_support", "high"
+    if (
+        dead.p90_delta >= args.dead_direct_min_p90_delta
+        and dead.snr >= args.dead_direct_min_snr
+    ):
+        return True, "strong_dead_channel_override_rgb_context", "high"
+    if rgb_state == "live":
+        if (
+            area <= args.dead_live_rgb_max_area
+            and dead.combined_overlap_fraction >= args.dead_live_rgb_min_combined_overlap_fraction
+            and dead.p90_delta >= args.dead_live_rgb_min_p90_delta
+            and dead.snr >= args.dead_live_rgb_min_snr
+        ):
+            return True, "compact_live_rgb_with_strong_dead_channel_support", "medium"
+        return False, "dead_channel_rejected_live_rgb_context", "high"
+    if rgb_state in {"uncertain", "transitional", "artifact"}:
+        if (
+            dead.combined_overlap_fraction >= args.dead_uncertain_min_combined_overlap_fraction
+            and dead.p90_delta >= args.dead_uncertain_min_p90_delta
+        ):
+            return True, "dead_channel_override_context_supported", "medium"
+        return False, "dead_channel_rejected_insufficient_cell_support", "medium"
+    return False, "dead_channel_rejected_unknown_rgb_context", "medium"
+
+
 def final_state_for(
     row: dict[str, Any],
     bf_supported: bool,
@@ -875,12 +916,16 @@ def final_state_for(
     args: argparse.Namespace,
 ) -> tuple[str, str, str]:
     area = int(row["area"])
+    rejected_dead: tuple[str, str] | None = None
+    if dead is not None:
+        keep_dead, reason, confidence = should_apply_dead_override(row, dead, args)
+        if keep_dead:
+            return "dead", reason, confidence
+        if row["rgb_state"] == "dead":
+            return "uncertain", reason, confidence
+        rejected_dead = (reason, confidence)
     if area < args.min_countable_area:
         return "artifact", "area_below_countable_min", "high"
-    if dead is not None:
-        if row["rgb_state"] == "dead":
-            return "dead", "rgb_dead_with_dead_channel_support", "high"
-        return "dead", "dead_channel_override", "high"
     if row["rgb_state"] == "artifact" and not bf_supported and not nuclei_supported:
         return "artifact", "rgb_artifact_without_bf_or_nuclei_support", "medium"
     if (
@@ -892,6 +937,8 @@ def final_state_for(
     ):
         return "artifact", "small_uncertain_without_bf_or_nuclei_support", "medium"
     if row["rgb_state"] == "live" or bf_supported or nuclei_supported or nuclei_inside_count > 0:
+        if rejected_dead is not None:
+            return "live", rejected_dead[0], rejected_dead[1]
         return "live", "non_dead_countable_cell", "high" if row["rgb_state"] == "live" else "medium"
     return "live", "non_dead_combined_anchor_default_live", "low"
 
@@ -988,7 +1035,14 @@ def summary_for_image(image_id: str, key: str, rows: list[dict[str, Any]]) -> di
         "live_fraction": live_count / total_cells if total_cells else 0.0,
         "rgb_dead_count": sum(1 for row in rows if row["rgb_state"] == "dead"),
         "rgb_live_count": sum(1 for row in rows if row["rgb_state"] == "live"),
-        "dead_channel_override_count": sum(1 for row in rows if row["final_reason"] == "dead_channel_override"),
+        "dead_channel_override_count": sum(
+            1
+            for row in rows
+            if row["state"] == "dead" and int(row.get("dead_mask_id") or 0) > 0 and row["rgb_state"] != "dead"
+        ),
+        "strong_dead_channel_override_count": sum(
+            1 for row in rows if row.get("final_reason") == "strong_dead_channel_override_rgb_context"
+        ),
         "bf_supported_count": sum(1 for row in rows if str(row["bf_supported"]) == "True"),
         "nuclei_supported_count": sum(1 for row in rows if str(row["nuclei_supported"]) == "True"),
         "nuclei_inside_total": sum(int(row.get("nuclei_centroids_inside", 0) or 0) for row in rows),
