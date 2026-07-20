@@ -187,3 +187,34 @@ The generator discovers the most recently installed Data Analytics plugin when
 `--plugin-root` is omitted. `--debug-figure-dir` optionally writes PNG review
 copies, and `--high-resolution-images-json` optionally retains the temporary
 image sidecar used during packaging. Neither is required by the final HTML.
+
+### Current-run HPC layout
+
+The same generator also detects a completed current-run audit root containing
+the following directories:
+
+```text
+classification_original/
+classification_nucleated_only/
+automated_audit/
+annotations/
+detector_stress/
+```
+
+This layout produces a current-run technical report without requiring the
+historical intermediate calibration directories. The report includes both
+classification branches, cell-state composition, confirmed Death-object
+relations, object-aware event composition, uncertainty, operational proxy
+audit metrics, detector stress results, and E2/F5/H9 final QC examples. A full
+historical audit root continues to produce the original multi-round comparison
+report.
+
+On the SUM159 HPC workflow, the single entry point is:
+
+```bash
+bash cellpose_pipeline/hpc/Parameter_calibration/25_dead_d0_classification_audit.sh
+```
+
+It embeds the per-field worker mode, validates all 320 fields, and generates
+the artifact JSON, build receipt, and self-contained HTML only after the
+classification, audit, annotations, stress test, and QC checks succeed.

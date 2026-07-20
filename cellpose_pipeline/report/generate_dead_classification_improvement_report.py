@@ -42,6 +42,20 @@ if MAIN_REPORT._IMAGE_IMPORT_ERROR is not None:
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 
+def load_current_run_report_module() -> Any:
+    path = Path(__file__).with_name("dead_classification_current_run_report.py")
+    spec = importlib.util.spec_from_file_location("_dead_classification_current_run_report", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load current-run report support: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+CURRENT_RUN_REPORT = load_current_run_report_module()
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TIMEPOINT_HELPER_PATH = REPO_ROOT / "cellpose_pipeline" / "scripts" / "_shared" / "timepoint_selection.py"
 TIMEPOINT_HELPER_SPEC = importlib.util.spec_from_file_location(
@@ -2944,6 +2958,15 @@ def main() -> int:
             args.result_root.expanduser().resolve(),
             selected_timepoint,
         )
+    if CURRENT_RUN_REPORT.is_current_run_layout(audit_root):
+        receipt = CURRENT_RUN_REPORT.build_current_report(
+            args,
+            MAIN_REPORT,
+            plugin_root,
+            source_inventory,
+        )
+        print(json.dumps(receipt, indent=2))
+        return 0
     methods_md = require_file(args.methods_md.expanduser().resolve())
     if "Technical Summary" not in methods_md.read_text():
         raise RuntimeError(f"The methods comparison Markdown does not contain the expected technical summary: {methods_md}")
