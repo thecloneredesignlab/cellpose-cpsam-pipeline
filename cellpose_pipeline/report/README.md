@@ -188,7 +188,7 @@ The generator discovers the most recently installed Data Analytics plugin when
 copies, and `--high-resolution-images-json` optionally retains the temporary
 image sidecar used during packaging. Neither is required by the final HTML.
 
-### Current-run HPC layout
+### Report modes and current-run HPC layout
 
 The same generator also detects a completed current-run audit root containing
 the following directories:
@@ -201,13 +201,48 @@ annotations/
 detector_stress/
 ```
 
-This layout produces a current-run technical report without requiring the
-historical intermediate calibration directories. The report includes both
-classification branches, cell-state composition, confirmed Death-object
-relations, object-aware event composition, uncertainty, operational proxy
-audit metrics, detector stress results, and E2/F5/H9 final QC examples. A full
-historical audit root continues to produce the original multi-round comparison
-report.
+The generator supports three explicit modes:
+
+- `--report-mode current-run` produces the compact report from only the five
+  directories above;
+- `--report-mode historical-comparison` combines those current HPC outputs
+  with an immutable historical-reference bundle and recreates the full
+  multi-round comparison layout;
+- `--report-mode auto` preserves backward-compatible layout detection.
+
+The historical comparison does not regenerate early intermediate classifiers
+with the final source code. Instead, it reads their frozen prediction tables,
+selected QC overlays, and audit tables from `--historical-reference-root`.
+The final object-aware classification, annotations, audit, stress test, and QC
+remain the newly calculated HPC outputs. The generator constructs a symlink-only
+compatibility view below `report_inputs/historical_comparison/`; it does not
+duplicate either source tree.
+
+The minimal frozen bundle contains:
+
+```text
+historical_reference/
+├── context_aware_all_d0/
+│   ├── predictions/                 # all 320 historical prediction tables
+│   └── qc/label_overlays/           # selected report cases only
+├── strong_direct_all_d0/
+│   ├── predictions/                 # all 320 historical prediction tables
+│   └── qc/label_overlays/           # selected report cases only
+├── automated_reference_audit/       # context-aware audit metrics and cells
+├── automated_reference_audit_final/ # strong-direct audit metrics and cells
+├── qc/                               # frozen E2 before/after panel
+├── d0_branch_before_after_metrics.csv
+├── debugging_stage_provenance.json
+├── REFERENCE_INVENTORY.txt
+└── FROZEN_REFERENCE_SHA256.txt
+```
+
+`debugging_stage_provenance.json` records every development round's objective,
+key thresholds and classification rules, execution command template, output
+directories, code provenance, and reproducibility status. The SHA-256 manifest
+protects the bundle from silent changes. Intermediate working-tree states that
+were not committed are labeled `Frozen-reference required`; final v4 and its
+stress test are labeled computationally reproducible.
 
 On the SUM159 HPC workflow, the single entry point is:
 
@@ -217,4 +252,8 @@ bash cellpose_pipeline/hpc/Parameter_calibration/25_dead_d0_classification_audit
 
 It embeds the per-field worker mode, validates all 320 fields, and generates
 the artifact JSON, build receipt, and self-contained HTML only after the
-classification, audit, annotations, stress test, and QC checks succeed.
+classification, audit, annotations, stress test, and QC checks succeed. The
+script expects the frozen bundle at
+`$OUT/historical_reference` by default, verifies its SHA-256 manifest and
+provenance file, and then invokes `historical-comparison` mode. An alternate
+read-only bundle can be selected with `HISTORICAL_REFERENCE_ROOT=/path/to/bundle`.

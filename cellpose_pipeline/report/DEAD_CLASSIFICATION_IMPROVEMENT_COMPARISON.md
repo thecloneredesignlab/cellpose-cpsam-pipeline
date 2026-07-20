@@ -364,6 +364,17 @@ Relative to the original results, the final object-aware version eliminated Dead
 
 The context-aware and strong-direct stages used a reference unit that had already been associated with a cell. The final object-aware stage uses an object-level reference constructed from all Dead masks. The final rows are therefore not numerically identical metrics. Their advantage is that unassigned objects and same-cell collisions are no longer missing from the denominator.
 
+## Historical Stage Reproducibility
+
+The context-aware, strong-direct, and early object-aware stages were generated during iterative calibration before each working-tree state was committed independently. Their saved prediction tables, audit tables, and selected QC overlays are therefore treated as immutable comparison evidence. Re-running the current final classifier cannot reproduce those intermediate algorithms and must not be presented as if it did.
+
+The report records the complete development sequence in `debugging_stage_provenance.json`. For every round it lists the scientific objective, thresholds and decision rules, per-field and merge command templates, output artifacts, code provenance, and whether the stage is computationally reproducible or requires a frozen reference. `FROZEN_REFERENCE_SHA256.txt` verifies the historical bundle byte-for-byte. The final nucleus-aware dual-layer v4 classification and detector stress test remain reproducible from commit `208128b7` or later and are recomputed on HPC from the complete d0 source trees.
+
+The combined report therefore uses two explicitly separated evidence classes:
+
+- frozen historical outputs for the original, context-aware, strong-direct, and early object-aware development comparison;
+- newly computed HPC outputs for final v4 classification, multilevel annotations, automated audit, detector stress, masks, and QC.
+
 ### Final count composition
 
 | Branch | Original dead-cell calls | Final dead-cell count | Final supplemental Dead objects | Final object-aware death count | Change from original calls |

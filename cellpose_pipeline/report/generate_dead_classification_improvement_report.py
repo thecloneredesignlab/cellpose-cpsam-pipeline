@@ -155,6 +155,23 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--audit-root", type=Path, default=DEFAULT_AUDIT_ROOT)
     parser.add_argument(
+        "--report-mode",
+        choices=("auto", "current-run", "historical-comparison"),
+        default="auto",
+        help=(
+            "Select the report contract explicitly. 'auto' preserves legacy layout detection; "
+            "'historical-comparison' can combine current HPC outputs with a frozen historical reference."
+        ),
+    )
+    parser.add_argument(
+        "--historical-reference-root",
+        type=Path,
+        help=(
+            "Frozen context-aware/strong-direct reference bundle used by historical-comparison mode "
+            "when --audit-root is a current-run HPC result."
+        ),
+    )
+    parser.add_argument(
         "--input-root",
         type=Path,
         help="Complete raw-image root containing Brightfield, Combined, Dead, and Nuclei directories.",
@@ -199,6 +216,65 @@ def require_file(path: Path) -> Path:
 
 def require_dir(path: Path) -> Path:
     return MAIN_REPORT.require_dir(path)
+
+
+HISTORICAL_CURRENT_LINKS = {
+    "object_aware_all_d0_v4": "classification_original",
+    "object_aware_all_d0_v4_nucleated_only": "classification_nucleated_only",
+    "object_aware_automated_reference_audit_v4": "automated_audit",
+    "dead_object_detection_stress_v2": "detector_stress",
+    "final_annotation_summary.csv": "annotations/final_annotation_summary.csv",
+    "final_multilevel_annotations.csv": "annotations/final_multilevel_annotations.csv",
+}
+HISTORICAL_FROZEN_LINKS = {
+    "context_aware_all_d0": "context_aware_all_d0",
+    "strong_direct_all_d0": "strong_direct_all_d0",
+    "automated_reference_audit": "automated_reference_audit",
+    "automated_reference_audit_final": "automated_reference_audit_final",
+    "qc": "qc",
+    "d0_branch_before_after_metrics.csv": "d0_branch_before_after_metrics.csv",
+    "debugging_stage_provenance.json": "debugging_stage_provenance.json",
+}
+
+
+def ensure_relative_symlink(link: Path, target: Path) -> None:
+    target = require_file(target) if target.is_file() else require_dir(target)
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if link.is_symlink():
+        existing = (link.parent / os.readlink(link)).resolve()
+        if existing == target:
+            return
+        link.unlink()
+    elif link.exists():
+        raise RuntimeError(f"Historical report input path exists and is not a symlink: {link}")
+    link.symlink_to(os.path.relpath(target, link.parent), target_is_directory=target.is_dir())
+
+
+def prepare_historical_comparison_root(current_root: Path, reference_root: Path) -> tuple[Path, Path]:
+    current_root = require_dir(current_root)
+    reference_root = require_dir(reference_root)
+    report_root = current_root / "report_inputs" / "historical_comparison"
+    report_root.mkdir(parents=True, exist_ok=True)
+    links: dict[str, str] = {}
+    for name, relative in HISTORICAL_CURRENT_LINKS.items():
+        target = current_root / relative
+        ensure_relative_symlink(report_root / name, target)
+        links[name] = str(target)
+    for name, relative in HISTORICAL_FROZEN_LINKS.items():
+        target = reference_root / relative
+        ensure_relative_symlink(report_root / name, target)
+        links[name] = str(target)
+    input_map = report_root / "REPORT_INPUT_MAP.json"
+    MAIN_REPORT.atomic_write_json(
+        input_map,
+        {
+            "report_mode": "historical-comparison",
+            "current_run_root": str(current_root),
+            "historical_reference_root": str(reference_root),
+            "links": links,
+        },
+    )
+    return report_root, input_map
 
 
 def validate_source_inventory(
@@ -1095,8 +1171,55 @@ def annotation_metric(
     return matches[0]
 
 
+def debugging_stage_rows(path: Path) -> list[dict[str, Any]]:
+    path = require_file(path)
+    payload = MAIN_REPORT.read_json(path)
+    stages = payload.get("stages")
+    if not isinstance(stages, list) or not stages:
+        raise RuntimeError(f"Debugging-stage provenance has no stages: {path}")
+    template_fields = ("field_runner_template", "merge_template", "audit_template")
+    missing_templates = [field for field in template_fields if not payload.get(field)]
+    if missing_templates:
+        raise RuntimeError(
+            f"Debugging-stage provenance is missing command templates {missing_templates}: {path}"
+        )
+    command_templates = " | ".join(
+        (
+            f"Field: {payload['field_runner_template']}",
+            f"Merge: {payload['merge_template']}",
+            f"Audit: {payload['audit_template']}",
+        )
+    )
+    required = (
+        "order",
+        "stage",
+        "objective",
+        "key_parameters",
+        "run_method",
+        "output_artifacts",
+        "code_provenance",
+        "reproducibility",
+    )
+    required_set = set(required)
+    normalized: list[dict[str, Any]] = []
+    seen_orders: set[int] = set()
+    for row in stages:
+        if not isinstance(row, dict) or not required_set.issubset(row):
+            missing = sorted(required_set - set(row if isinstance(row, dict) else {}))
+            raise RuntimeError(f"Invalid debugging-stage provenance row; missing {missing}: {path}")
+        order = int(row["order"])
+        if order in seen_orders:
+            raise RuntimeError(f"Duplicate debugging-stage order {order}: {path}")
+        seen_orders.add(order)
+        normalized_row = {key: row[key] for key in required}
+        normalized_row["command_templates"] = command_templates
+        normalized.append(normalized_row)
+    return sorted(normalized, key=lambda row: int(row["order"]))
+
+
 def build_datasets(
     audit_root: Path,
+    debugging_stage_provenance: Path,
     sentinel_rows: list[dict[str, Any]],
     live_cases: list[dict[str, Any]],
     miss_cases: list[dict[str, Any]],
@@ -1609,6 +1732,7 @@ def build_datasets(
         "death_uncertainty": death_uncertainty_rows,
         "object_aware_event_details": object_aware_event_detail_rows,
         "output_contract": output_contract,
+        "debugging_stages": debugging_stage_rows(debugging_stage_provenance),
     }
 
 
@@ -1616,8 +1740,13 @@ def sql_text(value: Any) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def make_sources(expanded_cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def make_sources(
+    expanded_cases: list[dict[str, Any]],
+    debugging_stage_provenance: Path,
+) -> list[dict[str, Any]]:
     base = "results/dead_d0_classification_audit"
+    require_file(debugging_stage_provenance)
+    provenance_path = f"{base}/debugging_stage_provenance.json"
     if len(expanded_cases) != 12:
         raise RuntimeError(f"Expected 12 expanded comparison cases, found {len(expanded_cases)}")
     selected_case_values = ",".join(
@@ -1652,6 +1781,21 @@ def make_sources(expanded_cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "AS output_contract(output, grain)"
                 ),
                 "tables_used": ["DEAD_CLASSIFICATION_IMPROVEMENT_COMPARISON.md"],
+            },
+        },
+        {
+            "id": "stage_provenance",
+            "label": "Frozen debugging-stage parameters and run provenance",
+            "path": provenance_path,
+            "query": {
+                "engine": "duckdb",
+                "description": "Read the ordered historical classifier stages, parameters, run templates, and code-provenance limits.",
+                "sql": (
+                    f"SELECT stage.* FROM read_json_auto({sql_text(provenance_path)}, "
+                    "maximum_object_size=10485760) root, UNNEST(root.stages) AS t(stage) "
+                    "ORDER BY stage.\"order\""
+                ),
+                "tables_used": ["debugging_stage_provenance.json"],
             },
         },
         {
@@ -2086,6 +2230,25 @@ def build_manifest(
     ]
 
     tables = [
+        {
+            "id": "debugging_stage_table",
+            "title": "Classifier debugging stages, parameters, and execution provenance",
+            "subtitle": "Ordered d0 development history; frozen-reference stages are explicitly distinguished from computationally reproducible stages.",
+            "dataset": "debugging_stages",
+            "sourceId": "stage_provenance",
+            "defaultSort": {"field": "order", "direction": "asc"},
+            "columns": [
+                {"field": "order", "label": "Round", "format": "number"},
+                {"field": "stage", "label": "Stage", "type": "text"},
+                {"field": "objective", "label": "Purpose", "type": "text"},
+                {"field": "key_parameters", "label": "Key parameters and rules", "type": "text"},
+                {"field": "run_method", "label": "Run method", "type": "text"},
+                {"field": "command_templates", "label": "Exact command templates", "type": "text"},
+                {"field": "output_artifacts", "label": "Frozen or current outputs", "type": "text"},
+                {"field": "code_provenance", "label": "Code provenance", "type": "text"},
+                {"field": "reproducibility", "label": "Reproducibility status", "type": "text"},
+            ],
+        },
         {
             "id": "annotation_level_table",
             "title": "Annotation levels and analytical units",
@@ -2713,6 +2876,20 @@ def build_manifest(
                 "nucleus is reported conservatively as a live cell with death signal."
             ),
         },
+        {
+            "id": "debugging_stage_provenance_text",
+            "type": "markdown",
+            "body": (
+                "## Frozen intermediate stages make the development comparison reproducible\n\n"
+                "The context-aware, strong-direct, and early object-aware results were created during iterative calibration before "
+                "each working-tree state was committed separately. Their saved prediction tables and QC overlays are therefore "
+                "treated as immutable historical references rather than silently regenerated with the final classifier. The table "
+                "records the objective, thresholds, run template, outputs, and code-provenance status for every stage. Final v4 "
+                "classification remains computationally reproducible from the recorded git revision and the complete d0 source trees."
+            ),
+            "sourceId": "stage_provenance",
+        },
+        {"id": "debugging_stage_table_block", "type": "table", "tableId": "debugging_stage_table", "layout": "full"},
         {"id": "output_table_block", "type": "table", "tableId": "output_table", "layout": "full"},
         {
             "id": "stress_test_result",
@@ -2787,9 +2964,13 @@ def build_manifest(
 def build_artifact(
     datasets: dict[str, list[dict[str, Any]]],
     figures: dict[str, Image.Image],
+    debugging_stage_provenance: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-    sources = make_sources(datasets["expanded_case_evidence"])
+    sources = make_sources(
+        datasets["expanded_case_evidence"],
+        debugging_stage_provenance,
+    )
     attempts = [(0.42, 74), (0.38, 68), (0.34, 62), (0.30, 56), (0.27, 50)]
     last_size = 0
     for scale, quality in attempts:
@@ -2947,7 +3128,10 @@ def main() -> int:
         print(json.dumps({"artifact_json": str(artifact_path), "output_html": str(output_html), "html_enhancement": enhancement}, indent=2))
         return 0
 
-    audit_root = require_dir(args.audit_root.expanduser().resolve())
+    requested_audit_root = require_dir(args.audit_root.expanduser().resolve())
+    audit_root = requested_audit_root
+    historical_reference_root: Path | None = None
+    report_input_map: Path | None = None
     if (args.input_root is None) != (args.result_root is None):
         raise ValueError("--input-root and --result-root must be supplied together")
     selected_timepoint = normalize_timepoint(args.timepoint)
@@ -2958,7 +3142,13 @@ def main() -> int:
             args.result_root.expanduser().resolve(),
             selected_timepoint,
         )
-    if CURRENT_RUN_REPORT.is_current_run_layout(audit_root):
+    current_layout = CURRENT_RUN_REPORT.is_current_run_layout(requested_audit_root)
+    if args.report_mode == "current-run" and not current_layout:
+        raise RuntimeError(f"Explicit current-run mode requires the current HPC directory layout: {requested_audit_root}")
+    use_current_report = args.report_mode == "current-run" or (
+        args.report_mode == "auto" and current_layout
+    )
+    if use_current_report:
         receipt = CURRENT_RUN_REPORT.build_current_report(
             args,
             MAIN_REPORT,
@@ -2967,6 +3157,16 @@ def main() -> int:
         )
         print(json.dumps(receipt, indent=2))
         return 0
+    if args.report_mode == "historical-comparison" and current_layout:
+        historical_reference_root = require_dir(
+            (args.historical_reference_root or requested_audit_root / "historical_reference")
+            .expanduser()
+            .resolve()
+        )
+        audit_root, report_input_map = prepare_historical_comparison_root(
+            requested_audit_root,
+            historical_reference_root,
+        )
     methods_md = require_file(args.methods_md.expanduser().resolve())
     if "Technical Summary" not in methods_md.read_text():
         raise RuntimeError(f"The methods comparison Markdown does not contain the expected technical summary: {methods_md}")
@@ -2974,10 +3174,23 @@ def main() -> int:
         if path.exists() and not args.force:
             raise FileExistsError(f"Refusing to overwrite without --force: {path}")
 
+    debugging_stage_provenance = audit_root / "debugging_stage_provenance.json"
+    if not debugging_stage_provenance.is_file():
+        debugging_stage_provenance = Path(__file__).resolve().with_name(
+            "dead_classification_debugging_stages.json"
+        )
+    debugging_stage_provenance = require_file(debugging_stage_provenance)
+
     live_cases, miss_cases = select_expanded_cases(audit_root)
     figures, sentinel_rows = render_report_figures(audit_root, live_cases, miss_cases)
-    datasets = build_datasets(audit_root, sentinel_rows, live_cases, miss_cases)
-    artifact, receipt = build_artifact(datasets, figures)
+    datasets = build_datasets(
+        audit_root,
+        debugging_stage_provenance,
+        sentinel_rows,
+        live_cases,
+        miss_cases,
+    )
+    artifact, receipt = build_artifact(datasets, figures, debugging_stage_provenance)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     MAIN_REPORT.atomic_write_json(artifact_path, artifact)
 
@@ -2999,10 +3212,19 @@ def main() -> int:
     )
     receipt.update(
         {
+            "report_mode": "historical_comparison",
             "report": str(output_html),
             "artifact_json": str(artifact_path),
             "methods_markdown": str(methods_md),
             "audit_root": str(audit_root),
+            "requested_audit_root": str(requested_audit_root),
+            "historical_reference_root": (
+                str(historical_reference_root) if historical_reference_root is not None else None
+            ),
+            "report_input_map": str(report_input_map) if report_input_map is not None else None,
+            "debugging_stage_provenance": str(
+                debugging_stage_provenance
+            ),
             "source_inventory": source_inventory,
             "selected_timepoint": selected_timepoint,
             "plugin_root": str(plugin_root),

@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "scope": "SUM159 00d00h00m dead-classification development across 320 fields and two cell-mask branches",
+  "provenance_note": "Intermediate classifier versions were produced during an iterative uncommitted calibration session. Their frozen outputs are the authoritative record for historical comparison. The final object-aware implementation is reproducible from commit 208128b7 or later.",
+  "field_runner_template": "python -I cellpose_pipeline/scripts/08_fuse_multichannel_classification.py --field-record <record.json> --cell-mask-branch <original|nucleated> --out-dir <stage_dir> --per-key-only --force",
+  "merge_template": "python -I cellpose_pipeline/scripts/08_fuse_multichannel_classification.py --out-dir <stage_dir> --merge-summaries-only",
+  "audit_template": "python -I cellpose_pipeline/scripts/Parameter_calibration/25_audit_dead_classification_without_ground_truth.py --branch original=<original_dir> --branch nucleated_only=<nucleated_dir> --timepoint d0 --out-dir <audit_dir>",
+  "stages": [
+    {
+      "order": 0,
+      "stage": "Original production result",
+      "objective": "Baseline classification before dead-signal context protection.",
+      "key_parameters": "Candidate gate: area 20-2500 px; aspect <=4; mean delta >=0.60; P90 delta >=2; absolute P90 >=15; SNR >=3. A retained assigned Dead object could override the whole Combined cell.",
+      "run_method": "Read the frozen production classification_fusion and classification_fusion_nucleated_only d0 outputs from full_fusion_shape_strict_20260711_155940.",
+      "output_artifacts": "Source production classification_fusion branches; summarized in d0_branch_before_after_metrics.csv.",
+      "code_provenance": "Original production code predating the iterative d0 calibration; represented by frozen outputs.",
+      "reproducibility": "Frozen-reference only"
+    },
+    {
+      "order": 1,
+      "stage": "Context-aware gating",
+      "objective": "Protect clearly RGB-live cells from weak or adjacent Dead-channel candidates.",
+      "key_parameters": "RGB-live compact-cell gate: area <=500 px, Combined coverage >=0.60, P90 delta >=20, SNR >=50. RGB-uncertain gate: coverage >=0.45 and P90 delta >=10. No strong-direct bypass.",
+      "run_method": "Run the field runner template for all 320 records in both branches, then run the merge template. Local execution used xargs with 8 workers.",
+      "output_artifacts": "context_aware_all_d0 and context_aware_all_d0_nucleated_only; automated_reference_audit.",
+      "code_provenance": "Iterative working-tree state; exact source snapshot was not separately committed. Commands and frozen outputs were retained.",
+      "reproducibility": "Frozen-reference required"
+    },
+    {
+      "order": 2,
+      "stage": "Strong-direct threshold-only recovery",
+      "objective": "Recover F5/H9-like strong death signals rejected by cell-level overlap gating.",
+      "key_parameters": "Strong-direct bypass: Dead P90 delta >=35 and Dead SNR >=90. Automated strong reference: keep_signal=True, P90 delta >=40, SNR >=100.",
+      "run_method": "Run the field runner template for all 320 records in both branches, merge summaries, then audit context-aware versus strong-direct outputs.",
+      "output_artifacts": "strong_direct_all_d0 and strong_direct_all_d0_nucleated_only; automated_reference_audit_final.",
+      "code_provenance": "Iterative working-tree state; exact source snapshot was not separately committed. Commands and frozen outputs were retained.",
+      "reproducibility": "Frozen-reference required"
+    },
+    {
+      "order": 3,
+      "stage": "Object-aware ledger v1-v2",
+      "objective": "Retain every upstream Dead mask independently instead of one best object per Combined cell.",
+      "key_parameters": "Complete 8,289-object ledger; confirmed objects separated from rejected/unassigned candidates; supplemental counting introduced.",
+      "run_method": "Run both branches over all 320 field records with the field runner template, merge summaries, and run the object-aware audit after each revision.",
+      "output_artifacts": "object_aware_all_d0, object_aware_all_d0_v2 and paired nucleated-only/audit directories.",
+      "code_provenance": "Iterative working-tree states; exact v1/v2 source snapshots were not separately committed. Frozen outputs preserve the comparison evidence.",
+      "reproducibility": "Frozen-reference only"
+    },
+    {
+      "order": 4,
+      "stage": "Cell/object separation v3",
+      "objective": "Keep RGB-live cells live while retaining adjacent confirmed Death objects as supplemental events.",
+      "key_parameters": "RGB-live cells cannot be changed to dead by an adjacent object. RGB-uncertain cells require whole-cell coverage >=0.45 or compact-cell coverage >=0.30 with area <=500 px.",
+      "run_method": "Run both branches over all 320 field records with xargs -P 8, merge summaries, and run object_aware_automated_reference_audit_v3.",
+      "output_artifacts": "object_aware_all_d0_v3 and object_aware_all_d0_v3_nucleated_only; object_aware_automated_reference_audit_v3.",
+      "code_provenance": "Iterative working-tree state; exact v3 source snapshot was not separately committed. Frozen outputs preserve the development record.",
+      "reproducibility": "Frozen-reference only"
+    },
+    {
+      "order": 5,
+      "stage": "Nucleus-aware dual-layer final v4",
+      "objective": "Represent overlapping live-cell and confirmed-death masks without overwriting either biological layer.",
+      "key_parameters": "Strong direct: P90 delta >=35 and SNR >=90. RGB-live transfer remains disabled. RGB-uncertain same-cell support uses coverage >=0.45, or >=0.30 for area <=500 px. Two or more nuclei support overlapping_live_dead_multi_nucleus; one nucleus supports live_with_death_signal.",
+      "run_method": "Run both branches over all 320 records, merge summaries, generate cell-state masks, confirmed-death masks, two-channel overlap masks, three QC families, audit, annotations, and detector stress results. HPC uses 25_dead_d0_classification_audit.sh with 16 parallel workers.",
+      "output_artifacts": "Local object_aware_all_d0_v4 branches; HPC classification_original and classification_nucleated_only plus automated_audit, annotations, and detector_stress.",
+      "code_provenance": "Final implementation is contained in git commit 208128b7 and later; HPC rerun recorded git SHA 208128b73d9cd22e0a9531ad229bff64792fa1af.",
+      "reproducibility": "Computationally reproducible"
+    },
+    {
+      "order": 6,
+      "stage": "Independent detector stress test",
+      "objective": "Test whether a segmentation-independent global detector could recover strong objects without increasing live-cell hits.",
+      "key_parameters": "Strong-reference and synthetic-relocation recovery evaluated independently of production classification; the detector was not connected to production because recovery was incomplete.",
+      "run_method": "python -I cellpose_pipeline/scripts/Parameter_calibration/26_stress_test_dead_object_detection.py --field-record-root <records> --branch original=<original_dir> --branch nucleated_only=<nucleated_dir> --timepoint d0 --out-dir <stress_dir>",
+      "output_artifacts": "dead_object_detection_stress_v2 locally; detector_stress in the HPC current run.",
+      "code_provenance": "Final stress-test implementation is contained in commit 208128b7 and later.",
+      "reproducibility": "Computationally reproducible"
+    }
+  ]
+}

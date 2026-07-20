@@ -7,6 +7,7 @@ RAW="$BASE/20260626_SUM159_AC_Exp1_SeparateImages"
 SOURCE_RESULTS="$BASE/results/full_fusion_shape_strict_20260711_155940"
 DEFAULT_OUT="$BASE/results/dead_d0_classification_audit"
 OUT="${1:-$DEFAULT_OUT}"
+HISTORICAL_REFERENCE_ROOT="${HISTORICAL_REFERENCE_ROOT:-$OUT/historical_reference}"
 PYTHON_BIN=/home/4482173/.conda/envs/cellpose_cpsam/bin/python
 NODE_ROOT=/home/4482173/.local/opt/node-v24.18.0-linux-x64
 REPORT_PLUGIN_ROOT=/home/4482173/.local/share/data-analytics/0.2.8
@@ -58,6 +59,32 @@ if [[ ! -f "$REPORT_PLUGIN_ROOT/package.json" ]]; then
   echo "Data Analytics report plugin is unavailable: $REPORT_PLUGIN_ROOT" >&2
   exit 1
 fi
+for required_reference in \
+  "$HISTORICAL_REFERENCE_ROOT/context_aware_all_d0/predictions" \
+  "$HISTORICAL_REFERENCE_ROOT/context_aware_all_d0/qc/label_overlays" \
+  "$HISTORICAL_REFERENCE_ROOT/strong_direct_all_d0/predictions" \
+  "$HISTORICAL_REFERENCE_ROOT/strong_direct_all_d0/qc/label_overlays" \
+  "$HISTORICAL_REFERENCE_ROOT/automated_reference_audit" \
+  "$HISTORICAL_REFERENCE_ROOT/automated_reference_audit_final" \
+  "$HISTORICAL_REFERENCE_ROOT/qc"; do
+  [[ -d "$required_reference" ]] || { echo "Missing frozen historical reference directory: $required_reference" >&2; exit 1; }
+done
+for required_reference in \
+  "$HISTORICAL_REFERENCE_ROOT/d0_branch_before_after_metrics.csv" \
+  "$HISTORICAL_REFERENCE_ROOT/debugging_stage_provenance.json" \
+  "$HISTORICAL_REFERENCE_ROOT/FROZEN_REFERENCE_SHA256.txt"; do
+  [[ -f "$required_reference" ]] || { echo "Missing frozen historical reference file: $required_reference" >&2; exit 1; }
+done
+cmp -s \
+  "$PROJECT/cellpose_pipeline/report/dead_classification_debugging_stages.json" \
+  "$HISTORICAL_REFERENCE_ROOT/debugging_stage_provenance.json" || {
+    echo "Frozen reference provenance does not match the checked-out report provenance" >&2
+    exit 1
+  }
+(
+  cd "$HISTORICAL_REFERENCE_ROOT"
+  sha256sum -c FROZEN_REFERENCE_SHA256.txt
+)
 
 mkdir -p "$OUT/logs"
 rm -f "$OUT/_SUCCESS"
@@ -85,6 +112,7 @@ echo "git_sha=$(git -c safe.directory="$PROJECT" -C "$PROJECT" rev-parse HEAD)"
 echo "raw_root=$RAW"
 echo "source_result_root=$SOURCE_RESULTS"
 echo "output_root=$OUT"
+echo "historical_reference_root=$HISTORICAL_REFERENCE_ROOT"
 
 export PYTHONNOUSERSITE=1
 unset PYTHONPATH
@@ -181,6 +209,8 @@ echo "annotation_rows=$annotation_count"
 echo "step=07_generate_html_report"
 "$PYTHON_BIN" -I cellpose_pipeline/report/generate_dead_classification_improvement_report.py \
   --audit-root "$OUT" \
+  --report-mode historical-comparison \
+  --historical-reference-root "$HISTORICAL_REFERENCE_ROOT" \
   --input-root "$RAW" \
   --result-root "$SOURCE_RESULTS" \
   --timepoint d0 \
@@ -192,6 +222,17 @@ echo "step=07_generate_html_report"
 test -s "$OUT/DEAD_CLASSIFICATION_IMPROVEMENT_REPORT.html"
 test -s "$OUT/DEAD_CLASSIFICATION_IMPROVEMENT_REPORT.artifact.json"
 test -s "$OUT/DEAD_CLASSIFICATION_IMPROVEMENT_REPORT.build.json"
+"$PYTHON_BIN" - "$OUT/DEAD_CLASSIFICATION_IMPROVEMENT_REPORT.build.json" <<'PY'
+import json
+import sys
+
+receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+assert receipt["report_mode"] == "historical_comparison", receipt.get("report_mode")
+assert receipt["dataset_rows"]["debugging_stages"] == 7, receipt["dataset_rows"]
+assert receipt["html_enhancement"]["high_resolution_image_frames"] == 7, receipt["html_enhancement"]
+assert len(receipt["expanded_live_override_fields"]) == 6
+assert len(receipt["expanded_death_miss_fields"]) == 6
+PY
 
 {
   echo "git_sha=$(git -c safe.directory="$PROJECT" -C "$PROJECT" rev-parse HEAD)"
@@ -205,6 +246,10 @@ test -s "$OUT/DEAD_CLASSIFICATION_IMPROVEMENT_REPORT.build.json"
   echo "automated_audit=$OUT/automated_audit"
   echo "annotations=$OUT/annotations"
   echo "detector_stress=$OUT/detector_stress"
+  echo "report_mode=historical_comparison"
+  echo "historical_reference_root=$HISTORICAL_REFERENCE_ROOT"
+  echo "historical_report_input_map=$OUT/report_inputs/historical_comparison/REPORT_INPUT_MAP.json"
+  echo "debugging_stage_provenance=$HISTORICAL_REFERENCE_ROOT/debugging_stage_provenance.json"
   echo "html_report=$OUT/DEAD_CLASSIFICATION_IMPROVEMENT_REPORT.html"
   echo "annotation_rows=$annotation_count"
 } > "$OUT/RUN_SUMMARY.txt"
