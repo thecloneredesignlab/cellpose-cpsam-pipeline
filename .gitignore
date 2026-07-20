@@ -17,6 +17,7 @@ cellpose_pipeline/annotation_images/
 cellpose_pipeline/train/
 cellpose_pipeline/test/
 cellpose_pipeline/segmentations/
+/results/
 
 # Large microscopy data
 *.tif

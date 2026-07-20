@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import json
 import math
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,21 @@ STATE_COLORS = {
 KEY_RE = re.compile(r"(?:SUM159_AC_)?(?:Exp1_)?(?:BF_|Dead_)?([A-H]\d+_\d+_\d+d\d+h\d+m)")
 KEY_DETAIL_RE = re.compile(r"(?P<well>[A-H]\d+)_(?P<site>\d+)_(?P<day>\d+)d(?P<hour>\d+)h(?P<minute>\d+)m")
 IMAGE_SUFFIXES = (".tif", ".tiff", ".png", ".jpg", ".jpeg")
+
+
+TIMEPOINT_HELPER_PATH = Path(__file__).resolve().parent / "_shared" / "timepoint_selection.py"
+TIMEPOINT_HELPER_SPEC = importlib.util.spec_from_file_location(
+    "timepoint_selection_local",
+    TIMEPOINT_HELPER_PATH,
+)
+if TIMEPOINT_HELPER_SPEC is None or TIMEPOINT_HELPER_SPEC.loader is None:
+    raise RuntimeError(f"Unable to load timepoint selection helpers: {TIMEPOINT_HELPER_PATH}")
+TIMEPOINT_HELPER = importlib.util.module_from_spec(TIMEPOINT_HELPER_SPEC)
+sys.modules[TIMEPOINT_HELPER_SPEC.name] = TIMEPOINT_HELPER
+TIMEPOINT_HELPER_SPEC.loader.exec_module(TIMEPOINT_HELPER)
+extract_key_and_timepoint = TIMEPOINT_HELPER.extract_key_and_timepoint
+normalize_timepoint = TIMEPOINT_HELPER.normalize_timepoint
+select_keys = TIMEPOINT_HELPER.select_keys
 
 
 @dataclass(frozen=True)
@@ -68,6 +85,12 @@ class DeadEvidence:
     combined_overlap_fraction: float
     area: int
     aspect: float
+    centroid_y: float
+    centroid_x: float
+    bbox_y0: int
+    bbox_x0: int
+    bbox_y1: int
+    bbox_x1: int
     raw_mean: float
     raw_p90: float
     raw_max: float
@@ -77,6 +100,14 @@ class DeadEvidence:
     p90_delta: float
     snr: float
     keep_signal: bool
+    strong_direct: bool = False
+    association_relation: str = ""
+
+
+@dataclass
+class DeadEvidenceResult:
+    objects: list[DeadEvidence]
+    best_by_combined: dict[int, DeadEvidence]
 
 
 def parse_args() -> argparse.Namespace:
@@ -100,6 +131,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-root", type=Path, help="Raw image root containing profile subfolders.")
     parser.add_argument("--out-dir", type=Path, help="Output dir. Defaults to <run-root>/classification_fusion.")
     parser.add_argument("--key", action="append", help="Only process this normalized key, e.g. A11_1_00d12h00m.")
+    parser.add_argument(
+        "--timepoint",
+        help=(
+            "Only process records at one exact timepoint discovered from the complete input/result roots. "
+            "Accepts DDdHHhMMm or d0."
+        ),
+    )
     parser.add_argument(
         "--field-record",
         type=Path,
@@ -626,6 +664,66 @@ def nuclei_counts_inside_combined(combined_mask: np.ndarray, nuclei_stats: Label
     return counts
 
 
+def dead_object_nucleus_evidence(
+    result: DeadEvidenceResult,
+    dead_mask: np.ndarray | None,
+    nuclei_mask: np.ndarray | None,
+    nuclei_stats: LabelStats | None,
+    combined_nuclei_counts: dict[int, int],
+    nearby_distance: float,
+) -> dict[int, dict[str, Any]]:
+    """Measure nucleus evidence without changing any upstream segmentation."""
+    output: dict[int, dict[str, Any]] = {}
+    has_nuclei = nuclei_stats is not None and nuclei_stats.count > 0
+    for evidence in result.objects:
+        combined_count = int(combined_nuclei_counts.get(evidence.assigned_combined_label, 0))
+        nuclei_inside = 0
+        nuclei_nearby = 0
+        nearest_distance = float("inf")
+        if has_nuclei:
+            centers = nuclei_stats.centroids[nuclei_stats.labels]
+            distances = np.sqrt(
+                np.sum(
+                    (centers - np.array([evidence.centroid_y, evidence.centroid_x], dtype=np.float64)) ** 2,
+                    axis=1,
+                )
+            )
+            if distances.size:
+                nearest_distance = float(np.min(distances))
+                nuclei_nearby = int(np.count_nonzero(distances <= nearby_distance))
+            if dead_mask is not None:
+                height, width = dead_mask.shape
+                for nucleus_label in nuclei_stats.labels:
+                    y, x = nuclei_stats.centroids[int(nucleus_label)]
+                    yy = int(round(float(y)))
+                    xx = int(round(float(x)))
+                    if 0 <= yy < height and 0 <= xx < width and int(dead_mask[yy, xx]) == evidence.label:
+                        nuclei_inside += 1
+
+        nucleus_overlap_fraction = 0.0
+        if dead_mask is not None and nuclei_mask is not None and evidence.area > 0:
+            object_pixels = dead_mask == evidence.label
+            nucleus_overlap_fraction = float(np.count_nonzero(object_pixels & (nuclei_mask > 0))) / float(
+                evidence.area
+            )
+
+        if combined_count >= 2:
+            interpretation = "probable_live_dead_overlap_multi_nucleus"
+        elif combined_count == 1:
+            interpretation = "live_with_death_signal_single_nucleus"
+        else:
+            interpretation = "adjacent_or_overlapping_dead_nucleus_unresolved"
+        output[evidence.label] = {
+            "combined_nuclei_count": combined_count,
+            "dead_object_nuclei_inside_count": nuclei_inside,
+            "dead_object_nearby_nuclei_count": nuclei_nearby,
+            "nearest_nucleus_distance": nearest_distance,
+            "dead_nucleus_overlap_fraction": nucleus_overlap_fraction,
+            "nucleus_supported_relation": interpretation,
+        }
+    return output
+
+
 def safe_log_ratio(numerator: float, denominator: float) -> float:
     return float(math.log((numerator + 1.0) / (denominator + 1.0)))
 
@@ -748,9 +846,9 @@ def compute_dead_evidence(
     combined_mask: np.ndarray,
     combined_stats: LabelStats,
     args: argparse.Namespace,
-) -> dict[int, DeadEvidence]:
-    if dead_raw is None or dead_mask is None or int(dead_mask.max()) == 0 or combined_stats.count == 0:
-        return {}
+) -> DeadEvidenceResult:
+    if dead_raw is None or dead_mask is None or int(dead_mask.max()) == 0:
+        return DeadEvidenceResult(objects=[], best_by_combined={})
     if dead_mask.shape != combined_mask.shape or dead_raw.shape != combined_mask.shape:
         raise ValueError(
             f"Dead image/mask shape mismatch: raw={dead_raw.shape} dead_mask={dead_mask.shape} combined={combined_mask.shape}"
@@ -764,6 +862,7 @@ def compute_dead_evidence(
         combined_stats,
         args.dead_match_distance,
     )
+    objects: list[DeadEvidence] = []
     best_by_combined: dict[int, DeadEvidence] = {}
     h, w = combined_mask.shape
     for label in stats.labels:
@@ -802,8 +901,6 @@ def compute_dead_evidence(
             "snr": (raw_p90 - bg_median) / bg_sigma,
         }
         keep_signal = dead_signal_keep(base_record, args)
-        if not keep_signal:
-            continue
 
         overlap_labels = combined_mask[y0:y1, x0:x1][obj]
         overlap_labels = overlap_labels[overlap_labels > 0]
@@ -837,9 +934,6 @@ def compute_dead_evidence(
         elif nearest_label > 0 and nearest_dist <= args.dead_match_distance:
             assigned_label = nearest_label
             match_mode = "centroid"
-        if assigned_label <= 0:
-            continue
-
         score = (
             float(base_record["snr"])
             + 0.25 * float(base_record["p90_delta"])
@@ -858,6 +952,12 @@ def compute_dead_evidence(
             combined_overlap_fraction=float(overlap_combined_fraction),
             area=area,
             aspect=aspect,
+            centroid_y=float(stats.centroids[idx, 0]),
+            centroid_x=float(stats.centroids[idx, 1]),
+            bbox_y0=y0,
+            bbox_x0=x0,
+            bbox_y1=y1,
+            bbox_x1=x1,
             raw_mean=raw_mean,
             raw_p90=raw_p90,
             raw_max=raw_max,
@@ -867,11 +967,222 @@ def compute_dead_evidence(
             p90_delta=raw_p90 - bg_median,
             snr=float(base_record["snr"]),
             keep_signal=keep_signal,
+            strong_direct=(
+                float(base_record["p90_delta"]) >= args.dead_direct_min_p90_delta
+                and float(base_record["snr"]) >= args.dead_direct_min_snr
+            ),
         )
-        previous = best_by_combined.get(assigned_label)
-        if previous is None or evidence.score > previous.score:
-            best_by_combined[assigned_label] = evidence
+        objects.append(evidence)
+        if keep_signal and assigned_label > 0:
+            previous = best_by_combined.get(assigned_label)
+            if previous is None or evidence.score > previous.score:
+                best_by_combined[assigned_label] = evidence
+    return DeadEvidenceResult(objects=objects, best_by_combined=best_by_combined)
+
+
+def assign_dead_object_relations(
+    result: DeadEvidenceResult,
+    combined_features: dict[int, dict[str, Any]],
+    local_rgb_features: dict[int, dict[str, Any]],
+    args: argparse.Namespace,
+) -> dict[int, DeadEvidence]:
+    """Classify every Dead mask without collapsing multiple objects onto one cell."""
+    retained_by_combined: dict[int, list[DeadEvidence]] = {}
+    for evidence in result.objects:
+        confirmed = dead_object_is_confirmed(
+            evidence,
+            local_rgb_features.get(evidence.label, {}),
+            args,
+        )
+        if not evidence.keep_signal:
+            evidence.association_relation = "rejected_signal"
+        elif evidence.assigned_combined_label <= 0:
+            evidence.association_relation = "dead_only" if confirmed else "unassigned_candidate"
+        else:
+            retained_by_combined.setdefault(evidence.assigned_combined_label, []).append(evidence)
+
+    best_by_combined: dict[int, DeadEvidence] = {}
+    for combined_label, candidates in retained_by_combined.items():
+        cell = combined_features.get(combined_label, {})
+        rgb_state = str(cell.get("rgb_state", ""))
+        same_cell: list[DeadEvidence] = []
+        for evidence in candidates:
+            confirmed = dead_object_is_confirmed(
+                evidence,
+                local_rgb_features.get(evidence.label, {}),
+                args,
+            )
+            if not dead_object_has_same_cell_support(evidence, cell, args):
+                evidence.association_relation = "adjacent_dead" if confirmed else "adjacent_candidate"
+            else:
+                evidence.association_relation = "same_cell"
+                same_cell.append(evidence)
+
+        if same_cell:
+            same_cell.sort(key=lambda item: item.score, reverse=True)
+            primary = same_cell[0]
+            best_by_combined[combined_label] = primary
+            for evidence in same_cell[1:]:
+                if dead_object_is_confirmed(
+                    evidence,
+                    local_rgb_features.get(evidence.label, {}),
+                    args,
+                ):
+                    evidence.association_relation = "merged_multiple_objects"
+    result.best_by_combined = best_by_combined
     return best_by_combined
+
+
+def dead_object_has_same_cell_support(
+    evidence: DeadEvidence,
+    cell: dict[str, Any],
+    args: argparse.Namespace,
+) -> bool:
+    """Require cell-scale spatial support before a Dead object can change cell state.
+
+    A confirmed Dead object remains independently countable when this returns
+    False; only its transfer onto the spatially overlapping Combined cell is
+    rejected.  This prevents a small shrunken object beside a large attached
+    cell from turning that whole cell dead while retaining compact death events.
+    """
+    rgb_state = str(cell.get("rgb_state", ""))
+    if rgb_state == "dead":
+        return True
+    if rgb_state == "live":
+        return False
+    if rgb_state not in {"uncertain", "transitional", "artifact"}:
+        return False
+
+    whole_cell_support = (
+        evidence.combined_overlap_fraction
+        >= args.dead_uncertain_min_combined_overlap_fraction
+    )
+    compact_overlap_min = min(
+        args.dead_uncertain_min_combined_overlap_fraction,
+        0.5 * args.dead_live_rgb_min_combined_overlap_fraction,
+    )
+    compact_cell_support = (
+        int(cell.get("area", 0)) <= args.dead_live_rgb_max_area
+        and evidence.combined_overlap_fraction >= compact_overlap_min
+    )
+    return whole_cell_support or compact_cell_support
+
+
+def dead_object_is_confirmed(
+    evidence: DeadEvidence,
+    local_rgb: dict[str, Any],
+    args: argparse.Namespace,
+) -> bool:
+    if not evidence.keep_signal:
+        return False
+    if evidence.strong_direct:
+        return True
+    return (
+        str(local_rgb.get("rgb_state", "")) == "dead"
+        and evidence.p90_delta >= args.dead_direct_min_p90_delta
+        and evidence.snr >= args.dead_live_rgb_min_snr
+    )
+
+
+def apply_nucleus_aware_overlap_relations(
+    result: DeadEvidenceResult,
+    nucleus_evidence: dict[int, dict[str, Any]],
+) -> None:
+    """Refine confirmed non-cell-level objects while preserving their count."""
+    relation_by_interpretation = {
+        "probable_live_dead_overlap_multi_nucleus": "overlapping_live_dead_multi_nucleus",
+        "live_with_death_signal_single_nucleus": "live_with_death_signal",
+        "adjacent_or_overlapping_dead_nucleus_unresolved": "adjacent_or_overlapping_dead_uncertain",
+    }
+    for evidence in result.objects:
+        if evidence.association_relation != "adjacent_dead":
+            continue
+        interpretation = str(
+            nucleus_evidence.get(evidence.label, {}).get("nucleus_supported_relation", "")
+        )
+        evidence.association_relation = relation_by_interpretation.get(
+            interpretation,
+            "adjacent_or_overlapping_dead_uncertain",
+        )
+
+
+def dead_object_rows(
+    image_id: str,
+    key: str,
+    result: DeadEvidenceResult,
+    local_rgb_features: dict[int, dict[str, Any]],
+    nucleus_evidence: dict[int, dict[str, Any]],
+    args: argparse.Namespace,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for evidence in result.objects:
+        local_rgb = local_rgb_features.get(evidence.label, {})
+        confirmed = dead_object_is_confirmed(evidence, local_rgb, args)
+        supplemental = confirmed and evidence.association_relation in {
+            "dead_only",
+            "adjacent_dead",
+            "overlapping_live_dead_multi_nucleus",
+            "live_with_death_signal",
+            "adjacent_or_overlapping_dead_uncertain",
+            "merged_multiple_objects",
+        }
+        nucleus_row = nucleus_evidence.get(evidence.label, {})
+        rows.append(
+            {
+                "image_id": image_id,
+                "key": key,
+                **key_details(key),
+                "dead_mask_id": evidence.label,
+                "source": "dead_segmentation_mask",
+                "area": evidence.area,
+                "aspect": evidence.aspect,
+                "centroid_y": evidence.centroid_y,
+                "centroid_x": evidence.centroid_x,
+                "bbox_y0": evidence.bbox_y0,
+                "bbox_x0": evidence.bbox_x0,
+                "bbox_y1": evidence.bbox_y1,
+                "bbox_x1": evidence.bbox_x1,
+                "assigned_combined_mask_id": evidence.assigned_combined_label,
+                "match_mode": evidence.match_mode,
+                "association_relation": evidence.association_relation,
+                "distance": evidence.distance,
+                "overlap_pixels": evidence.overlap_pixels,
+                "dead_overlap_fraction": evidence.dead_overlap_fraction,
+                "combined_overlap_fraction": evidence.combined_overlap_fraction,
+                "raw_mean": evidence.raw_mean,
+                "raw_p90": evidence.raw_p90,
+                "raw_max": evidence.raw_max,
+                "bg_median": evidence.bg_median,
+                "bg_sigma": evidence.bg_sigma,
+                "mean_delta": evidence.mean_delta,
+                "p90_delta": evidence.p90_delta,
+                "snr": evidence.snr,
+                "keep_signal": evidence.keep_signal,
+                "strong_direct": evidence.strong_direct,
+                "dual_channel_confirmed": (
+                    confirmed and not evidence.strong_direct
+                ),
+                "confirmed_dead_object": confirmed,
+                "supplemental_dead_object": supplemental,
+                "local_rgb_state": local_rgb.get("rgb_state", ""),
+                "local_rgb_reason": local_rgb.get("rgb_reason", ""),
+                "local_median_r": local_rgb.get("median_r", ""),
+                "local_median_g": local_rgb.get("median_g", ""),
+                "local_median_b": local_rgb.get("median_b", ""),
+                "local_r_frac": local_rgb.get("r_frac", ""),
+                "local_g_frac": local_rgb.get("g_frac", ""),
+                "local_b_frac": local_rgb.get("b_frac", ""),
+                "local_blue_excess": local_rgb.get("blue_excess", ""),
+                "local_red_excess": local_rgb.get("red_excess", ""),
+                "combined_nuclei_count": nucleus_row.get("combined_nuclei_count", 0),
+                "dead_object_nuclei_inside_count": nucleus_row.get("dead_object_nuclei_inside_count", 0),
+                "dead_object_nearby_nuclei_count": nucleus_row.get("dead_object_nearby_nuclei_count", 0),
+                "nearest_nucleus_distance": nucleus_row.get("nearest_nucleus_distance", ""),
+                "dead_nucleus_overlap_fraction": nucleus_row.get("dead_nucleus_overlap_fraction", 0.0),
+                "nucleus_supported_relation": nucleus_row.get("nucleus_supported_relation", ""),
+            }
+        )
+    return rows
 
 
 def should_apply_dead_override(
@@ -972,12 +1283,70 @@ def write_rows(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) ->
     os.replace(temporary, path)
 
 
+def write_label_tiff(path: Path, data: np.ndarray, axes: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    tifffile.imwrite(
+        temporary,
+        data.astype(np.uint32, copy=False),
+        compression="zlib",
+        metadata={"axes": axes},
+    )
+    os.replace(temporary, path)
+
+
+def build_cell_dead_overlap_masks(
+    combined_mask: np.ndarray,
+    dead_mask: np.ndarray | None,
+    prediction_rows: list[dict[str, Any]],
+    dead_object_feature_rows: list[dict[str, Any]],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    cell_mask = np.zeros_like(combined_mask, dtype=np.uint32)
+    max_combined = int(combined_mask.max()) if combined_mask.size else 0
+    retained_cells = np.zeros(max_combined + 1, dtype=bool)
+    for row in prediction_rows:
+        label = int(row["mask_id"])
+        if 0 < label <= max_combined and str(row["state"]) != "artifact":
+            retained_cells[label] = True
+    keep_cell_pixels = retained_cells[combined_mask]
+    cell_mask[keep_cell_pixels] = combined_mask[keep_cell_pixels].astype(np.uint32, copy=False)
+
+    confirmed_dead_mask = np.zeros_like(combined_mask, dtype=np.uint32)
+    if dead_mask is not None and dead_mask.size:
+        max_dead = int(dead_mask.max())
+        confirmed_labels = np.zeros(max_dead + 1, dtype=bool)
+        for row in dead_object_feature_rows:
+            label = int(row["dead_mask_id"])
+            if 0 < label <= max_dead and bool(row["confirmed_dead_object"]):
+                confirmed_labels[label] = True
+        keep_dead_pixels = confirmed_labels[dead_mask]
+        confirmed_dead_mask[keep_dead_pixels] = dead_mask[keep_dead_pixels].astype(np.uint32, copy=False)
+
+    overlap_mask = np.stack([cell_mask, confirmed_dead_mask], axis=0)
+    return cell_mask, confirmed_dead_mask, overlap_mask
+
+
+def label_boundaries(mask: np.ndarray) -> np.ndarray:
+    boundary = np.zeros(mask.shape, dtype=bool)
+    boundary[1:, :] |= mask[1:, :] != mask[:-1, :]
+    boundary[:-1, :] |= mask[:-1, :] != mask[1:, :]
+    boundary[:, 1:] |= mask[:, 1:] != mask[:, :-1]
+    boundary[:, :-1] |= mask[:, :-1] != mask[:, 1:]
+    return boundary & (mask > 0)
+
+
 def per_key_outputs_complete(out_dir: Path, combined: ProfileRecord) -> bool:
     expected = (
         out_dir / "features" / f"{combined.stem}_per_cell_fusion_features.csv",
         out_dir / "predictions" / f"{combined.stem}_per_cell_predictions.csv",
+        out_dir / "dead_objects" / f"{combined.stem}_dead_object_features.csv",
         out_dir / "summaries" / f"{combined.stem}_summary.csv",
+        out_dir / "masks" / "cell_state" / f"{combined.stem}_cell_state_masks.tif",
+        out_dir / "masks" / "confirmed_dead" / f"{combined.stem}_confirmed_dead_masks.tif",
+        out_dir / "overlap_masks" / f"{combined.stem}_cell_dead_overlap_masks.tif",
         out_dir / "qc" / "label_overlays" / f"{combined.stem}_state_overlay.png",
+        out_dir / "qc" / "dead_object_overlays" / f"{combined.stem}_dead_object_overlay.png",
+        out_dir / "qc" / "overlap_state_overlays" / f"{combined.stem}_overlap_state_overlay.png",
     )
     return all(path.is_file() and path.stat().st_size > 0 for path in expected)
 
@@ -1009,6 +1378,114 @@ def make_classification_overlay(
     overlay[colored] = (1.0 - alpha) * overlay[colored] + alpha * label_colors[masks[colored]]
     side_by_side = np.concatenate([base, overlay], axis=1)
     save_rgb_png(out_path, side_by_side)
+
+
+def make_dead_object_overlay(
+    raw_rgb: np.ndarray,
+    dead_raw: np.ndarray | None,
+    dead_mask: np.ndarray | None,
+    rows: list[dict[str, Any]],
+    out_path: Path,
+    alpha: float,
+) -> None:
+    combined_panel = normalize_rgb(raw_rgb)
+    if dead_raw is None:
+        dead_panel = np.zeros_like(combined_panel)
+    else:
+        gray = normalize_rgb(np.repeat(dead_raw[:, :, None], 3, axis=2))
+        dead_panel = gray.copy()
+    object_panel = dead_panel.copy()
+    if dead_mask is not None and dead_mask.size and int(dead_mask.max()) > 0:
+        max_label = int(dead_mask.max())
+        label_colors = np.zeros((max_label + 1, 3), dtype=np.float32)
+        has_color = np.zeros(max_label + 1, dtype=bool)
+        relation_colors = {
+            "same_cell": np.array([0.0, 0.35, 1.0], dtype=np.float32),
+            "dead_only": np.array([1.0, 0.75, 0.0], dtype=np.float32),
+            "adjacent_dead": np.array([1.0, 0.0, 0.8], dtype=np.float32),
+            "overlapping_live_dead_multi_nucleus": np.array([0.0, 0.9, 1.0], dtype=np.float32),
+            "live_with_death_signal": np.array([0.15, 0.65, 1.0], dtype=np.float32),
+            "adjacent_or_overlapping_dead_uncertain": np.array([0.55, 0.2, 1.0], dtype=np.float32),
+            "adjacent_candidate": np.array([0.55, 0.35, 0.55], dtype=np.float32),
+            "merged_multiple_objects": np.array([0.0, 1.0, 1.0], dtype=np.float32),
+            "unassigned_candidate": np.array([0.6, 0.6, 0.6], dtype=np.float32),
+            "rejected_signal": np.array([0.25, 0.25, 0.25], dtype=np.float32),
+        }
+        for row in rows:
+            mask_id = int(row["dead_mask_id"])
+            if 0 < mask_id <= max_label:
+                relation = str(row["association_relation"])
+                label_colors[mask_id] = relation_colors.get(relation, relation_colors["unassigned_candidate"])
+                has_color[mask_id] = True
+        colored = has_color[dead_mask]
+        object_panel[colored] = (
+            (1.0 - alpha) * object_panel[colored]
+            + alpha * label_colors[dead_mask[colored]]
+        )
+    save_rgb_png(out_path, np.concatenate([combined_panel, dead_panel, object_panel], axis=1))
+
+
+def make_overlap_state_overlay(
+    raw_rgb: np.ndarray,
+    nuclei_raw: np.ndarray | None,
+    nuclei_mask: np.ndarray | None,
+    dead_raw: np.ndarray | None,
+    cell_instance_mask: np.ndarray,
+    confirmed_dead_mask: np.ndarray,
+    prediction_rows: list[dict[str, Any]],
+    out_path: Path,
+    alpha: float,
+) -> None:
+    base = normalize_rgb(raw_rgb)
+    nuclei_panel = (
+        np.zeros_like(base)
+        if nuclei_raw is None
+        else normalize_rgb(np.repeat(nuclei_raw[:, :, None], 3, axis=2))
+    )
+    if nuclei_mask is not None and nuclei_mask.size:
+        nuclei_pixels = nuclei_mask > 0
+        nuclei_panel[nuclei_pixels] = (
+            0.45 * nuclei_panel[nuclei_pixels]
+            + 0.55 * np.array([0.0, 1.0, 0.85], dtype=np.float32)
+        )
+        nuclei_panel[label_boundaries(nuclei_mask)] = np.array([1.0, 1.0, 0.0], dtype=np.float32)
+
+    dead_panel = (
+        np.zeros_like(base)
+        if dead_raw is None
+        else normalize_rgb(np.repeat(dead_raw[:, :, None], 3, axis=2))
+    )
+    confirmed_pixels = confirmed_dead_mask > 0
+    dead_panel[confirmed_pixels] = (
+        0.15 * dead_panel[confirmed_pixels]
+        + 0.85 * np.array([0.0, 0.55, 1.0], dtype=np.float32)
+    )
+
+    max_cell = int(cell_instance_mask.max()) if cell_instance_mask.size else 0
+    colors = np.zeros((max_cell + 1, 3), dtype=np.float32)
+    has_color = np.zeros(max_cell + 1, dtype=bool)
+    for row in prediction_rows:
+        label = int(row["mask_id"])
+        if 0 < label <= max_cell:
+            colors[label] = STATE_COLORS.get(str(row["state"]), STATE_COLORS["uncertain"])
+            has_color[label] = str(row["state"]) != "artifact"
+    cell_panel = base.copy()
+    cell_pixels = has_color[cell_instance_mask]
+    cell_panel[cell_pixels] = (
+        (1.0 - alpha) * cell_panel[cell_pixels]
+        + alpha * colors[cell_instance_mask[cell_pixels]]
+    )
+
+    overlap_panel = cell_panel.copy()
+    overlap_panel[confirmed_pixels] = (
+        0.10 * overlap_panel[confirmed_pixels]
+        + 0.90 * np.array([0.0, 0.55, 1.0], dtype=np.float32)
+    )
+    overlap_panel[label_boundaries(confirmed_dead_mask)] = np.array([0.0, 1.0, 1.0], dtype=np.float32)
+    save_rgb_png(
+        out_path,
+        np.concatenate([base, nuclei_panel, dead_panel, cell_panel, overlap_panel], axis=1),
+    )
 
 
 def summary_for_image(image_id: str, key: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1069,7 +1546,20 @@ def process_one(
     features = combined_rgb_features(raw_rgb, combined_mask, combined_stats)
 
     bf_stats = load_optional_stats(records_by_profile, "Brightfield", key)
-    nuclei_stats = load_optional_stats(records_by_profile, "Nuclei", key)
+    nucleus_record = records_by_profile.get("Nuclei", {}).get(key)
+    nuclei_mask = None
+    nuclei_raw = None
+    if nucleus_record is not None:
+        if nucleus_record.mask_path.exists():
+            nuclei_mask = read_mask(nucleus_record.mask_path)
+            if nuclei_mask.shape != combined_mask.shape:
+                raise ValueError(
+                    f"Nuclei mask shape {nuclei_mask.shape} does not match Combined mask "
+                    f"shape {combined_mask.shape} for {key}"
+                )
+        if nucleus_record.image_path is not None and nucleus_record.image_path.exists():
+            nuclei_raw = scalar_raw(read_raw_image(nucleus_record.image_path))
+    nuclei_stats = label_stats(nuclei_mask) if nuclei_mask is not None else None
     bf_matches = nearest_label_matches(
         combined_stats.labels,
         combined_stats.centroids[combined_stats.labels],
@@ -1092,7 +1582,35 @@ def process_one(
             dead_raw = scalar_raw(read_raw_image(dead_record.image_path))
         if dead_record.mask_path.exists():
             dead_mask = read_mask(dead_record.mask_path)
-    dead_evidence = compute_dead_evidence(dead_raw, dead_mask, combined_mask, combined_stats, args)
+    local_dead_rgb_features = (
+        combined_rgb_features(raw_rgb, dead_mask, label_stats(dead_mask))
+        if dead_mask is not None and int(dead_mask.max()) > 0
+        else {}
+    )
+    dead_result = compute_dead_evidence(dead_raw, dead_mask, combined_mask, combined_stats, args)
+    dead_evidence = assign_dead_object_relations(
+        dead_result,
+        features,
+        local_dead_rgb_features,
+        args,
+    )
+    nucleus_evidence = dead_object_nucleus_evidence(
+        dead_result,
+        dead_mask,
+        nuclei_mask,
+        nuclei_stats,
+        nuclei_inside,
+        args.nuclei_match_distance,
+    )
+    apply_nucleus_aware_overlap_relations(dead_result, nucleus_evidence)
+    object_rows = dead_object_rows(
+        combined.stem,
+        key,
+        dead_result,
+        local_dead_rgb_features,
+        nucleus_evidence,
+        args,
+    )
 
     rows: list[dict[str, Any]] = []
     pred_rows: list[dict[str, Any]] = []
@@ -1131,6 +1649,7 @@ def process_one(
                 "nuclei_centroids_inside": nuclei_inside_count,
                 "dead_mask_id": dead.label if dead else 0,
                 "dead_match_mode": dead.match_mode if dead else "",
+                "dead_association_relation": dead.association_relation if dead else "",
                 "dead_distance": dead.distance if dead else "",
                 "dead_overlap_pixels": dead.overlap_pixels if dead else 0,
                 "dead_overlap_fraction": dead.dead_overlap_fraction if dead else "",
@@ -1207,6 +1726,7 @@ def process_one(
         "nuclei_centroids_inside",
         "dead_mask_id",
         "dead_match_mode",
+        "dead_association_relation",
         "dead_distance",
         "dead_overlap_pixels",
         "dead_overlap_fraction",
@@ -1234,23 +1754,180 @@ def process_one(
         "nuclei_mask_id",
         "classification_confidence",
     ]
+    dead_object_fields = [
+        "image_id",
+        "key",
+        "well",
+        "site",
+        "day",
+        "hour",
+        "minute",
+        "elapsed_hours",
+        "dead_mask_id",
+        "source",
+        "area",
+        "aspect",
+        "centroid_y",
+        "centroid_x",
+        "bbox_y0",
+        "bbox_x0",
+        "bbox_y1",
+        "bbox_x1",
+        "assigned_combined_mask_id",
+        "match_mode",
+        "association_relation",
+        "distance",
+        "overlap_pixels",
+        "dead_overlap_fraction",
+        "combined_overlap_fraction",
+        "raw_mean",
+        "raw_p90",
+        "raw_max",
+        "bg_median",
+        "bg_sigma",
+        "mean_delta",
+        "p90_delta",
+        "snr",
+        "keep_signal",
+        "strong_direct",
+        "dual_channel_confirmed",
+        "confirmed_dead_object",
+        "supplemental_dead_object",
+        "local_rgb_state",
+        "local_rgb_reason",
+        "local_median_r",
+        "local_median_g",
+        "local_median_b",
+        "local_r_frac",
+        "local_g_frac",
+        "local_b_frac",
+        "local_blue_excess",
+        "local_red_excess",
+        "combined_nuclei_count",
+        "dead_object_nuclei_inside_count",
+        "dead_object_nearby_nuclei_count",
+        "nearest_nucleus_distance",
+        "dead_nucleus_overlap_fraction",
+        "nucleus_supported_relation",
+    ]
     feature_path = out_dir / "features" / f"{combined.stem}_per_cell_fusion_features.csv"
     prediction_path = out_dir / "predictions" / f"{combined.stem}_per_cell_predictions.csv"
+    dead_object_path = out_dir / "dead_objects" / f"{combined.stem}_dead_object_features.csv"
     summary_path = out_dir / "summaries" / f"{combined.stem}_summary.csv"
+    cell_state_mask_path = (
+        out_dir / "masks" / "cell_state" / f"{combined.stem}_cell_state_masks.tif"
+    )
+    confirmed_dead_mask_path = (
+        out_dir / "masks" / "confirmed_dead" / f"{combined.stem}_confirmed_dead_masks.tif"
+    )
+    overlap_mask_path = out_dir / "overlap_masks" / f"{combined.stem}_cell_dead_overlap_masks.tif"
     overlay_path = out_dir / "qc" / "label_overlays" / f"{combined.stem}_state_overlay.png"
+    dead_object_overlay_path = (
+        out_dir / "qc" / "dead_object_overlays" / f"{combined.stem}_dead_object_overlay.png"
+    )
+    overlap_overlay_path = (
+        out_dir / "qc" / "overlap_state_overlays" / f"{combined.stem}_overlap_state_overlay.png"
+    )
+    cell_state_mask, confirmed_dead_mask, overlap_mask = build_cell_dead_overlap_masks(
+        combined_mask,
+        dead_mask,
+        pred_rows,
+        object_rows,
+    )
     if args.force or not feature_path.exists():
         write_rows(feature_path, rows, feature_fields)
     if args.force or not prediction_path.exists():
         write_rows(prediction_path, pred_rows, prediction_fields)
+    if args.force or not dead_object_path.exists():
+        write_rows(dead_object_path, object_rows, dead_object_fields)
+    if args.force or not cell_state_mask_path.exists():
+        write_label_tiff(cell_state_mask_path, cell_state_mask, "YX")
+    if args.force or not confirmed_dead_mask_path.exists():
+        write_label_tiff(confirmed_dead_mask_path, confirmed_dead_mask, "YX")
+    if args.force or not overlap_mask_path.exists():
+        write_label_tiff(overlap_mask_path, overlap_mask, "CYX")
     summary = summary_for_image(combined.stem, key, pred_rows_with_feature_counts(pred_rows, rows))
-    nucleus_record = records_by_profile.get("Nuclei", {}).get(key)
+    summary["segmented_dead_object_count"] = len(object_rows)
+    summary["retained_dead_object_count"] = sum(bool(row["keep_signal"]) for row in object_rows)
+    summary["strong_dead_object_count"] = sum(
+        bool(row["keep_signal"]) and bool(row["strong_direct"]) for row in object_rows
+    )
+    summary["confirmed_dead_object_count"] = sum(
+        bool(row["confirmed_dead_object"]) for row in object_rows
+    )
+    summary["dead_only_object_count"] = sum(
+        row["association_relation"] == "dead_only" and bool(row["confirmed_dead_object"])
+        for row in object_rows
+    )
+    summary["adjacent_dead_object_count"] = sum(
+        row["association_relation"]
+        in {
+            "adjacent_dead",
+            "overlapping_live_dead_multi_nucleus",
+            "live_with_death_signal",
+            "adjacent_or_overlapping_dead_uncertain",
+        }
+        and bool(row["confirmed_dead_object"])
+        for row in object_rows
+    )
+    summary["overlapping_live_dead_multi_nucleus_count"] = sum(
+        row["association_relation"] == "overlapping_live_dead_multi_nucleus"
+        and bool(row["confirmed_dead_object"])
+        for row in object_rows
+    )
+    summary["live_with_death_signal_count"] = sum(
+        row["association_relation"] == "live_with_death_signal"
+        and bool(row["confirmed_dead_object"])
+        for row in object_rows
+    )
+    summary["nucleus_unresolved_dead_overlap_count"] = sum(
+        row["association_relation"] == "adjacent_or_overlapping_dead_uncertain"
+        and bool(row["confirmed_dead_object"])
+        for row in object_rows
+    )
+    summary["merged_multiple_dead_object_count"] = sum(
+        row["association_relation"] == "merged_multiple_objects" and bool(row["confirmed_dead_object"])
+        for row in object_rows
+    )
+    summary["supplemental_dead_object_count"] = sum(
+        bool(row["supplemental_dead_object"]) for row in object_rows
+    )
+    summary["object_aware_dead_count"] = (
+        int(summary["dead_cell_count"]) + int(summary["supplemental_dead_object_count"])
+    )
     summary["nuclei_evidence_mask_kind"] = nucleus_record.mask_kind if nucleus_record is not None else "missing"
     summary["nuclei_evidence_mask_path"] = str(nucleus_record.mask_path) if nucleus_record is not None else ""
     if args.force or not summary_path.exists():
         write_rows(summary_path, [summary], list(summary.keys()))
     if args.force or not overlay_path.exists():
         make_classification_overlay(raw_rgb, combined_mask, pred_rows, overlay_path, args.overlay_alpha)
-    print(f"key={key} features={feature_path} predictions={prediction_path} summary={summary_path} overlay={overlay_path}")
+    if args.force or not dead_object_overlay_path.exists():
+        make_dead_object_overlay(
+            raw_rgb,
+            dead_raw,
+            dead_mask,
+            object_rows,
+            dead_object_overlay_path,
+            args.overlay_alpha,
+        )
+    if args.force or not overlap_overlay_path.exists():
+        make_overlap_state_overlay(
+            raw_rgb,
+            nuclei_raw,
+            nuclei_mask,
+            dead_raw,
+            cell_state_mask,
+            confirmed_dead_mask,
+            pred_rows,
+            overlap_overlay_path,
+            args.overlay_alpha,
+        )
+    print(
+        f"key={key} features={feature_path} predictions={prediction_path} "
+        f"dead_objects={dead_object_path} summary={summary_path} overlap_masks={overlap_mask_path} "
+        f"overlay={overlay_path} dead_object_overlay={dead_object_overlay_path} "
+        f"overlap_overlay={overlap_overlay_path}"
+    )
     return summary
 
 
@@ -1284,11 +1961,20 @@ def default_out_dir(args: argparse.Namespace) -> Path:
     raise SystemExit("Cannot infer output directory.")
 
 
-def merge_summary_rows(out_dir: Path, force: bool) -> Path:
+def merge_summary_rows(out_dir: Path, force: bool, timepoint: str | None = None) -> Path:
     summaries_dir = out_dir / "summaries"
     summary_paths = sorted(path for path in summaries_dir.glob("*_summary.csv") if path.name != "cell_count_summary.csv")
+    if timepoint is not None:
+        summary_paths = [
+            path
+            for path in summary_paths
+            if extract_key_and_timepoint(path)[1] == timepoint
+        ]
     if not summary_paths:
-        raise SystemExit(f"No per-image summary CSVs found under {summaries_dir}")
+        raise SystemExit(
+            f"No per-image summary CSVs found under {summaries_dir} "
+            f"for timepoint={timepoint or 'all'}"
+        )
 
     rows: list[dict[str, Any]] = []
     fieldnames: list[str] | None = None
@@ -1310,8 +1996,9 @@ def merge_summary_rows(out_dir: Path, force: bool) -> Path:
 
 def main() -> None:
     args = parse_args()
+    selected_timepoint = normalize_timepoint(args.timepoint) if args.timepoint is not None else None
     if args.merge_summaries_only:
-        merge_summary_rows(default_out_dir(args), args.force)
+        merge_summary_rows(default_out_dir(args), args.force, selected_timepoint)
         return
 
     if args.field_record is not None:
@@ -1324,11 +2011,22 @@ def main() -> None:
     if not combined_records:
         raise SystemExit("No Combined records found. Check --run-root/--combined-run and segmentation summaries.")
     keys = sorted(combined_records)
+    keys = select_keys(keys, selected_timepoint)
     if args.key:
         wanted = set(args.key)
         keys = [key for key in keys if key in wanted]
     if args.limit is not None:
         keys = keys[: args.limit]
+    if not keys:
+        raise SystemExit(
+            f"No Combined records matched timepoint={selected_timepoint or 'all'} and the requested keys."
+        )
+    for profile in PROFILES:
+        missing = [key for key in keys if key not in records_by_profile[profile]]
+        if missing:
+            raise SystemExit(
+                f"{profile} is missing {len(missing)} selected records; examples: {missing[:5]}"
+            )
     out_dir = default_out_dir(args)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1336,6 +2034,7 @@ def main() -> None:
     for profile in PROFILES:
         print(f"n_{profile.lower()}={len(records_by_profile[profile])}")
     print(f"n_selected={len(keys)}")
+    print(f"selected_timepoint={selected_timepoint or 'all'}")
     print(f"record_source={record_source}")
     print(f"out_dir={out_dir}")
     print(f"prefer_nucleus_core_masks={args.prefer_nucleus_core_masks}")

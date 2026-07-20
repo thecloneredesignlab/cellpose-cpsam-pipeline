@@ -1,10 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-BASE="/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Test1"
-PROJECT_DIR="${PROJECT_DIR:-$BASE/cellpose-cpsam-pipeline_v2}"
+BASE="/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide"
+PROJECT_DIR="${PROJECT_DIR:-$BASE/cellpose-cpsam-pipeline-v3}"
 INPUT_ROOT="${INPUT_ROOT:-$BASE/20260619_SUM159_Doxorubicin_Cyclophosphamide/20260626_SUM159_AC_Exp1_SeparateImages}"
-RUN_ROOT="${RUN_ROOT:-$BASE/20260619_SUM159_Doxorubicin_Cyclophosphamide/results/20260626_SUM159_AC_Exp1_SeparateImages_cpsam_v2_profiles}"
+RUN_ROOT="${RUN_ROOT:-$BASE/20260619_SUM159_Doxorubicin_Cyclophosphamide/results/full_fusion_shape_strict_20260711_155940}"
 OUT_DIR="${OUT_DIR:-$RUN_ROOT/classification_fusion}"
 
 WORKER="$PROJECT_DIR/cellpose_pipeline/hpc/analysisi/02_run_multichannel_classification_fusion.sh"

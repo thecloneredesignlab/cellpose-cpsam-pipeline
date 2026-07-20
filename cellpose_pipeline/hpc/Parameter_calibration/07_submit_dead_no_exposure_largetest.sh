@@ -9,8 +9,8 @@
 
 set -euo pipefail
 
-BASE="/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Test1"
-PROJECT_DIR="${PROJECT_DIR:-$BASE/cellpose-cpsam-pipeline_v2}"
+BASE="/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide"
+PROJECT_DIR="${PROJECT_DIR:-$BASE/cellpose-cpsam-pipeline-v3}"
 INPUT_ROOT="${INPUT_ROOT:-$PROJECT_DIR/SUM159_AC_Exp1_SeparateImages_largetest}"
 BASELINE_RUN="${BASELINE_RUN:-$PROJECT_DIR/segmentation_parameter_tuning/largetest_full_workflow_updated_profiles_a30_20260707_233255}"
 CONFIG_JSON="${CONFIG_JSON:-$PROJECT_DIR/cellpose_pipeline/configs/dead_no_exposure_configs.json}"

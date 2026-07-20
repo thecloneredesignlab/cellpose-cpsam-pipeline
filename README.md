@@ -53,8 +53,8 @@ The following sections describe the full workflow launched by the production HPC
 
 ### Step 7: Post-segmentation field manifest
 
-- **Reads:** Four-channel raw images, four-channel instance masks, nucleus-core masks, Dead summaries, and the canonical field-key list.
-- **Process:** Index the large result tree once, validate every required input for every field, and write one compact JSON record per field.
+- **Reads:** Four-channel raw images, four-channel instance masks, nucleus-core masks, Dead summaries, and either the canonical field-key list or an exact timepoint selector.
+- **Process:** Index the large result tree once, select the requested keys directly from the complete source trees, validate every required input for every selected field, and write one compact JSON record per field.
 - **Produces:** `field_manifest.tsv`, `records/<well>/<field>.json`, a manifest summary, and a success marker.
 - **Purpose:** The production result tree contains many files. Re-scanning it in every array task would be slow and could select an incorrect same-named file. The manifest fixes the exact input paths once for all post-segmentation stages.
 
@@ -97,6 +97,31 @@ full_fusion_shape_strict_<timestamp>/
   logs/                                Slurm stdout/stderr
 ```
 
+### Select d0 directly from complete raw-image and result trees
+
+No separately copied d0 source directory is required. The manifest builder
+accepts `d0` as an alias for the exact `00d00h00m` token, ignores all other
+timepoints, and keeps the original absolute paths in every field record.
+
+```bash
+python -I cellpose_pipeline/scripts/06_build_postsegmentation_field_manifest.py \
+  --input-root /path/to/complete/SeparateImages \
+  --run-root /path/to/complete/full_fusion_shape_strict_run \
+  --timepoint d0 \
+  --out-dir results/dead_d0_classification_audit/d0_field_manifest
+```
+
+For direct single-process classification on the original cell-mask branch, the
+same selection can be applied without a manifest:
+
+```bash
+python -I cellpose_pipeline/scripts/08_fuse_multichannel_classification.py \
+  --input-root /path/to/complete/SeparateImages \
+  --run-root /path/to/complete/full_fusion_shape_strict_run \
+  --timepoint d0 \
+  --out-dir results/dead_d0_classification_audit/object_aware_d0
+```
+
 ## 2. HPC Submission Commands
 
 The production entry point contains the current server defaults for the project, input, and result directories. Before the first run, or whenever storage locations change, verify `BASE`, `PROJECT_DIR`, `INPUT_ROOT`, and `RESULTS_ROOT` at the top of the entry point. The current production configuration expects `108800` images across four channels and skips `Dead_Uncalibrated/`.
@@ -104,7 +129,7 @@ The production entry point contains the current server defaults for the project,
 ### 2.1 Validate tasks and dependencies without submitting jobs
 
 ```bash
-cd /share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Test1/cellpose-cpsam-pipeline_v2
+cd /share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/cellpose-cpsam-pipeline-v3
 
 DRY_RUN_SUBMIT=1 \
 bash cellpose_pipeline/hpc/submit_full_fusion_production.sh
@@ -115,7 +140,7 @@ The dry run checks input counts, task lists, resources, and the complete depende
 ### 2.2 Submit the complete production workflow
 
 ```bash
-cd /share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Test1/cellpose-cpsam-pipeline_v2
+cd /share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/cellpose-cpsam-pipeline-v3
 
 bash cellpose_pipeline/hpc/submit_full_fusion_production.sh
 ```

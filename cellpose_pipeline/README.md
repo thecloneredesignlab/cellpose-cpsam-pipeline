@@ -21,7 +21,7 @@ The code is separated by purpose:
 Run commands from the experiment root:
 
 ```bash
-cd /Volumes/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Test1
+cd /Volumes/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide
 ```
 
 1. Build an image inventory:

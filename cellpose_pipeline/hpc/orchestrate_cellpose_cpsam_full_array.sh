@@ -1,9 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Test1/cellpose-cpsam-pipeline_v2}"
-INPUT_ROOT="${INPUT_ROOT:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Test1/20260619_SUM159_Doxorubicin_Cyclophosphamide/20260626_SUM159_AC_Exp1_SeparateImages}"
-OUT_ROOT="${OUT_ROOT:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Test1/20260619_SUM159_Doxorubicin_Cyclophosphamide/results/20260626_SUM159_AC_Exp1_calibrated_dead_dual_branch_$(date +%Y%m%d_%H%M%S)}"
+PROJECT_DIR="${PROJECT_DIR:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/cellpose-cpsam-pipeline-v3}"
+INPUT_ROOT="${INPUT_ROOT:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/20260619_SUM159_Doxorubicin_Cyclophosphamide/20260626_SUM159_AC_Exp1_SeparateImages}"
+OUT_ROOT="${OUT_ROOT:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/20260619_SUM159_Doxorubicin_Cyclophosphamide/results/full_fusion_shape_strict_$(date +%Y%m%d_%H%M%S)}"
 RUN_NAME="${RUN_NAME:-.}"
 if [[ "$RUN_NAME" == "." || -z "$RUN_NAME" ]]; then
   WORKFLOW_RUN_DIR="$OUT_ROOT"
@@ -330,7 +330,7 @@ elif [[ "$POSTSEG_ARRAY_MAX_CONCURRENT" != "0" ]]; then
 fi
 
 SBATCH_ARGS=(
-  --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}"
+  --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}"
   --array "1-$N_MAIN_TASKS"
   --output "$LOG_DIR/%x_%A_%a.out"
   --error "$LOG_DIR/%x_%A_%a.err"
@@ -390,7 +390,7 @@ NUCLEATED_BRANCH_MERGE_SBATCH_ARGS=()
 FIELD_MANIFEST_SBATCH_ARGS=()
 if [[ "$ENABLE_FUSION_CLASSIFICATION" != "0" ]]; then
   FUSION_SBATCH_ARGS=(
-    --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}_fusion"
+    --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_fusion"
     --array "$POSTSEG_ARRAY_SPEC"
     --output "$LOG_DIR/%x_%A_%a.out"
     --error "$LOG_DIR/%x_%A_%a.err"
@@ -399,7 +399,7 @@ if [[ "$ENABLE_FUSION_CLASSIFICATION" != "0" ]]; then
     --mem "${FUSION_SBATCH_MEM:-4G}"
   )
   FIELD_MANIFEST_SBATCH_ARGS=(
-    --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}_postseg_manifest"
+    --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_postseg_manifest"
     --output "$LOG_DIR/%x_%j.out"
     --error "$LOG_DIR/%x_%j.err"
     --time "${FIELD_MANIFEST_SBATCH_TIME:-12:00:00}"
@@ -407,7 +407,7 @@ if [[ "$ENABLE_FUSION_CLASSIFICATION" != "0" ]]; then
     --mem "${FIELD_MANIFEST_SBATCH_MEM:-4G}"
   )
   FUSION_MERGE_SBATCH_ARGS=(
-    --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}_fusion_merge"
+    --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_fusion_merge"
     --output "$LOG_DIR/%x_%j.out"
     --error "$LOG_DIR/%x_%j.err"
     --time "${FUSION_MERGE_SBATCH_TIME:-12:00:00}"
@@ -436,7 +436,7 @@ if [[ "$ENABLE_FUSION_CLASSIFICATION" != "0" ]]; then
 fi
 if [[ "$ENABLE_SHAPE_STRICT" != "0" ]]; then
   SHAPE_SBATCH_ARGS=(
-    --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}_shape_strict"
+    --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_shape_strict"
     --array "$POSTSEG_ARRAY_SPEC"
     --output "$LOG_DIR/%x_%A_%a.out"
     --error "$LOG_DIR/%x_%A_%a.err"
@@ -445,7 +445,7 @@ if [[ "$ENABLE_SHAPE_STRICT" != "0" ]]; then
     --mem "${SHAPE_SBATCH_MEM:-8G}"
   )
   SHAPE_FINALIZE_SBATCH_ARGS=(
-    --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}_shape_finalize"
+    --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_shape_finalize"
     --output "$LOG_DIR/%x_%j.out"
     --error "$LOG_DIR/%x_%j.err"
     --time "${SHAPE_FINALIZE_SBATCH_TIME:-12:00:00}"
@@ -470,7 +470,7 @@ fi
 
 if [[ "$ENABLE_DEAD_CALIBRATION" != "0" ]]; then
   CALIBRATION_SBATCH_ARGS=(
-    --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}_dead_cal"
+    --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_dead_cal"
     --array "1-$CALIBRATION_SHARD_COUNT"
     --output "$LOG_DIR/%x_%A_%a.out"
     --error "$LOG_DIR/%x_%A_%a.err"
@@ -479,7 +479,7 @@ if [[ "$ENABLE_DEAD_CALIBRATION" != "0" ]]; then
     --mem "${CALIBRATION_SBATCH_MEM:-16G}"
   )
   CALIBRATION_MERGE_SBATCH_ARGS=(
-    --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}_dead_cal_merge"
+    --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_dead_cal_merge"
     --output "$LOG_DIR/%x_%j.out"
     --error "$LOG_DIR/%x_%j.err"
     --time "${CALIBRATION_MERGE_SBATCH_TIME:-12:00:00}"
@@ -500,7 +500,7 @@ fi
 
 if [[ "$ENABLE_DEAD_CONSENSUS" != "0" ]]; then
   DEAD_CONSENSUS_MERGE_SBATCH_ARGS=(
-    --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}_dead_merge"
+    --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_dead_merge"
     --output "$LOG_DIR/%x_%j.out"
     --error "$LOG_DIR/%x_%j.err"
     --time "${DEAD_CONSENSUS_MERGE_SBATCH_TIME:-12:00:00}"
@@ -514,7 +514,7 @@ fi
 
 if [[ "$ENABLE_NUCLEATED_BRANCH" != "0" ]]; then
   NUCLEATED_BRANCH_SBATCH_ARGS=(
-    --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}_nucleated"
+    --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_nucleated"
     --array "$POSTSEG_ARRAY_SPEC"
     --output "$LOG_DIR/%x_%A_%a.out"
     --error "$LOG_DIR/%x_%A_%a.err"
@@ -523,7 +523,7 @@ if [[ "$ENABLE_NUCLEATED_BRANCH" != "0" ]]; then
     --mem "${NUCLEATED_BRANCH_SBATCH_MEM:-8G}"
   )
   NUCLEATED_BRANCH_MERGE_SBATCH_ARGS=(
-    --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}_nucleated_merge"
+    --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_nucleated_merge"
     --output "$LOG_DIR/%x_%j.out"
     --error "$LOG_DIR/%x_%j.err"
     --time "${NUCLEATED_BRANCH_MERGE_SBATCH_TIME:-12:00:00}"
@@ -557,7 +557,7 @@ MAIN_DEP_IDS=()
 if [[ "$AUTO_DENSITY_PIPELINE" == "1" ]]; then
   HIGH_DENSITY_CALLS_CSV="$AUTO_DENSITY_CALLS_CSV"
   NUCLEI_SBATCH_ARGS=(
-    --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}_nuclei"
+    --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_nuclei"
     --array "1-$N_NUCLEI_TASKS"
     --output "$LOG_DIR/%x_%A_%a.out"
     --error "$LOG_DIR/%x_%A_%a.err"
@@ -578,7 +578,7 @@ if [[ "$AUTO_DENSITY_PIPELINE" == "1" ]]; then
     NUCLEI_SBATCH_ARGS+=(--gres "$SBATCH_GRES_VALUE")
   fi
   DENSITY_SBATCH_ARGS=(
-    --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}_density_table"
+    --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_density_table"
     --output "$LOG_DIR/%x_%j.out"
     --error "$LOG_DIR/%x_%j.err"
     --time "${DENSITY_TABLE_SBATCH_TIME:-12:00:00}"
@@ -881,7 +881,7 @@ if [[ "$ENABLE_NUCLEATED_BRANCH" != "0" ]]; then
 
   NUCLEATED_FUSION_SUBMIT_OUTPUT="$(
     "${CPU_ONLY_SBATCH_ENV[@]}" sbatch "${FUSION_SBATCH_ARGS[@]}" \
-      --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}_fusion_nucleated" \
+      --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_fusion_nucleated" \
       --dependency "afterok:$NUCLEATED_BRANCH_MERGE_JOB_ID" \
       --export=ALL,PROJECT_DIR="$PROJECT_DIR",INPUT_ROOT="$INPUT_ROOT",RUN_ROOT="$WORKFLOW_RUN_DIR",RUN_NAME=.,OUT_DIR="$NUCLEATED_FUSION_OUT_DIR",TASK_LIST_FUSION="$TASK_LIST_FUSION",FIELD_MANIFEST_DIR="$FIELD_MANIFEST_DIR",CELL_MASK_BRANCH=nucleated,COMBINED_RUN="$NUCLEATED_BRANCH_ROOT/Combined",BRIGHTFIELD_RUN="$NUCLEATED_BRANCH_ROOT/Brightfield",DEAD_RUN="$WORKFLOW_RUN_DIR/Dead",NUCLEI_RUN="$WORKFLOW_RUN_DIR/Nuclei",FORCE_FUSION="${FORCE_FUSION:-0}",CONTINUE_ON_ERROR="${FUSION_CONTINUE_ON_ERROR:-0}" \
       "$FUSION_ARRAY_WORKER"
@@ -890,7 +890,7 @@ if [[ "$ENABLE_NUCLEATED_BRANCH" != "0" ]]; then
   NUCLEATED_FUSION_JOB_ID="$(printf '%s\n' "$NUCLEATED_FUSION_SUBMIT_OUTPUT" | awk '{print $4}')"
   NUCLEATED_FUSION_MERGE_SUBMIT_OUTPUT="$(
     "${CPU_ONLY_SBATCH_ENV[@]}" sbatch "${FUSION_MERGE_SBATCH_ARGS[@]}" \
-      --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}_fusion_nuc_merge" \
+      --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_fusion_nuc_merge" \
       --dependency "afterok:$NUCLEATED_FUSION_JOB_ID" \
       --export=ALL,PROJECT_DIR="$PROJECT_DIR",RUN_ROOT="$WORKFLOW_RUN_DIR",OUT_DIR="$NUCLEATED_FUSION_OUT_DIR",FORCE_FUSION=1 \
       "$FUSION_MERGE_WORKER"
@@ -920,7 +920,7 @@ if [[ "$ENABLE_SHAPE_STRICT" != "0" ]]; then
   if [[ "$ENABLE_NUCLEATED_BRANCH" != "0" ]]; then
     NUCLEATED_SHAPE_SUBMIT_OUTPUT="$(
       "${CPU_ONLY_SBATCH_ENV[@]}" sbatch "${SHAPE_SBATCH_ARGS[@]}" \
-        --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}_shape_nucleated" \
+        --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_shape_nucleated" \
         --dependency "afterok:$NUCLEATED_FUSION_MERGE_JOB_ID" \
         --export=ALL,PROJECT_DIR="$PROJECT_DIR",INPUT_ROOT="$INPUT_ROOT",RUN_ROOT="$WORKFLOW_RUN_DIR",CELL_RUN_ROOT="$NUCLEATED_BRANCH_ROOT",FUSION_ROOT="$NUCLEATED_FUSION_OUT_DIR",SHAPE_ROOT="$NUCLEATED_SHAPE_ROOT",TASK_LIST_SHAPE="$TASK_LIST_FUSION",FIELD_MANIFEST_DIR="$FIELD_MANIFEST_DIR",CELL_MASK_BRANCH=nucleated,FORCE_SHAPE_STRICT="${FORCE_SHAPE_STRICT:-0}" \
         "$SHAPE_ARRAY_WORKER"
@@ -929,7 +929,7 @@ if [[ "$ENABLE_SHAPE_STRICT" != "0" ]]; then
     NUCLEATED_SHAPE_JOB_ID="$(printf '%s\n' "$NUCLEATED_SHAPE_SUBMIT_OUTPUT" | awk '{print $4}')"
     NUCLEATED_SHAPE_FINALIZE_SUBMIT_OUTPUT="$(
       "${CPU_ONLY_SBATCH_ENV[@]}" sbatch "${SHAPE_FINALIZE_SBATCH_ARGS[@]}" \
-        --job-name "${SBATCH_JOB_NAME:-cpsam_v2_profiles}_shape_nuc_finalize" \
+        --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_shape_nuc_finalize" \
         --dependency "afterok:$NUCLEATED_SHAPE_JOB_ID" \
         --export=ALL,PROJECT_DIR="$PROJECT_DIR",INPUT_ROOT="$INPUT_ROOT",RUN_ROOT="$WORKFLOW_RUN_DIR",CELL_RUN_ROOT="$NUCLEATED_BRANCH_ROOT",FUSION_ROOT="$NUCLEATED_FUSION_OUT_DIR",SHAPE_ROOT="$NUCLEATED_SHAPE_ROOT",TASK_LIST_SHAPE="$TASK_LIST_FUSION",FIELD_MANIFEST_DIR="$FIELD_MANIFEST_DIR",CELL_MASK_BRANCH=nucleated \
         "$SHAPE_FINALIZE_WORKER"
@@ -991,4 +991,4 @@ echo "expected_fusion_outputs=$FUSION_OUT_DIR"
 if [[ "$ENABLE_SHAPE_STRICT" != "0" ]]; then
   echo "expected_shape_outputs=$SHAPE_ROOT"
 fi
-echo "logs=$LOG_DIR/${SBATCH_JOB_NAME:-cpsam_v2_profiles}_${JOB_ID}_<task>.out"
+echo "logs=$LOG_DIR/${SBATCH_JOB_NAME:-cpsam_full_fusion}_${JOB_ID}_<task>.out"
