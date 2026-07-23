@@ -18,6 +18,9 @@ CLASSIFICATION_WORKER="${CLASSIFICATION_WORKER:-$SCRIPT_DIR/run_multichannel_cla
 MERGE_WORKER="${MERGE_WORKER:-$SCRIPT_DIR/run_multichannel_classification_fusion_merge.sh}"
 LATE_DEATH_WORKER="${LATE_DEATH_WORKER:-$SCRIPT_DIR/run_late_dead_trajectory_refinement.sh}"
 PLOT_WORKER="${PLOT_WORKER:-$SCRIPT_DIR/analysisi/05_run_well_count_timecourse_plots.sh}"
+DOSE_RESPONSE_WORKER="${DOSE_RESPONSE_WORKER:-$SCRIPT_DIR/analysisi/06_run_dose_response_analysis.sh}"
+REPORT_WORKER="${REPORT_WORKER:-$SCRIPT_DIR/analysisi/07_run_full_classification_report.sh}"
+CALIBRATION_ROOT="${CALIBRATION_ROOT:-$BASE/results/Tests_and_Parameters_calibration/late_dead_trajectory_optimization_20260723_024151}"
 
 FIELD_MANIFEST_DIR="$OUT_ROOT/workflow_status/postsegmentation_manifest"
 TASK_DIR="$OUT_ROOT/workflow_status/task_lists"
@@ -29,6 +32,8 @@ NUCLEATED_BRANCH_ROOT="$SOURCE_RUN_ROOT/nucleated_only"
 SUBMISSION_SUMMARY="$OUT_ROOT/SUBMISSION_SUMMARY.txt"
 ORIGINAL_PLOT_DIR="$OUT_ROOT/analysis/well_count_timecourses/fusion"
 NUCLEATED_PLOT_DIR="$OUT_ROOT/analysis/well_count_timecourses/fusion-nucleated-only"
+DOSE_RESPONSE_DIR="$OUT_ROOT/analysis/dose_response"
+FULL_REPORT_DIR="$OUT_ROOT/analysis/reports"
 
 EXPECTED_FIELDS="${EXPECTED_FIELDS:-27200}"
 JOB_QOS="${JOB_QOS:-xxlarge}"
@@ -50,11 +55,21 @@ MANIFEST_MEM="${MANIFEST_MEM:-4G}"
 PLOT_TIME="${PLOT_TIME:-02:00:00}"
 PLOT_CPUS="${PLOT_CPUS:-1}"
 PLOT_MEM="${PLOT_MEM:-8G}"
+DOSE_RESPONSE_TIME="${DOSE_RESPONSE_TIME:-04:00:00}"
+DOSE_RESPONSE_CPUS="${DOSE_RESPONSE_CPUS:-1}"
+DOSE_RESPONSE_MEM="${DOSE_RESPONSE_MEM:-16G}"
+REPORT_TIME="${REPORT_TIME:-06:00:00}"
+REPORT_CPUS="${REPORT_CPUS:-4}"
+REPORT_MEM="${REPORT_MEM:-32G}"
 EXPECTED_TIMEPOINTS="${EXPECTED_TIMEPOINTS:-85}"
 EXPECTED_SITES="${EXPECTED_SITES:-4}"
+EXPECTED_DOSE_RESPONSE_FILES="${EXPECTED_DOSE_RESPONSE_FILES:-82}"
 PLOT_DPI="${PLOT_DPI:-200}"
+DOSE_DPI="${DOSE_DPI:-220}"
 FORCE_FUSION="${FORCE_FUSION:-1}"
 FORCE_LATE_DEATH="${FORCE_LATE_DEATH:-0}"
+FORCE_DOSE_RESPONSE="${FORCE_DOSE_RESPONSE:-0}"
+FORCE_REPORT="${FORCE_REPORT:-0}"
 DRY_RUN_SUBMIT="${DRY_RUN_SUBMIT:-0}"
 
 required_directories=(
@@ -70,6 +85,7 @@ required_directories=(
   "$SOURCE_RUN_ROOT/Nuclei/nucleus_core_seeds"
   "$NUCLEATED_BRANCH_ROOT/Combined/segmentations"
   "$NUCLEATED_BRANCH_ROOT/Brightfield/segmentations"
+  "$CALIBRATION_ROOT/optimization_v3"
 )
 for required in "${required_directories[@]}"; do
   if [[ ! -d "$required" ]]; then
@@ -82,7 +98,9 @@ for worker in \
   "$CLASSIFICATION_WORKER" \
   "$MERGE_WORKER" \
   "$LATE_DEATH_WORKER" \
-  "$PLOT_WORKER"; do
+  "$PLOT_WORKER" \
+  "$DOSE_RESPONSE_WORKER" \
+  "$REPORT_WORKER"; do
   if [[ ! -x "$worker" ]]; then
     echo "Required production worker is missing or not executable: $worker" >&2
     exit 2
@@ -100,10 +118,17 @@ if [[ ! "$EXPECTED_SITES" =~ ^[1-9][0-9]*$ ]]; then
   echo "EXPECTED_SITES must be a positive integer: $EXPECTED_SITES" >&2
   exit 2
 fi
-if [[ "$DRY_RUN_SUBMIT" != "0" && "$DRY_RUN_SUBMIT" != "1" ]]; then
-  echo "DRY_RUN_SUBMIT must be 0 or 1: $DRY_RUN_SUBMIT" >&2
+if [[ ! "$EXPECTED_DOSE_RESPONSE_FILES" =~ ^[1-9][0-9]*$ ]]; then
+  echo "EXPECTED_DOSE_RESPONSE_FILES must be a positive integer: $EXPECTED_DOSE_RESPONSE_FILES" >&2
   exit 2
 fi
+for flag_name in FORCE_FUSION FORCE_LATE_DEATH FORCE_DOSE_RESPONSE FORCE_REPORT DRY_RUN_SUBMIT; do
+  flag_value="${!flag_name}"
+  if [[ "$flag_value" != "0" && "$flag_value" != "1" ]]; then
+    echo "$flag_name must be 0 or 1: $flag_value" >&2
+    exit 2
+  fi
+done
 if [[ -e "$OUT_ROOT" ]]; then
   echo "Refusing to reuse an existing classification output root: $OUT_ROOT" >&2
   exit 2
@@ -201,6 +226,24 @@ PLOT_SBATCH_ARGS=(
   --cpus-per-task "$PLOT_CPUS"
   --mem "$PLOT_MEM"
 )
+DOSE_RESPONSE_SBATCH_ARGS=(
+  "${COMMON_SBATCH_ARGS[@]}"
+  --job-name "${SBATCH_JOB_PREFIX}_dose_response"
+  --output "$LOG_DIR/%x_%j.out"
+  --error "$LOG_DIR/%x_%j.err"
+  --time "$DOSE_RESPONSE_TIME"
+  --cpus-per-task "$DOSE_RESPONSE_CPUS"
+  --mem "$DOSE_RESPONSE_MEM"
+)
+REPORT_SBATCH_ARGS=(
+  "${COMMON_SBATCH_ARGS[@]}"
+  --job-name "${SBATCH_JOB_PREFIX}_report"
+  --output "$LOG_DIR/%x_%j.out"
+  --error "$LOG_DIR/%x_%j.err"
+  --time "$REPORT_TIME"
+  --cpus-per-task "$REPORT_CPUS"
+  --mem "$REPORT_MEM"
+)
 
 write_submission_summary() {
   {
@@ -220,6 +263,9 @@ write_submission_summary() {
     echo "nucleated_output=$NUCLEATED_OUT_DIR"
     echo "original_well_count_plot=$ORIGINAL_PLOT_DIR/well_live_dead_counts_over_time.png"
     echo "nucleated_well_count_plot=$NUCLEATED_PLOT_DIR/well_live_dead_counts_over_time.png"
+    echo "dose_response_root=$DOSE_RESPONSE_DIR"
+    echo "full_classification_report=$FULL_REPORT_DIR/DEAD_CLASSIFICATION_FULL_COHORT_REPORT.html"
+    echo "calibration_root=$CALIBRATION_ROOT"
     echo "classification_method=cellpose_pipeline/scripts/08_fuse_multichannel_classification.py+cellpose_pipeline/scripts/14_apply_late_dead_trajectory_refinement.py"
     echo "late_death_method_version=late_dead_trajectory_v1_20260723"
     echo "classification_timepoint=all"
@@ -241,6 +287,13 @@ write_submission_summary() {
     echo "plot_time=$PLOT_TIME"
     echo "plot_expected_timepoints=$EXPECTED_TIMEPOINTS"
     echo "plot_expected_sites=$EXPECTED_SITES"
+    echo "dose_response_cpus_per_task=$DOSE_RESPONSE_CPUS"
+    echo "dose_response_mem_per_task=$DOSE_RESPONSE_MEM"
+    echo "dose_response_time=$DOSE_RESPONSE_TIME"
+    echo "dose_response_expected_files=$EXPECTED_DOSE_RESPONSE_FILES"
+    echo "report_cpus_per_task=$REPORT_CPUS"
+    echo "report_mem_per_task=$REPORT_MEM"
+    echo "report_time=$REPORT_TIME"
     echo "manifest_job_id=${MANIFEST_JOB_ID:-not_submitted}"
     echo "original_array_job_id=${ORIGINAL_JOB_ID:-not_submitted}"
     echo "original_merge_job_id=${ORIGINAL_MERGE_JOB_ID:-not_submitted}"
@@ -248,6 +301,8 @@ write_submission_summary() {
     echo "nucleated_merge_job_id=${NUCLEATED_MERGE_JOB_ID:-not_submitted}"
     echo "late_death_refinement_job_id=${LATE_DEATH_JOB_ID:-not_submitted}"
     echo "well_count_plot_job_id=${PLOT_JOB_ID:-not_submitted}"
+    echo "dose_response_job_id=${DOSE_RESPONSE_JOB_ID:-not_submitted}"
+    echo "full_classification_report_job_id=${REPORT_JOB_ID:-not_submitted}"
   } > "$SUBMISSION_SUMMARY"
 }
 
@@ -261,16 +316,20 @@ echo "original_output=$ORIGINAL_OUT_DIR"
 echo "nucleated_output=$NUCLEATED_OUT_DIR"
 echo "original_well_count_plot=$ORIGINAL_PLOT_DIR/well_live_dead_counts_over_time.png"
 echo "nucleated_well_count_plot=$NUCLEATED_PLOT_DIR/well_live_dead_counts_over_time.png"
+echo "dose_response_root=$DOSE_RESPONSE_DIR"
+echo "full_classification_report=$FULL_REPORT_DIR/DEAD_CLASSIFICATION_FULL_COHORT_REPORT.html"
 printf 'manifest_sbatch_arg=%s\n' "${MANIFEST_SBATCH_ARGS[@]}"
 printf 'classification_sbatch_arg=%s\n' "${CLASSIFICATION_SBATCH_ARGS[@]}"
 printf 'merge_sbatch_arg=%s\n' "${MERGE_SBATCH_ARGS[@]}"
 printf 'late_death_sbatch_arg=%s\n' "${LATE_DEATH_SBATCH_ARGS[@]}"
 printf 'plot_sbatch_arg=%s\n' "${PLOT_SBATCH_ARGS[@]}"
+printf 'dose_response_sbatch_arg=%s\n' "${DOSE_RESPONSE_SBATCH_ARGS[@]}"
+printf 'report_sbatch_arg=%s\n' "${REPORT_SBATCH_ARGS[@]}"
 
 if [[ "$DRY_RUN_SUBMIT" == "1" ]]; then
   write_submission_summary
   echo "dry_run_submit=1"
-  echo "dependency_graph=manifest -> {original_array,nucleated_array} -> {original_merge,nucleated_merge} -> late_death_refinement -> well_count_plots"
+  echo "dependency_graph=manifest -> {original_array,nucleated_array} -> {original_merge,nucleated_merge} -> late_death_refinement -> well_count_plots -> dose_response -> full_classification_report"
   exit 0
 fi
 
@@ -331,6 +390,16 @@ PLOT_JOB_ID="$(submit_job "${PLOT_SBATCH_ARGS[@]}" \
   --export=ALL,PROJECT_DIR="$PROJECT_DIR",RESULT_ROOT="$OUT_ROOT",EXPECTED_TIMEPOINTS="$EXPECTED_TIMEPOINTS",EXPECTED_SITES="$EXPECTED_SITES",PLOT_DPI="$PLOT_DPI" \
   "$PLOT_WORKER")"
 
+DOSE_RESPONSE_JOB_ID="$(submit_job "${DOSE_RESPONSE_SBATCH_ARGS[@]}" \
+  --dependency "afterok:$PLOT_JOB_ID" \
+  --export=ALL,PROJECT_DIR="$PROJECT_DIR",RESULT_ROOT="$OUT_ROOT",DOSE_DPI="$DOSE_DPI",EXPECTED_FILES="$EXPECTED_DOSE_RESPONSE_FILES",FORCE_DOSE_RESPONSE="$FORCE_DOSE_RESPONSE" \
+  "$DOSE_RESPONSE_WORKER")"
+
+REPORT_JOB_ID="$(submit_job "${REPORT_SBATCH_ARGS[@]}" \
+  --dependency "afterok:$DOSE_RESPONSE_JOB_ID" \
+  --export=ALL,PROJECT_DIR="$PROJECT_DIR",RESULT_ROOT="$OUT_ROOT",CALIBRATION_ROOT="$CALIBRATION_ROOT",EXPECTED_FIELDS_PER_BRANCH="$EXPECTED_FIELDS",EXPECTED_TIMEPOINTS="$EXPECTED_TIMEPOINTS",EXPECTED_DOSE_RESPONSE_FILES="$EXPECTED_DOSE_RESPONSE_FILES",FORCE_REPORT="$FORCE_REPORT" \
+  "$REPORT_WORKER")"
+
 write_submission_summary
 
 echo "manifest_job_id=$MANIFEST_JOB_ID"
@@ -340,4 +409,6 @@ echo "nucleated_array_job_id=$NUCLEATED_JOB_ID"
 echo "nucleated_merge_job_id=$NUCLEATED_MERGE_JOB_ID"
 echo "late_death_refinement_job_id=$LATE_DEATH_JOB_ID"
 echo "well_count_plot_job_id=$PLOT_JOB_ID"
+echo "dose_response_job_id=$DOSE_RESPONSE_JOB_ID"
+echo "full_classification_report_job_id=$REPORT_JOB_ID"
 echo "submission_summary=$SUBMISSION_SUMMARY"

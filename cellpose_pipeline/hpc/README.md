@@ -17,6 +17,10 @@ post-segmentation manifest
                                       └── late-death trajectory refinement
                                                         │
                                                         └── well-count plots
+                                                                  │
+                                                                  └── dose-response analysis
+                                                                            │
+                                                                            └── full-cohort HTML report
 ```
 
 Both arrays call the production `08_fuse_multichannel_classification.py`, whose
@@ -43,6 +47,26 @@ per-image and per-well/time CSV tables under
 `analysis/well_count_timecourses/{fusion,fusion-nucleated-only}/` in the new
 result root.
 
+The next dependent CPU job rebuilds all 82 dose-response outputs under
+`analysis/dose_response/`: AUC, exact Day-4, exact Day-5, growth-rate
+inhibition, and excess-lethal-fraction analyses for both branches. The final
+job validates the classification and refinement row counts, the zero-failure
+ledger, the 85-time-point contract, the 82-file dose-response inventory, and
+the frozen calibration configuration before writing:
+
+```text
+analysis/reports/
+├── DEAD_CLASSIFICATION_FULL_COHORT_REPORT.html
+├── DEAD_CLASSIFICATION_FULL_COHORT_REPORT.artifact.json
+└── DEAD_CLASSIFICATION_FULL_COHORT_REPORT.build.json
+```
+
+The HTML is self-contained and uses the same navigation, vertically aligned
+before/final QC panels, high-resolution lightbox, zoom, and drag behavior as
+the d0 improvement report. Report generation requires the CellPose Python
+environment, the locally installed Node.js runtime, and the Data Analytics
+report package recorded in the worker.
+
 - `Parameter_calibration/`: numbered tuning, test, validation, and legacy-run
   launchers;
 - `analysisi/`: numbered downstream analysis and partial-analysis launchers.
@@ -53,4 +77,8 @@ of the orchestrator. The numbered production modules include
 `14_apply_late_dead_trajectory_refinement.py`; the parameter-calibration
 wrappers call the same shared implementation so tuning and production cannot
 silently diverge. No script in the two subdirectories is required by the
-default full-production dependency graph.
+default segmentation-to-classification production dependency graph. The
+classification-only entry point explicitly includes analysis workers
+`analysisi/05_run_well_count_timecourse_plots.sh`,
+`analysisi/06_run_dose_response_analysis.sh`, and
+`analysisi/07_run_full_classification_report.sh`.

@@ -257,3 +257,74 @@ script expects the frozen bundle at
 `$OUT/historical_reference` by default, verifies its SHA-256 manifest and
 provenance file, and then invokes `historical-comparison` mode. An alternate
 read-only bundle can be selected with `HISTORICAL_REFERENCE_ROOT=/path/to/bundle`.
+
+## Combined d0 + Day-5 calibration report
+
+`generate_late_dead_d0_d5_calibration_report.py` reports the pre-production
+test and calibration phase, not the full cohort. It reads:
+
+- the frozen 320-field d0 audit and multilevel annotation summary;
+- the saved E9 site-1 development trajectory;
+- E9 sites 2–4 as holdout trajectories;
+- F9 sites 1–4 as an independent replicate diagnostic;
+- the field- and object-parameter trials, selected configuration, operational
+  anchors, and complete saved QC inventory.
+
+The report explains why the original d0 method could assign nearby Death-
+channel signal to a live cell, why blue-signal loss created a different late
+false-negative mode, and how the density-aware field-collapse gate plus
+object-level morphology, red-mass, nucleus/cytoplasm, and temporal evidence
+address those two failure modes without changing segmentation. Because no
+manual ground truth exists, all displayed accuracy-like values are explicitly
+identified as operational proxies.
+
+```bash
+/home/4482173/.conda/envs/cellpose_cpsam/bin/python -I \
+  cellpose_pipeline/report/generate_late_dead_d0_d5_calibration_report.py \
+  --calibration-root /share/.../results/Tests_and_Parameters_calibration/late_dead_trajectory_optimization_20260723_024151 \
+  --plugin-root /home/4482173/.local/share/data-analytics/0.2.8
+```
+
+Default outputs are written below the calibration root in `report_final/`:
+
+- `DEAD_CLASSIFICATION_D0_D5_CALIBRATION_REPORT.html`;
+- `DEAD_CLASSIFICATION_D0_D5_CALIBRATION_REPORT.artifact.json`;
+- `DEAD_CLASSIFICATION_D0_D5_CALIBRATION_REPORT.build.json`.
+
+The corresponding HPC wrapper is
+`hpc/Parameter_calibration/27_generate_late_dead_d0_d5_report.sh`.
+
+## Full-cohort classification report
+
+`generate_full_classification_report.py` reports the completed production
+classification run. It requires complete original and nucleated-only merged
+summaries, all late-death refinement rows, a zero-row failure ledger, the
+well/time summaries, all 82 dose-response files, and the approved calibration
+configuration. A parameter mismatch between the production run and the frozen
+calibration is a hard error.
+
+The report includes:
+
+- pre-refinement versus final live/dead composition;
+- late-death rescue and field-collapse rates over time and by plate group;
+- final Death-object relation composition and uncertainty totals;
+- six deterministic before/final QC comparisons with each branch kept in one
+  vertical column;
+- rebuilt AUC, Day-4, Day-5, GR, and excess-lethal-fraction results.
+
+```bash
+/home/4482173/.conda/envs/cellpose_cpsam/bin/python -I \
+  cellpose_pipeline/report/generate_full_classification_report.py \
+  --classification-root /share/.../results/classification_20260723_101944 \
+  --calibration-root /share/.../results/Tests_and_Parameters_calibration/late_dead_trajectory_optimization_20260723_024151 \
+  --plugin-root /home/4482173/.local/share/data-analytics/0.2.8
+```
+
+Default outputs are written in
+`<classification-root>/analysis/reports/` as
+`DEAD_CLASSIFICATION_FULL_COHORT_REPORT.{html,artifact.json,build.json}`.
+The HPC wrapper is `hpc/analysisi/07_run_full_classification_report.sh`; the
+classification-only submitter schedules it after dose-response reconstruction.
+For the already completed `classification_20260723_101944` result, run
+`hpc/analysisi/08_submit_classification_reports_backfill.sh`; it creates the
+calibration report and dose-response tree first, then generates this report.
