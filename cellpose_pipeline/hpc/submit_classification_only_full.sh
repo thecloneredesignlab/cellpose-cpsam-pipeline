@@ -1,10 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-# Re-run only the full-time-course classification stage against immutable
-# segmentation outputs. The calibrated d0 method is implemented as the default
-# behavior of scripts/08_fuse_multichannel_classification.py and therefore
-# applies to every selected field without passing a d0-only option here.
+# Re-run only full-time-course classification against immutable segmentation
+# outputs. Per-field d0-calibrated classification is followed by the frozen
+# late-field-collapse and object-level multi-signal death-rescue stage.
 
 BASE="/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/20260619_SUM159_Doxorubicin_Cyclophosphamide"
 PROJECT_DIR="${PROJECT_DIR:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/cellpose-cpsam-pipeline-v3}"
@@ -17,6 +16,7 @@ SCRIPT_DIR="$PROJECT_DIR/cellpose_pipeline/hpc"
 MANIFEST_WORKER="${MANIFEST_WORKER:-$SCRIPT_DIR/run_postsegmentation_manifest.sh}"
 CLASSIFICATION_WORKER="${CLASSIFICATION_WORKER:-$SCRIPT_DIR/run_multichannel_classification_fusion_array_task.sh}"
 MERGE_WORKER="${MERGE_WORKER:-$SCRIPT_DIR/run_multichannel_classification_fusion_merge.sh}"
+LATE_DEATH_WORKER="${LATE_DEATH_WORKER:-$SCRIPT_DIR/run_late_dead_trajectory_refinement.sh}"
 PLOT_WORKER="${PLOT_WORKER:-$SCRIPT_DIR/analysisi/05_run_well_count_timecourse_plots.sh}"
 
 FIELD_MANIFEST_DIR="$OUT_ROOT/workflow_status/postsegmentation_manifest"
@@ -41,6 +41,9 @@ CLASSIFICATION_MEM="${CLASSIFICATION_MEM:-4G}"
 MERGE_TIME="${MERGE_TIME:-12:00:00}"
 MERGE_CPUS="${MERGE_CPUS:-1}"
 MERGE_MEM="${MERGE_MEM:-8G}"
+LATE_DEATH_TIME="${LATE_DEATH_TIME:-24:00:00}"
+LATE_DEATH_CPUS="${LATE_DEATH_CPUS:-32}"
+LATE_DEATH_MEM="${LATE_DEATH_MEM:-256G}"
 MANIFEST_TIME="${MANIFEST_TIME:-12:00:00}"
 MANIFEST_CPUS="${MANIFEST_CPUS:-1}"
 MANIFEST_MEM="${MANIFEST_MEM:-4G}"
@@ -51,6 +54,7 @@ EXPECTED_TIMEPOINTS="${EXPECTED_TIMEPOINTS:-85}"
 EXPECTED_SITES="${EXPECTED_SITES:-4}"
 PLOT_DPI="${PLOT_DPI:-200}"
 FORCE_FUSION="${FORCE_FUSION:-1}"
+FORCE_LATE_DEATH="${FORCE_LATE_DEATH:-0}"
 DRY_RUN_SUBMIT="${DRY_RUN_SUBMIT:-0}"
 
 required_directories=(
@@ -73,7 +77,12 @@ for required in "${required_directories[@]}"; do
     exit 2
   fi
 done
-for worker in "$MANIFEST_WORKER" "$CLASSIFICATION_WORKER" "$MERGE_WORKER" "$PLOT_WORKER"; do
+for worker in \
+  "$MANIFEST_WORKER" \
+  "$CLASSIFICATION_WORKER" \
+  "$MERGE_WORKER" \
+  "$LATE_DEATH_WORKER" \
+  "$PLOT_WORKER"; do
   if [[ ! -x "$worker" ]]; then
     echo "Required production worker is missing or not executable: $worker" >&2
     exit 2
@@ -174,6 +183,15 @@ MERGE_SBATCH_ARGS=(
   --cpus-per-task "$MERGE_CPUS"
   --mem "$MERGE_MEM"
 )
+LATE_DEATH_SBATCH_ARGS=(
+  "${COMMON_SBATCH_ARGS[@]}"
+  --job-name "${SBATCH_JOB_PREFIX}_late_death"
+  --output "$LOG_DIR/%x_%j.out"
+  --error "$LOG_DIR/%x_%j.err"
+  --time "$LATE_DEATH_TIME"
+  --cpus-per-task "$LATE_DEATH_CPUS"
+  --mem "$LATE_DEATH_MEM"
+)
 PLOT_SBATCH_ARGS=(
   "${COMMON_SBATCH_ARGS[@]}"
   --job-name "${SBATCH_JOB_PREFIX}_well_counts"
@@ -202,7 +220,8 @@ write_submission_summary() {
     echo "nucleated_output=$NUCLEATED_OUT_DIR"
     echo "original_well_count_plot=$ORIGINAL_PLOT_DIR/well_live_dead_counts_over_time.png"
     echo "nucleated_well_count_plot=$NUCLEATED_PLOT_DIR/well_live_dead_counts_over_time.png"
-    echo "classification_method=cellpose_pipeline/scripts/08_fuse_multichannel_classification.py"
+    echo "classification_method=cellpose_pipeline/scripts/08_fuse_multichannel_classification.py+cellpose_pipeline/scripts/14_apply_late_dead_trajectory_refinement.py"
+    echo "late_death_method_version=late_dead_trajectory_v1_20260723"
     echo "classification_timepoint=all"
     echo "classification_cpus_per_task=$CLASSIFICATION_CPUS"
     echo "classification_mem_per_task=$CLASSIFICATION_MEM"
@@ -214,6 +233,9 @@ write_submission_summary() {
     echo "merge_cpus_per_task=$MERGE_CPUS"
     echo "merge_mem_per_task=$MERGE_MEM"
     echo "merge_time=$MERGE_TIME"
+    echo "late_death_cpus_per_task=$LATE_DEATH_CPUS"
+    echo "late_death_mem_per_task=$LATE_DEATH_MEM"
+    echo "late_death_time=$LATE_DEATH_TIME"
     echo "plot_cpus_per_task=$PLOT_CPUS"
     echo "plot_mem_per_task=$PLOT_MEM"
     echo "plot_time=$PLOT_TIME"
@@ -224,6 +246,7 @@ write_submission_summary() {
     echo "original_merge_job_id=${ORIGINAL_MERGE_JOB_ID:-not_submitted}"
     echo "nucleated_array_job_id=${NUCLEATED_JOB_ID:-not_submitted}"
     echo "nucleated_merge_job_id=${NUCLEATED_MERGE_JOB_ID:-not_submitted}"
+    echo "late_death_refinement_job_id=${LATE_DEATH_JOB_ID:-not_submitted}"
     echo "well_count_plot_job_id=${PLOT_JOB_ID:-not_submitted}"
   } > "$SUBMISSION_SUMMARY"
 }
@@ -241,12 +264,13 @@ echo "nucleated_well_count_plot=$NUCLEATED_PLOT_DIR/well_live_dead_counts_over_t
 printf 'manifest_sbatch_arg=%s\n' "${MANIFEST_SBATCH_ARGS[@]}"
 printf 'classification_sbatch_arg=%s\n' "${CLASSIFICATION_SBATCH_ARGS[@]}"
 printf 'merge_sbatch_arg=%s\n' "${MERGE_SBATCH_ARGS[@]}"
+printf 'late_death_sbatch_arg=%s\n' "${LATE_DEATH_SBATCH_ARGS[@]}"
 printf 'plot_sbatch_arg=%s\n' "${PLOT_SBATCH_ARGS[@]}"
 
 if [[ "$DRY_RUN_SUBMIT" == "1" ]]; then
   write_submission_summary
   echo "dry_run_submit=1"
-  echo "dependency_graph=manifest -> {original_array,nucleated_array} -> {original_merge,nucleated_merge} -> well_count_plots"
+  echo "dependency_graph=manifest -> {original_array,nucleated_array} -> {original_merge,nucleated_merge} -> late_death_refinement -> well_count_plots"
   exit 0
 fi
 
@@ -297,8 +321,13 @@ NUCLEATED_MERGE_JOB_ID="$(submit_job "${MERGE_SBATCH_ARGS[@]}" \
   --export=ALL,PROJECT_DIR="$PROJECT_DIR",RUN_ROOT="$SOURCE_RUN_ROOT",OUT_DIR="$NUCLEATED_OUT_DIR",FORCE_FUSION=1 \
   "$MERGE_WORKER")"
 
-PLOT_JOB_ID="$(submit_job "${PLOT_SBATCH_ARGS[@]}" \
+LATE_DEATH_JOB_ID="$(submit_job "${LATE_DEATH_SBATCH_ARGS[@]}" \
   --dependency "afterok:$ORIGINAL_MERGE_JOB_ID:$NUCLEATED_MERGE_JOB_ID" \
+  --export=ALL,PROJECT_DIR="$PROJECT_DIR",CLASSIFICATION_ROOT="$OUT_ROOT",PLATE_MAP="$PROJECT_DIR/cellpose_pipeline/scripts/analysisi/resources/SUM159_AC_Experiment1_PlateMap.csv",EXPECTED_FIELDS_PER_BRANCH="$EXPECTED_FIELDS",WORKERS="$LATE_DEATH_CPUS",FORCE_LATE_DEATH="$FORCE_LATE_DEATH" \
+  "$LATE_DEATH_WORKER")"
+
+PLOT_JOB_ID="$(submit_job "${PLOT_SBATCH_ARGS[@]}" \
+  --dependency "afterok:$LATE_DEATH_JOB_ID" \
   --export=ALL,PROJECT_DIR="$PROJECT_DIR",RESULT_ROOT="$OUT_ROOT",EXPECTED_TIMEPOINTS="$EXPECTED_TIMEPOINTS",EXPECTED_SITES="$EXPECTED_SITES",PLOT_DPI="$PLOT_DPI" \
   "$PLOT_WORKER")"
 
@@ -309,5 +338,6 @@ echo "original_array_job_id=$ORIGINAL_JOB_ID"
 echo "original_merge_job_id=$ORIGINAL_MERGE_JOB_ID"
 echo "nucleated_array_job_id=$NUCLEATED_JOB_ID"
 echo "nucleated_merge_job_id=$NUCLEATED_MERGE_JOB_ID"
+echo "late_death_refinement_job_id=$LATE_DEATH_JOB_ID"
 echo "well_count_plot_job_id=$PLOT_JOB_ID"
 echo "submission_summary=$SUBMISSION_SUMMARY"

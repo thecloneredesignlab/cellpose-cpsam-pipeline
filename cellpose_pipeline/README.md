@@ -10,11 +10,21 @@ For running this pipeline on another machine, see [../docs/server_runbook.md](..
 
 The code is separated by purpose:
 
-- `scripts/01_*.py` through `scripts/12_*.py`: production stages;
+- `scripts/01_*.py` through `scripts/14_*.py`: production stages;
 - `scripts/Parameter_calibration/`: parameter tuning and validation;
 - `scripts/analysisi/`: result analysis, visualization, QC, and audits;
 - `scripts/_shared/`: non-runnable shared modules;
 - `hpc/submit_full_fusion_production.sh`: the single production HPC entry point.
+
+The final production classifier is a two-stage method. Stage 1 performs the
+per-field, d0-calibrated object-aware fusion in
+`scripts/08_fuse_multichannel_classification.py`. Stage 2 runs only after the
+original and nucleated-only branches have both merged:
+`scripts/13_build_late_dead_trajectory_dataset.py` builds full well/site
+trajectories, and `scripts/14_apply_late_dead_trajectory_refinement.py` applies
+the frozen late-field-collapse plus object-level multi-signal death rescue.
+This final stage can change classification labels and summaries but never
+changes segmentation masks.
 
 ## Quick Start
 

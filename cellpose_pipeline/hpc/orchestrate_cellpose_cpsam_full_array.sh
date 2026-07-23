@@ -25,6 +25,7 @@ DEAD_CALIBRATION_JSON="${DEAD_CALIBRATION_JSON:-$CALIBRATION_ROOT/final/dead_com
 DEAD_CALIBRATION_MAP="${DEAD_CALIBRATION_MAP:-$CALIBRATION_ROOT/final/dead_combined_blue_image_calibration_map.csv}"
 ENABLE_FUSION_CLASSIFICATION="${ENABLE_FUSION_CLASSIFICATION:-1}"
 ENABLE_NUCLEATED_BRANCH="${ENABLE_NUCLEATED_BRANCH:-1}"
+ENABLE_LATE_DEATH_REFINEMENT="${ENABLE_LATE_DEATH_REFINEMENT:-$ENABLE_NUCLEATED_BRANCH}"
 if [[ -z "${FUSION_OUT_DIR:-}" ]]; then
   if [[ "$RUN_NAME" == "." || -z "$RUN_NAME" ]]; then
     FUSION_OUT_DIR="$OUT_ROOT/classification_fusion"
@@ -56,6 +57,7 @@ DEAD_CALIBRATION_MERGE_WORKER="$SCRIPT_DIR/run_dead_calibration_merge.sh"
 DEAD_CONSENSUS_MERGE_WORKER="$SCRIPT_DIR/run_dead_consensus_merge.sh"
 FUSION_ARRAY_WORKER="$SCRIPT_DIR/run_multichannel_classification_fusion_array_task.sh"
 FUSION_MERGE_WORKER="$SCRIPT_DIR/run_multichannel_classification_fusion_merge.sh"
+LATE_DEATH_WORKER="$SCRIPT_DIR/run_late_dead_trajectory_refinement.sh"
 SHAPE_ARRAY_WORKER="$SCRIPT_DIR/run_shape_strict_array_task.sh"
 SHAPE_FINALIZE_WORKER="$SCRIPT_DIR/run_shape_strict_finalize.sh"
 NUCLEATED_BRANCH_ARRAY_WORKER="$SCRIPT_DIR/run_nucleated_branch_array_task.sh"
@@ -120,6 +122,16 @@ if [[ "$ENABLE_FUSION_CLASSIFICATION" != "0" ]]; then
   fi
   if [[ ! -x "$FUSION_MERGE_WORKER" ]]; then
     echo "Fusion merge worker script is missing or not executable: $FUSION_MERGE_WORKER" >&2
+    exit 2
+  fi
+fi
+if [[ "$ENABLE_LATE_DEATH_REFINEMENT" != "0" ]]; then
+  if [[ "$ENABLE_FUSION_CLASSIFICATION" == "0" || "$ENABLE_NUCLEATED_BRANCH" == "0" ]]; then
+    echo "Late-death refinement requires both original and nucleated-only fusion classifications." >&2
+    exit 2
+  fi
+  if [[ ! -x "$LATE_DEATH_WORKER" ]]; then
+    echo "Late-death refinement worker is missing or not executable: $LATE_DEATH_WORKER" >&2
     exit 2
   fi
 fi
@@ -368,6 +380,7 @@ CPU_ONLY_SBATCH_ENV=(
 )
 FUSION_SBATCH_QOS_VALUE="${FUSION_SBATCH_QOS:-$SBATCH_QOS_VALUE}"
 FUSION_MERGE_SBATCH_QOS_VALUE="${FUSION_MERGE_SBATCH_QOS:-$FUSION_SBATCH_QOS_VALUE}"
+LATE_DEATH_SBATCH_QOS_VALUE="${LATE_DEATH_SBATCH_QOS:-$FUSION_MERGE_SBATCH_QOS_VALUE}"
 DENSITY_TABLE_SBATCH_QOS_VALUE="${DENSITY_TABLE_SBATCH_QOS:-$SBATCH_QOS_VALUE}"
 SHAPE_SBATCH_QOS_VALUE="${SHAPE_SBATCH_QOS:-$FUSION_SBATCH_QOS_VALUE}"
 SHAPE_FINALIZE_SBATCH_QOS_VALUE="${SHAPE_FINALIZE_SBATCH_QOS:-$SHAPE_SBATCH_QOS_VALUE}"
@@ -380,6 +393,7 @@ FIELD_MANIFEST_SBATCH_QOS_VALUE="${FIELD_MANIFEST_SBATCH_QOS:-xxlarge}"
 
 FUSION_SBATCH_ARGS=()
 FUSION_MERGE_SBATCH_ARGS=()
+LATE_DEATH_SBATCH_ARGS=()
 SHAPE_SBATCH_ARGS=()
 SHAPE_FINALIZE_SBATCH_ARGS=()
 CALIBRATION_SBATCH_ARGS=()
@@ -414,16 +428,32 @@ if [[ "$ENABLE_FUSION_CLASSIFICATION" != "0" ]]; then
     --cpus-per-task "${FUSION_MERGE_SBATCH_CPUS:-1}"
     --mem "${FUSION_MERGE_SBATCH_MEM:-4G}"
   )
+  if [[ "$ENABLE_LATE_DEATH_REFINEMENT" != "0" ]]; then
+    LATE_DEATH_SBATCH_ARGS=(
+      --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_late_death"
+      --output "$LOG_DIR/%x_%j.out"
+      --error "$LOG_DIR/%x_%j.err"
+      --time "${LATE_DEATH_SBATCH_TIME:-24:00:00}"
+      --cpus-per-task "${LATE_DEATH_SBATCH_CPUS:-32}"
+      --mem "${LATE_DEATH_SBATCH_MEM:-256G}"
+    )
+  fi
   if [[ -n "${SBATCH_PARTITION:-}" ]]; then
     FUSION_SBATCH_ARGS+=(--partition "$SBATCH_PARTITION")
     FUSION_MERGE_SBATCH_ARGS+=(--partition "$SBATCH_PARTITION")
     FIELD_MANIFEST_SBATCH_ARGS+=(--partition "$SBATCH_PARTITION")
+    if [[ "$ENABLE_LATE_DEATH_REFINEMENT" != "0" ]]; then
+      LATE_DEATH_SBATCH_ARGS+=(--partition "$SBATCH_PARTITION")
+    fi
   fi
   if [[ -n "$FUSION_SBATCH_QOS_VALUE" ]]; then
     FUSION_SBATCH_ARGS+=(--qos "$FUSION_SBATCH_QOS_VALUE")
   fi
   if [[ -n "$FUSION_MERGE_SBATCH_QOS_VALUE" ]]; then
     FUSION_MERGE_SBATCH_ARGS+=(--qos "$FUSION_MERGE_SBATCH_QOS_VALUE")
+  fi
+  if [[ "$ENABLE_LATE_DEATH_REFINEMENT" != "0" && -n "$LATE_DEATH_SBATCH_QOS_VALUE" ]]; then
+    LATE_DEATH_SBATCH_ARGS+=(--qos "$LATE_DEATH_SBATCH_QOS_VALUE")
   fi
   if [[ -n "$FIELD_MANIFEST_SBATCH_QOS_VALUE" ]]; then
     FIELD_MANIFEST_SBATCH_ARGS+=(--qos "$FIELD_MANIFEST_SBATCH_QOS_VALUE")
@@ -432,6 +462,9 @@ if [[ "$ENABLE_FUSION_CLASSIFICATION" != "0" ]]; then
     FUSION_SBATCH_ARGS+=(--account "$SBATCH_ACCOUNT")
     FUSION_MERGE_SBATCH_ARGS+=(--account "$SBATCH_ACCOUNT")
     FIELD_MANIFEST_SBATCH_ARGS+=(--account "$SBATCH_ACCOUNT")
+    if [[ "$ENABLE_LATE_DEATH_REFINEMENT" != "0" ]]; then
+      LATE_DEATH_SBATCH_ARGS+=(--account "$SBATCH_ACCOUNT")
+    fi
   fi
 fi
 if [[ "$ENABLE_SHAPE_STRICT" != "0" ]]; then
@@ -634,13 +667,16 @@ if [[ "${DRY_RUN_SUBMIT:-0}" == "1" ]]; then
   echo "field_manifest_dir=$FIELD_MANIFEST_DIR"
   echo "postseg_array_max_concurrent=$POSTSEG_ARRAY_MAX_CONCURRENT"
   echo "enable_fusion_classification=$ENABLE_FUSION_CLASSIFICATION"
+  echo "enable_late_death_refinement=$ENABLE_LATE_DEATH_REFINEMENT"
   echo "fusion_key_source_dir=$FUSION_KEY_SOURCE_DIR"
-    echo "fusion_key_list=${FUSION_KEY_LIST:-generated}"
-    echo "fusion_out_dir=$FUSION_OUT_DIR"
-    echo "fusion_sbatch_qos=$FUSION_SBATCH_QOS_VALUE"
-    echo "fusion_merge_sbatch_qos=$FUSION_MERGE_SBATCH_QOS_VALUE"
-    echo "fusion_array_worker=$FUSION_ARRAY_WORKER"
-    echo "fusion_merge_worker=$FUSION_MERGE_WORKER"
+  echo "fusion_key_list=${FUSION_KEY_LIST:-generated}"
+  echo "fusion_out_dir=$FUSION_OUT_DIR"
+  echo "fusion_sbatch_qos=$FUSION_SBATCH_QOS_VALUE"
+  echo "fusion_merge_sbatch_qos=$FUSION_MERGE_SBATCH_QOS_VALUE"
+  echo "late_death_sbatch_qos=$LATE_DEATH_SBATCH_QOS_VALUE"
+  echo "fusion_array_worker=$FUSION_ARRAY_WORKER"
+  echo "fusion_merge_worker=$FUSION_MERGE_WORKER"
+  echo "late_death_worker=$LATE_DEATH_WORKER"
   echo "enable_shape_strict=$ENABLE_SHAPE_STRICT"
   echo "shape_root=$SHAPE_ROOT"
   echo "shape_sbatch_qos=$SHAPE_SBATCH_QOS_VALUE"
@@ -682,6 +718,10 @@ if [[ "${DRY_RUN_SUBMIT:-0}" == "1" ]]; then
     printf 'fusion_sbatch_arg=%s\n' "${FUSION_SBATCH_ARGS[@]}"
     printf 'fusion_merge_sbatch_arg=%s\n' "${FUSION_MERGE_SBATCH_ARGS[@]}"
     printf 'field_manifest_sbatch_arg=%s\n' "${FIELD_MANIFEST_SBATCH_ARGS[@]}"
+    if [[ "$ENABLE_LATE_DEATH_REFINEMENT" != "0" ]]; then
+      echo "late_death_dependency=afterok:<fusion_merge_job_id>:<nucleated_fusion_merge_job_id>"
+      printf 'late_death_sbatch_arg=%s\n' "${LATE_DEATH_SBATCH_ARGS[@]}"
+    fi
   fi
   if [[ "$ENABLE_NUCLEATED_BRANCH" != "0" ]]; then
     echo "nucleated_branch_dependency=afterok:<field_manifest_job_id>"
@@ -690,10 +730,18 @@ if [[ "${DRY_RUN_SUBMIT:-0}" == "1" ]]; then
     echo "nucleated_fusion_merge_dependency=afterok:<nucleated_fusion_array_job_id>"
   fi
   if [[ "$ENABLE_SHAPE_STRICT" != "0" ]]; then
-    echo "shape_dependency=afterok:<fusion_merge_job_id>"
+    if [[ "$ENABLE_LATE_DEATH_REFINEMENT" != "0" ]]; then
+      echo "shape_dependency=afterok:<late_death_refinement_job_id>"
+    else
+      echo "shape_dependency=afterok:<fusion_merge_job_id>"
+    fi
     echo "shape_finalize_dependency=afterok:<shape_array_job_id>"
     if [[ "$ENABLE_NUCLEATED_BRANCH" != "0" ]]; then
-      echo "nucleated_shape_dependency=afterok:<nucleated_fusion_merge_job_id>"
+      if [[ "$ENABLE_LATE_DEATH_REFINEMENT" != "0" ]]; then
+        echo "nucleated_shape_dependency=afterok:<late_death_refinement_job_id>"
+      else
+        echo "nucleated_shape_dependency=afterok:<nucleated_fusion_merge_job_id>"
+      fi
       echo "nucleated_shape_finalize_dependency=afterok:<nucleated_shape_array_job_id>"
     fi
     printf 'shape_sbatch_arg=%s\n' "${SHAPE_SBATCH_ARGS[@]}"
@@ -828,6 +876,7 @@ NUCLEATED_BRANCH_JOB_ID=""
 NUCLEATED_BRANCH_MERGE_JOB_ID=""
 NUCLEATED_FUSION_JOB_ID=""
 NUCLEATED_FUSION_MERGE_JOB_ID=""
+LATE_DEATH_JOB_ID=""
 SHAPE_JOB_ID=""
 SHAPE_FINALIZE_JOB_ID=""
 NUCLEATED_SHAPE_JOB_ID=""
@@ -898,10 +947,26 @@ if [[ "$ENABLE_NUCLEATED_BRANCH" != "0" ]]; then
   echo "$NUCLEATED_FUSION_MERGE_SUBMIT_OUTPUT"
   NUCLEATED_FUSION_MERGE_JOB_ID="$(printf '%s\n' "$NUCLEATED_FUSION_MERGE_SUBMIT_OUTPUT" | awk '{print $4}')"
 fi
+if [[ "$ENABLE_LATE_DEATH_REFINEMENT" != "0" ]]; then
+  LATE_DEATH_SUBMIT_OUTPUT="$(
+    "${CPU_ONLY_SBATCH_ENV[@]}" sbatch "${LATE_DEATH_SBATCH_ARGS[@]}" \
+      --dependency "afterok:$FUSION_MERGE_JOB_ID:$NUCLEATED_FUSION_MERGE_JOB_ID" \
+      --export=ALL,PROJECT_DIR="$PROJECT_DIR",CLASSIFICATION_ROOT="$WORKFLOW_RUN_DIR",PLATE_MAP="$PROJECT_DIR/cellpose_pipeline/scripts/analysisi/resources/SUM159_AC_Experiment1_PlateMap.csv",EXPECTED_FIELDS_PER_BRANCH="$N_FUSION_TASKS",WORKERS="${LATE_DEATH_WORKERS:-${LATE_DEATH_SBATCH_CPUS:-32}}",FORCE_LATE_DEATH="${FORCE_LATE_DEATH:-0}" \
+      "$LATE_DEATH_WORKER"
+  )"
+  echo "$LATE_DEATH_SUBMIT_OUTPUT"
+  LATE_DEATH_JOB_ID="$(printf '%s\n' "$LATE_DEATH_SUBMIT_OUTPUT" | awk '{print $4}')"
+fi
 if [[ "$ENABLE_SHAPE_STRICT" != "0" ]]; then
+  ORIGINAL_SHAPE_DEPENDENCY="$FUSION_MERGE_JOB_ID"
+  NUCLEATED_SHAPE_DEPENDENCY="$NUCLEATED_FUSION_MERGE_JOB_ID"
+  if [[ "$ENABLE_LATE_DEATH_REFINEMENT" != "0" ]]; then
+    ORIGINAL_SHAPE_DEPENDENCY="$LATE_DEATH_JOB_ID"
+    NUCLEATED_SHAPE_DEPENDENCY="$LATE_DEATH_JOB_ID"
+  fi
   SHAPE_SUBMIT_OUTPUT="$(
     "${CPU_ONLY_SBATCH_ENV[@]}" sbatch "${SHAPE_SBATCH_ARGS[@]}" \
-      --dependency "afterok:$FUSION_MERGE_JOB_ID" \
+      --dependency "afterok:$ORIGINAL_SHAPE_DEPENDENCY" \
       --export=ALL,PROJECT_DIR="$PROJECT_DIR",INPUT_ROOT="$INPUT_ROOT",RUN_ROOT="$OUT_ROOT",SHAPE_ROOT="$SHAPE_ROOT",TASK_LIST_SHAPE="$TASK_LIST_FUSION",FIELD_MANIFEST_DIR="$FIELD_MANIFEST_DIR",CELL_MASK_BRANCH=original,FORCE_SHAPE_STRICT="${FORCE_SHAPE_STRICT:-0}" \
       "$SHAPE_ARRAY_WORKER"
   )"
@@ -921,7 +986,7 @@ if [[ "$ENABLE_SHAPE_STRICT" != "0" ]]; then
     NUCLEATED_SHAPE_SUBMIT_OUTPUT="$(
       "${CPU_ONLY_SBATCH_ENV[@]}" sbatch "${SHAPE_SBATCH_ARGS[@]}" \
         --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_shape_nucleated" \
-        --dependency "afterok:$NUCLEATED_FUSION_MERGE_JOB_ID" \
+        --dependency "afterok:$NUCLEATED_SHAPE_DEPENDENCY" \
         --export=ALL,PROJECT_DIR="$PROJECT_DIR",INPUT_ROOT="$INPUT_ROOT",RUN_ROOT="$WORKFLOW_RUN_DIR",CELL_RUN_ROOT="$NUCLEATED_BRANCH_ROOT",FUSION_ROOT="$NUCLEATED_FUSION_OUT_DIR",SHAPE_ROOT="$NUCLEATED_SHAPE_ROOT",TASK_LIST_SHAPE="$TASK_LIST_FUSION",FIELD_MANIFEST_DIR="$FIELD_MANIFEST_DIR",CELL_MASK_BRANCH=nucleated,FORCE_SHAPE_STRICT="${FORCE_SHAPE_STRICT:-0}" \
         "$SHAPE_ARRAY_WORKER"
     )"
@@ -974,6 +1039,7 @@ echo "nucleated_branch_array_job_id=${NUCLEATED_BRANCH_JOB_ID:-none}"
 echo "nucleated_branch_merge_job_id=${NUCLEATED_BRANCH_MERGE_JOB_ID:-none}"
 echo "nucleated_fusion_array_job_id=${NUCLEATED_FUSION_JOB_ID:-none}"
 echo "nucleated_fusion_merge_job_id=${NUCLEATED_FUSION_MERGE_JOB_ID:-none}"
+echo "late_death_refinement_job_id=${LATE_DEATH_JOB_ID:-none}"
 echo "shape_array_job_id=${SHAPE_JOB_ID:-none}"
 echo "shape_finalize_job_id=${SHAPE_FINALIZE_JOB_ID:-none}"
 echo "nucleated_shape_array_job_id=${NUCLEATED_SHAPE_JOB_ID:-none}"
