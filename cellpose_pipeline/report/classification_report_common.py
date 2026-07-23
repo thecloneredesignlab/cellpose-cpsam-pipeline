@@ -213,7 +213,13 @@ def encode_figures(
         candidate: dict[str, tuple[str, int, int]] = {}
         encoded_total = 0
         for key, figure in figures.items():
-            scale = min(1.0, max_width / max(1, figure.width))
+            # The established lightbox contract requires every original image
+            # to be at least 1.8x its embedded canonical frame. Use a small
+            # margin for integer resize rounding and for source figures that
+            # are narrower than the global canonical target.
+            ratio_safe_width = max(1, math.floor(figure.width / 1.82))
+            target_width = min(max_width, ratio_safe_width)
+            scale = min(1.0, target_width / max(1, figure.width))
             canonical = figure.resize(
                 (
                     max(1, round(figure.width * scale)),
