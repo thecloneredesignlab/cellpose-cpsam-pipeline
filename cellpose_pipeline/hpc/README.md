@@ -34,7 +34,7 @@ processed. The default array resources match the classification stage of full
 production: one CPU, 4 GB, 12 hours per field, `xxlarge`, and no GPU. The array
 has no explicit concurrency throttle, so Slurm controls how many tasks run
 simultaneously. Each merge uses one CPU, 8 GB, and 12 hours. The late-death
-refinement uses 32 CPUs, 256 GB, 24 hours, `xxlarge`, and no GPU.
+refinement uses 32 CPUs, 256 GB, 12 hours, `xxlarge`, and no GPU.
 
 After refinement completes, a final CPU job runs
 `scripts/analysisi/04_plot_well_counts_over_time.py` for both classification

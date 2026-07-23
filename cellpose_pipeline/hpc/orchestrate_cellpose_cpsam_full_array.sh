@@ -433,7 +433,7 @@ if [[ "$ENABLE_FUSION_CLASSIFICATION" != "0" ]]; then
       --job-name "${SBATCH_JOB_NAME:-cpsam_full_fusion}_late_death"
       --output "$LOG_DIR/%x_%j.out"
       --error "$LOG_DIR/%x_%j.err"
-      --time "${LATE_DEATH_SBATCH_TIME:-24:00:00}"
+      --time "${LATE_DEATH_SBATCH_TIME:-12:00:00}"
       --cpus-per-task "${LATE_DEATH_SBATCH_CPUS:-32}"
       --mem "${LATE_DEATH_SBATCH_MEM:-256G}"
     )
