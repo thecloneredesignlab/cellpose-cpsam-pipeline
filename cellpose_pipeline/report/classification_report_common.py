@@ -196,16 +196,16 @@ def labeled_grid(
 
 def encode_figures(
     figures: dict[str, Image.Image],
-    canonical_max_width: int = 1450,
+    canonical_max_width: int = 1250,
     canonical_quality: int = 78,
 ) -> tuple[dict[str, tuple[str, int, int]], dict[str, Any]]:
     attempts = (
         (canonical_max_width, canonical_quality),
-        (1350, 72),
-        (1200, 66),
-        (1050, 60),
-        (900, 54),
-        (760, 48),
+        (1150, 72),
+        (1050, 66),
+        (950, 60),
+        (850, 54),
+        (740, 48),
         (640, 44),
     )
     image_data: dict[str, tuple[str, int, int]] = {}

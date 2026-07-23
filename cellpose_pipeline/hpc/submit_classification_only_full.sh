@@ -348,8 +348,16 @@ cpu_sbatch() {
 
 submit_job() {
   local output
-  output="$(cpu_sbatch "$@")"
-  printf '%s\n' "${output%%;*}"
+  if ! output="$(cpu_sbatch "$@")"; then
+    echo "Slurm submission failed; verify that sbatch is available in PATH" >&2
+    return 1
+  fi
+  output="${output%%;*}"
+  if [[ ! "$output" =~ ^[0-9]+$ ]]; then
+    echo "Slurm submission did not return a numeric job ID: ${output:-<empty>}" >&2
+    return 1
+  fi
+  printf '%s\n' "$output"
 }
 
 MANIFEST_JOB_ID="$(submit_job "${MANIFEST_SBATCH_ARGS[@]}" \
