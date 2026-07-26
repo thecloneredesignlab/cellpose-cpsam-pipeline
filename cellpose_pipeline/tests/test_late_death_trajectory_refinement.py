@@ -531,6 +531,52 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
             for key, expected in references.items():
                 np.testing.assert_array_equal(restored[key], expected)
 
+    def test_uncertainty_reasons_align_to_sparse_selected_rows(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "late_death_branch_discordant_uncertain": [
+                    True,
+                    False,
+                    False,
+                    False,
+                ],
+                "late_death_track_uncertain": [
+                    False,
+                    True,
+                    False,
+                    True,
+                ],
+                "final_reason": ["baseline"] * 4,
+            },
+            index=[10, 20, 30, 40],
+        )
+        uncertain = pd.Series(
+            [True, False, True, True],
+            index=frame.index,
+        )
+        reasons = REFINEMENT.uncertainty_reason_series(frame, uncertain)
+        self.assertEqual(reasons.index.tolist(), [10, 30, 40])
+        self.assertEqual(
+            reasons.tolist(),
+            [
+                "death_classification_branch_discordant",
+                "death_classification_field_evidence_uncertain",
+                "death_classification_track_uncertain",
+            ],
+        )
+        frame.loc[reasons.index, "final_reason"] = reasons
+        self.assertEqual(frame.loc[20, "final_reason"], "baseline")
+        self.assertEqual(
+            frame.loc[40, "final_reason"],
+            "death_classification_track_uncertain",
+        )
+
+        empty = REFINEMENT.uncertainty_reason_series(
+            frame,
+            pd.Series(False, index=frame.index),
+        )
+        self.assertTrue(empty.empty)
+
     def test_well_failure_traceback_is_written_immediately(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -549,7 +595,13 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
                 }
             )
             inventory.to_csv(paths["inventory"], index=False)
-            pd.DataFrame({"well": ["E2"]}).to_csv(
+            pd.DataFrame(
+                {
+                    "well": ["E2", "E2"],
+                    "branch": ["original", "nucleated_only"],
+                    "key": ["E2_1_t0", "E2_1_t0"],
+                }
+            ).to_csv(
                 paths["field_states"],
                 index=False,
             )

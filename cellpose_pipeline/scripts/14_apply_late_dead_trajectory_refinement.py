@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import hashlib
 import importlib.util
 import json
@@ -164,6 +165,33 @@ def bool_series(values: pd.Series) -> pd.Series:
     return values.astype(str).str.strip().str.lower().isin({"1", "true", "yes"})
 
 
+def uncertainty_reason_series(
+    frame: pd.DataFrame,
+    uncertain: pd.Series,
+) -> pd.Series:
+    """Return reasons aligned only to the selected uncertain rows."""
+    selected = frame.loc[uncertain]
+    reasons = np.select(
+        [
+            bool_series(
+                selected["late_death_branch_discordant_uncertain"]
+            ),
+            bool_series(selected["late_death_track_uncertain"]),
+        ],
+        [
+            "death_classification_branch_discordant",
+            "death_classification_track_uncertain",
+        ],
+        default="death_classification_field_evidence_uncertain",
+    )
+    return pd.Series(
+        reasons,
+        index=selected.index,
+        dtype="object",
+        name="final_reason",
+    )
+
+
 def restore_pre_refinement_state(
     frame: pd.DataFrame,
     state_column: str,
@@ -296,7 +324,7 @@ def build_live_references(
     references: dict[tuple[str, float, str, str], list[np.ndarray]] = {}
     for row in inventory.itertuples(index=False):
         shard = Path(row.shard_path)
-        frame = pd.read_csv(shard)
+        frame = pd.read_csv(shard, low_memory=False)
         density_rows = field_density.loc[
             field_density["branch"].eq(str(row.branch))
             & field_density["key"].eq(str(row.key)),
@@ -938,19 +966,14 @@ def update_field_outputs(field_rows: pd.DataFrame) -> dict[str, Any]:
     )
     updated_features.loc[rescue, "classification_confidence"] = "medium"
     updated_features.loc[uncertain, ["state", "final_state"]] = "uncertain"
-    updated_features.loc[uncertain, "final_reason"] = np.select(
-        [
-            bool_series(
-                updated_features["late_death_branch_discordant_uncertain"]
-            ),
-            bool_series(updated_features["late_death_track_uncertain"]),
-        ],
-        [
-            "death_classification_branch_discordant",
-            "death_classification_track_uncertain",
-        ],
-        default="death_classification_field_evidence_uncertain",
+    feature_uncertain_reasons = uncertainty_reason_series(
+        updated_features,
+        uncertain,
     )
+    updated_features.loc[
+        feature_uncertain_reasons.index,
+        "final_reason",
+    ] = feature_uncertain_reasons
     updated_features.loc[uncertain, "classification_confidence"] = "low"
 
     prediction_annotations = annotations.rename(
@@ -983,19 +1006,14 @@ def update_field_outputs(field_rows: pd.DataFrame) -> dict[str, Any]:
         "medium"
     )
     updated_predictions.loc[pred_uncertain, "state"] = "uncertain"
-    updated_predictions.loc[pred_uncertain, "final_reason"] = np.select(
-        [
-            bool_series(
-                updated_predictions["late_death_branch_discordant_uncertain"]
-            ),
-            bool_series(updated_predictions["late_death_track_uncertain"]),
-        ],
-        [
-            "death_classification_branch_discordant",
-            "death_classification_track_uncertain",
-        ],
-        default="death_classification_field_evidence_uncertain",
+    prediction_uncertain_reasons = uncertainty_reason_series(
+        updated_predictions,
+        pred_uncertain,
     )
+    updated_predictions.loc[
+        prediction_uncertain_reasons.index,
+        "final_reason",
+    ] = prediction_uncertain_reasons
     updated_predictions.loc[pred_uncertain, "classification_confidence"] = "low"
     if int(rescue.sum()) != int(pred_rescue.sum()):
         raise ValueError(f"Feature/prediction rescue mismatch for {branch}/{key}")
@@ -1165,6 +1183,9 @@ def refine_group(task: dict[str, Any]) -> list[dict[str, Any]]:
         frame = pd.read_csv(shard_path, low_memory=False)
         frames.append(frame)
     data = pd.concat(frames, ignore_index=True)
+    frames.clear()
+    del frames
+    gc.collect()
     for column in (
         "countable",
         "border_touching",
@@ -1191,6 +1212,8 @@ def refine_group(task: dict[str, Any]) -> list[dict[str, Any]]:
     if data["density_bin"].isna().any():
         raise ValueError(f"Missing density calibration for {well}")
     calibrated = calibrate_group_features(data)
+    del data, density
+    gc.collect()
     field_subset = WORKER_FIELD_STATES.loc[
         WORKER_FIELD_STATES["well"].eq(well)
     ]
@@ -1201,6 +1224,8 @@ def refine_group(task: dict[str, Any]) -> list[dict[str, Any]]:
         LATE_MIN_HOURS,
         apply_treatment_scope=True,
     )
+    del calibrated
+    gc.collect()
     statuses = []
     for (_branch, _key), rows in calls.groupby(["branch", "key"], sort=False):
         statuses.append(update_field_outputs(rows.copy()))
@@ -1509,6 +1534,7 @@ def run_one_well(
     well_inventory = inventory.loc[
         inventory["well"].astype(str).eq(well)
     ].copy()
+    del inventory
     if well_inventory.empty:
         raise ValueError(f"Prepared inventory is empty for well {well}")
     expected_pairs = set(
@@ -1530,6 +1556,22 @@ def run_one_well(
         )
 
     field_states = pd.read_csv(paths["field_states"])
+    field_states = field_states.loc[
+        field_states["well"].astype(str).eq(well)
+    ].copy()
+    field_state_pairs = set(
+        zip(
+            field_states["branch"].astype(str),
+            field_states["key"].astype(str),
+        )
+    )
+    if field_state_pairs != expected_pairs:
+        missing = sorted(expected_pairs - field_state_pairs)[:10]
+        unexpected = sorted(field_state_pairs - expected_pairs)[:10]
+        raise ValueError(
+            f"Prepared field-state set mismatch for {well}: "
+            f"missing={missing} unexpected={unexpected}"
+        )
     references = load_reference_artifacts(paths)
     initialize_worker(
         references,

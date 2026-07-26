@@ -47,7 +47,7 @@ production: one CPU, 4 GB, 12 hours per field, `xxlarge`, and no GPU. The array
 has no explicit concurrency throttle, so Slurm controls how many tasks run
 simultaneously. Each merge uses one CPU, 8 GB, and 12 hours. The late-death
 preparation uses 32 CPUs, 256 GB, and 12 hours. Each of the 80 well tasks uses
-one CPU, 24 GB, and four hours; there is no explicit array throttle. Finalize
+one CPU, 48 GB, and four hours; there is no explicit array throttle. Finalize
 uses one CPU, 32 GB, and six hours. All stages use `xxlarge` and no GPU. A failed
 well writes its traceback immediately and can be retried by array index; the
 finalize job runs after the array settles but only succeeds when all 80 well
