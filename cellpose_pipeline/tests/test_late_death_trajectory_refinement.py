@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -511,6 +513,91 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
             "object configuration does not match",
         ):
             REFINEMENT.validate_approved_calibration_configuration(drifted)
+
+    def test_prepared_reference_artifacts_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = REFINEMENT.prepared_paths(Path(temporary))
+            references = {
+                ("original", 0.1, "d0", "area"): np.asarray(
+                    [1.0, 2.0, 3.0]
+                ),
+                ("nucleated_only", 0.9, "late", "red_mass_proxy"): np.asarray(
+                    [4.0, 5.0]
+                ),
+            }
+            REFINEMENT.write_reference_artifacts(paths, references)
+            restored = REFINEMENT.load_reference_artifacts(paths)
+            self.assertEqual(set(restored), set(references))
+            for key, expected in references.items():
+                np.testing.assert_array_equal(restored[key], expected)
+
+    def test_well_failure_traceback_is_written_immediately(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            classification_root = root / "classification"
+            dataset_root = root / "dataset"
+            classification_root.mkdir()
+            paths = REFINEMENT.prepared_paths(dataset_root)
+            paths["root"].mkdir(parents=True)
+            paths["receipt"].write_text('{"schema_version": 1}\n')
+            inventory = pd.DataFrame(
+                {
+                    "well": ["E2", "E2"],
+                    "branch": ["original", "nucleated_only"],
+                    "key": ["E2_1_t0", "E2_1_t0"],
+                    "shard_path": ["original.csv.gz", "nucleated.csv.gz"],
+                }
+            )
+            inventory.to_csv(paths["inventory"], index=False)
+            pd.DataFrame({"well": ["E2"]}).to_csv(
+                paths["field_states"],
+                index=False,
+            )
+            manifest = pd.DataFrame(
+                {
+                    "array_index": [1],
+                    "well": ["E2"],
+                    "original_fields": [1],
+                    "nucleated_only_fields": [1],
+                    "total_shards": [2],
+                }
+            )
+            args = SimpleNamespace(
+                classification_root=classification_root,
+                dataset_root=dataset_root,
+                overlay_alpha=0.55,
+                force=False,
+            )
+            with (
+                mock.patch.object(
+                    REFINEMENT,
+                    "validate_prepared_state",
+                    return_value=(paths, {"schema_version": 1}, manifest),
+                ),
+                mock.patch.object(
+                    REFINEMENT,
+                    "load_reference_artifacts",
+                    return_value={},
+                ),
+                mock.patch.object(
+                    REFINEMENT,
+                    "refine_group",
+                    side_effect=MemoryError("simulated well failure"),
+                ),
+            ):
+                with self.assertRaisesRegex(MemoryError, "simulated"):
+                    REFINEMENT.run_one_well(args, 1)
+            failure_path = REFINEMENT.well_artifact_paths(
+                classification_root,
+                1,
+                "E2",
+            )["failure"]
+            self.assertTrue(failure_path.is_file())
+            failure = json.loads(failure_path.read_text())
+            self.assertEqual(failure["well"], "E2")
+            self.assertEqual(failure["status"], "FAILED")
+            self.assertIn("MemoryError", failure["error"])
+            self.assertIn("simulated well failure", failure["traceback"])
 
     def test_production_receipt_reports_operational_go(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

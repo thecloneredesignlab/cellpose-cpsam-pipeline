@@ -20,7 +20,7 @@ unset PYTHONHOME
 export PYTHONNOUSERSITE=1
 PYTHON_BIN="$CONDA_PREFIX/bin/python"
 
-export MPLCONFIGDIR="${TMPDIR:-/tmp}/cpsam_late_death_${SLURM_JOB_ID:-manual}"
+export MPLCONFIGDIR="${TMPDIR:-/tmp}/cpsam_late_death_prepare_${SLURM_JOB_ID:-manual}"
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
@@ -34,7 +34,7 @@ for required in \
   "$SEGMENTATION_FREEZE_RECEIPT" \
   "$PLATE_MAP"; do
   [[ -e "$required" ]] || {
-    echo "Required late-death production input is missing: $required" >&2
+    echo "Required late-death preparation input is missing: $required" >&2
     exit 2
   }
 done
@@ -46,7 +46,6 @@ echo "host=$(hostname)"
 echo "project_dir=$PROJECT_DIR"
 echo "classification_root=$CLASSIFICATION_ROOT"
 echo "work_dir=$WORK_DIR"
-echo "plate_map=$PLATE_MAP"
 echo "workers=$WORKERS"
 echo "expected_fields_per_branch=$EXPECTED_FIELDS_PER_BRANCH"
 echo "expected_wells=$EXPECTED_WELLS"
@@ -64,29 +63,28 @@ BUILDER_ARGS=(
   --workers "$WORKERS"
   --seed 260723
 )
-REFINEMENT_ARGS=(
+PREPARE_ARGS=(
   cellpose_pipeline/scripts/14_apply_late_dead_trajectory_refinement.py
   --classification-root "$CLASSIFICATION_ROOT"
   --dataset-root "$WORK_DIR"
   --calibration-go-no-go "$CALIBRATION_GO_NO_GO"
   --segmentation-freeze-receipt "$SEGMENTATION_FREEZE_RECEIPT"
-  --mode all
+  --mode prepare
   --workers "$WORKERS"
   --expected-fields-per-branch "$EXPECTED_FIELDS_PER_BRANCH"
   --expected-wells "$EXPECTED_WELLS"
 )
 if [[ "$FORCE_LATE_DEATH" == "1" ]]; then
   BUILDER_ARGS+=(--force)
-  REFINEMENT_ARGS+=(--force)
+  PREPARE_ARGS+=(--force)
 fi
 
 echo "step=01_build_production_late_death_trajectory_dataset"
 "$PYTHON_BIN" -I "${BUILDER_ARGS[@]}"
 
-echo "step=02_apply_frozen_late_death_trajectory_model"
-"$PYTHON_BIN" -I "${REFINEMENT_ARGS[@]}"
+echo "step=02_prepare_frozen_late_death_model_state"
+"$PYTHON_BIN" -I "${PREPARE_ARGS[@]}"
 
-touch "$WORK_DIR/_SUCCESS"
-echo "late_death_production_refinement_complete=1"
-echo "production_configuration=$CLASSIFICATION_ROOT/late_death_refinement/production_configuration.json"
-echo "refinement_summary=$CLASSIFICATION_ROOT/late_death_refinement/refinement_summary.csv"
+echo "late_death_preparation_complete=1"
+echo "well_manifest=$WORK_DIR/prepared_refinement/well_manifest.tsv"
+echo "prepared_receipt=$WORK_DIR/prepared_refinement/PREPARED.json"

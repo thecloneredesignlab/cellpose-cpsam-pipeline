@@ -23,8 +23,11 @@ original and nucleated-only branches have both merged:
 `scripts/13_build_late_dead_trajectory_dataset.py` builds full well/site
 trajectories, and `scripts/14_apply_late_dead_trajectory_refinement.py` applies
 the frozen late-field-collapse plus object-level multi-signal death rescue.
-This final stage can change classification labels and summaries but never
-changes segmentation masks.
+On HPC, shared calibration/reference state is prepared once, an 80-task Slurm
+array processes one complete well per task, and a separate finalize job verifies
+all 54,400 branch/field rows before publishing merged summaries. This final
+stage can change classification labels and summaries but never changes
+segmentation masks.
 
 ## Quick Start
 

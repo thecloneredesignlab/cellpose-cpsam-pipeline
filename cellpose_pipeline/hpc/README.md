@@ -14,21 +14,29 @@ post-segmentation manifest
 ├── original classification array ── original merge
 └── nucleated-only classification array ── nucleated-only merge
                                       │
-                                      └── late-death trajectory refinement
+                                      └── late-death preparation
                                                         │
-                                                        └── well-count plots
-                                                                  │
-                                                                  └── dose-response analysis
-                                                                            │
-                                                                            └── full-cohort HTML report
+                                                        └── 80-well refinement array
+                                                                       │
+                                                                       └── refinement finalize
+                                                                                      │
+                                                                                      └── well-count plots
+                                                                                                │
+                                                                                                └── dose-response analysis
+                                                                                                          │
+                                                                                                          └── full-cohort HTML report
 ```
 
 Both arrays call the production `08_fuse_multichannel_classification.py`, whose
 defaults contain the final d0-calibrated object-aware method. After both merged
-branches exist, `run_late_dead_trajectory_refinement.sh` calibrates density from
-the run's 320 d0 fields, identifies persistent multi-site late field collapse,
-and rescues eligible live-labelled objects only when at least two independent
-morphology/red-mass signals support death and strong live evidence is absent.
+branches exist, `run_late_dead_trajectory_prepare.sh` calibrates density from
+the run's 320 d0 fields and freezes the shared reference state. The unthrottled
+`run_late_dead_trajectory_well_array_task.sh` array assigns one well, including
+both segmentation views, to each task. It identifies persistent multi-site late
+field collapse and rescues eligible live-labelled objects only when at least two
+independent morphology/red-mass signals support death and strong live evidence
+is absent. `run_late_dead_trajectory_finalize.sh` requires successful receipts
+from every well before publishing merged summaries and the production GO/NO-GO.
 The refinement updates both classification branches, per-field/merged summaries,
 rescued-object masks, annotations, and affected QC overlays without changing
 any segmentation mask.
@@ -38,7 +46,12 @@ processed. The default array resources match the classification stage of full
 production: one CPU, 4 GB, 12 hours per field, `xxlarge`, and no GPU. The array
 has no explicit concurrency throttle, so Slurm controls how many tasks run
 simultaneously. Each merge uses one CPU, 8 GB, and 12 hours. The late-death
-refinement uses 32 CPUs, 256 GB, 12 hours, `xxlarge`, and no GPU.
+preparation uses 32 CPUs, 256 GB, and 12 hours. Each of the 80 well tasks uses
+one CPU, 24 GB, and four hours; there is no explicit array throttle. Finalize
+uses one CPU, 32 GB, and six hours. All stages use `xxlarge` and no GPU. A failed
+well writes its traceback immediately and can be retried by array index; the
+finalize job runs after the array settles but only succeeds when all 80 well
+receipts and all 54,400 field rows pass their invariants.
 
 After refinement completes, a final CPU job runs
 `scripts/analysisi/04_plot_well_counts_over_time.py` for both classification

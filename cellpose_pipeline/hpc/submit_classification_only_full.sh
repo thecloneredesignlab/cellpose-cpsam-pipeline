@@ -17,7 +17,9 @@ SCRIPT_DIR="$PROJECT_DIR/cellpose_pipeline/hpc"
 MANIFEST_WORKER="${MANIFEST_WORKER:-$SCRIPT_DIR/run_postsegmentation_manifest.sh}"
 CLASSIFICATION_WORKER="${CLASSIFICATION_WORKER:-$SCRIPT_DIR/run_multichannel_classification_fusion_array_task.sh}"
 MERGE_WORKER="${MERGE_WORKER:-$SCRIPT_DIR/run_multichannel_classification_fusion_merge.sh}"
-LATE_DEATH_WORKER="${LATE_DEATH_WORKER:-$SCRIPT_DIR/run_late_dead_trajectory_refinement.sh}"
+LATE_DEATH_PREPARE_WORKER="${LATE_DEATH_PREPARE_WORKER:-$SCRIPT_DIR/run_late_dead_trajectory_prepare.sh}"
+LATE_DEATH_WELL_WORKER="${LATE_DEATH_WELL_WORKER:-$SCRIPT_DIR/run_late_dead_trajectory_well_array_task.sh}"
+LATE_DEATH_FINALIZE_WORKER="${LATE_DEATH_FINALIZE_WORKER:-$SCRIPT_DIR/run_late_dead_trajectory_finalize.sh}"
 PLOT_WORKER="${PLOT_WORKER:-$SCRIPT_DIR/analysisi/05_run_well_count_timecourse_plots.sh}"
 DOSE_RESPONSE_WORKER="${DOSE_RESPONSE_WORKER:-$SCRIPT_DIR/analysisi/06_run_dose_response_analysis.sh}"
 REPORT_WORKER="${REPORT_WORKER:-$SCRIPT_DIR/analysisi/07_run_full_classification_report.sh}"
@@ -53,9 +55,15 @@ CLASSIFICATION_MEM="${CLASSIFICATION_MEM:-4G}"
 MERGE_TIME="${MERGE_TIME:-12:00:00}"
 MERGE_CPUS="${MERGE_CPUS:-1}"
 MERGE_MEM="${MERGE_MEM:-8G}"
-LATE_DEATH_TIME="${LATE_DEATH_TIME:-12:00:00}"
-LATE_DEATH_CPUS="${LATE_DEATH_CPUS:-32}"
-LATE_DEATH_MEM="${LATE_DEATH_MEM:-256G}"
+LATE_DEATH_PREPARE_TIME="${LATE_DEATH_PREPARE_TIME:-12:00:00}"
+LATE_DEATH_PREPARE_CPUS="${LATE_DEATH_PREPARE_CPUS:-32}"
+LATE_DEATH_PREPARE_MEM="${LATE_DEATH_PREPARE_MEM:-256G}"
+LATE_DEATH_WELL_TIME="${LATE_DEATH_WELL_TIME:-04:00:00}"
+LATE_DEATH_WELL_CPUS="${LATE_DEATH_WELL_CPUS:-1}"
+LATE_DEATH_WELL_MEM="${LATE_DEATH_WELL_MEM:-24G}"
+LATE_DEATH_FINALIZE_TIME="${LATE_DEATH_FINALIZE_TIME:-06:00:00}"
+LATE_DEATH_FINALIZE_CPUS="${LATE_DEATH_FINALIZE_CPUS:-1}"
+LATE_DEATH_FINALIZE_MEM="${LATE_DEATH_FINALIZE_MEM:-32G}"
 MANIFEST_TIME="${MANIFEST_TIME:-12:00:00}"
 MANIFEST_CPUS="${MANIFEST_CPUS:-1}"
 MANIFEST_MEM="${MANIFEST_MEM:-4G}"
@@ -73,6 +81,7 @@ CALIBRATION_REPORT_CPUS="${CALIBRATION_REPORT_CPUS:-4}"
 CALIBRATION_REPORT_MEM="${CALIBRATION_REPORT_MEM:-32G}"
 EXPECTED_TIMEPOINTS="${EXPECTED_TIMEPOINTS:-85}"
 EXPECTED_SITES="${EXPECTED_SITES:-4}"
+EXPECTED_WELLS="${EXPECTED_WELLS:-80}"
 EXPECTED_DOSE_RESPONSE_FILES="${EXPECTED_DOSE_RESPONSE_FILES:-123}"
 PLOT_DPI="${PLOT_DPI:-200}"
 DOSE_DPI="${DOSE_DPI:-220}"
@@ -107,7 +116,9 @@ for worker in \
   "$MANIFEST_WORKER" \
   "$CLASSIFICATION_WORKER" \
   "$MERGE_WORKER" \
-  "$LATE_DEATH_WORKER" \
+  "$LATE_DEATH_PREPARE_WORKER" \
+  "$LATE_DEATH_WELL_WORKER" \
+  "$LATE_DEATH_FINALIZE_WORKER" \
   "$PLOT_WORKER" \
   "$DOSE_RESPONSE_WORKER" \
   "$REPORT_WORKER" \
@@ -148,6 +159,10 @@ if [[ ! "$EXPECTED_TIMEPOINTS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [[ ! "$EXPECTED_SITES" =~ ^[1-9][0-9]*$ ]]; then
   echo "EXPECTED_SITES must be a positive integer: $EXPECTED_SITES" >&2
+  exit 2
+fi
+if [[ ! "$EXPECTED_WELLS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "EXPECTED_WELLS must be a positive integer: $EXPECTED_WELLS" >&2
   exit 2
 fi
 if [[ ! "$EXPECTED_DOSE_RESPONSE_FILES" =~ ^[1-9][0-9]*$ ]]; then
@@ -207,6 +222,16 @@ if [[ "$N_TASKS" -ne "$EXPECTED_FIELDS" ]]; then
   exit 2
 fi
 ARRAY_SPEC="1-$N_TASKS"
+N_WELLS="$(
+  awk -F_ 'NF {print $1}' "$TASK_LIST_FUSION" |
+    LC_ALL=C sort -u |
+    awk 'NF {n++} END {print n+0}'
+)"
+if [[ "$N_WELLS" -ne "$EXPECTED_WELLS" ]]; then
+  echo "Expected $EXPECTED_WELLS wells but found $N_WELLS" >&2
+  exit 2
+fi
+WELL_ARRAY_SPEC="1-$N_WELLS"
 
 COMMON_SBATCH_ARGS=()
 if [[ -n "$JOB_QOS" ]]; then
@@ -245,14 +270,33 @@ MERGE_SBATCH_ARGS=(
   --cpus-per-task "$MERGE_CPUS"
   --mem "$MERGE_MEM"
 )
-LATE_DEATH_SBATCH_ARGS=(
+LATE_DEATH_PREPARE_SBATCH_ARGS=(
   "${COMMON_SBATCH_ARGS[@]}"
-  --job-name "${SBATCH_JOB_PREFIX}_late_death"
+  --job-name "${SBATCH_JOB_PREFIX}_late_death_prepare"
   --output "$LOG_DIR/%x_%j.out"
   --error "$LOG_DIR/%x_%j.err"
-  --time "$LATE_DEATH_TIME"
-  --cpus-per-task "$LATE_DEATH_CPUS"
-  --mem "$LATE_DEATH_MEM"
+  --time "$LATE_DEATH_PREPARE_TIME"
+  --cpus-per-task "$LATE_DEATH_PREPARE_CPUS"
+  --mem "$LATE_DEATH_PREPARE_MEM"
+)
+LATE_DEATH_WELL_SBATCH_ARGS=(
+  "${COMMON_SBATCH_ARGS[@]}"
+  --job-name "${SBATCH_JOB_PREFIX}_late_death_well"
+  --array "$WELL_ARRAY_SPEC"
+  --output "$LOG_DIR/%x_%A_%a.out"
+  --error "$LOG_DIR/%x_%A_%a.err"
+  --time "$LATE_DEATH_WELL_TIME"
+  --cpus-per-task "$LATE_DEATH_WELL_CPUS"
+  --mem "$LATE_DEATH_WELL_MEM"
+)
+LATE_DEATH_FINALIZE_SBATCH_ARGS=(
+  "${COMMON_SBATCH_ARGS[@]}"
+  --job-name "${SBATCH_JOB_PREFIX}_late_death_finalize"
+  --output "$LOG_DIR/%x_%j.out"
+  --error "$LOG_DIR/%x_%j.err"
+  --time "$LATE_DEATH_FINALIZE_TIME"
+  --cpus-per-task "$LATE_DEATH_FINALIZE_CPUS"
+  --mem "$LATE_DEATH_FINALIZE_MEM"
 )
 PLOT_SBATCH_ARGS=(
   "${COMMON_SBATCH_ARGS[@]}"
@@ -305,6 +349,8 @@ write_submission_summary() {
     echo "task_list=$TASK_LIST_FUSION"
     echo "task_count=$N_TASKS"
     echo "array_spec=$ARRAY_SPEC"
+    echo "well_count=$N_WELLS"
+    echo "well_array_spec=$WELL_ARRAY_SPEC"
     echo "original_output=$ORIGINAL_OUT_DIR"
     echo "nucleated_output=$NUCLEATED_OUT_DIR"
     echo "consensus_summary=$OUT_ROOT/classification_consensus/summaries/cell_count_summary.csv"
@@ -331,9 +377,15 @@ write_submission_summary() {
     echo "merge_cpus_per_task=$MERGE_CPUS"
     echo "merge_mem_per_task=$MERGE_MEM"
     echo "merge_time=$MERGE_TIME"
-    echo "late_death_cpus_per_task=$LATE_DEATH_CPUS"
-    echo "late_death_mem_per_task=$LATE_DEATH_MEM"
-    echo "late_death_time=$LATE_DEATH_TIME"
+    echo "late_death_prepare_cpus_per_task=$LATE_DEATH_PREPARE_CPUS"
+    echo "late_death_prepare_mem_per_task=$LATE_DEATH_PREPARE_MEM"
+    echo "late_death_prepare_time=$LATE_DEATH_PREPARE_TIME"
+    echo "late_death_well_cpus_per_task=$LATE_DEATH_WELL_CPUS"
+    echo "late_death_well_mem_per_task=$LATE_DEATH_WELL_MEM"
+    echo "late_death_well_time=$LATE_DEATH_WELL_TIME"
+    echo "late_death_finalize_cpus_per_task=$LATE_DEATH_FINALIZE_CPUS"
+    echo "late_death_finalize_mem_per_task=$LATE_DEATH_FINALIZE_MEM"
+    echo "late_death_finalize_time=$LATE_DEATH_FINALIZE_TIME"
     echo "plot_cpus_per_task=$PLOT_CPUS"
     echo "plot_mem_per_task=$PLOT_MEM"
     echo "plot_time=$PLOT_TIME"
@@ -354,7 +406,9 @@ write_submission_summary() {
     echo "original_merge_job_id=${ORIGINAL_MERGE_JOB_ID:-not_submitted}"
     echo "nucleated_array_job_id=${NUCLEATED_JOB_ID:-not_submitted}"
     echo "nucleated_merge_job_id=${NUCLEATED_MERGE_JOB_ID:-not_submitted}"
-    echo "late_death_refinement_job_id=${LATE_DEATH_JOB_ID:-not_submitted}"
+    echo "late_death_prepare_job_id=${LATE_DEATH_PREPARE_JOB_ID:-not_submitted}"
+    echo "late_death_well_array_job_id=${LATE_DEATH_WELL_JOB_ID:-not_submitted}"
+    echo "late_death_finalize_job_id=${LATE_DEATH_FINALIZE_JOB_ID:-not_submitted}"
     echo "well_count_plot_job_id=${PLOT_JOB_ID:-not_submitted}"
     echo "dose_response_job_id=${DOSE_RESPONSE_JOB_ID:-not_submitted}"
     echo "d0_d5_calibration_report_job_id=${CALIBRATION_REPORT_JOB_ID:-not_submitted}"
@@ -368,6 +422,8 @@ echo "source_run_root=$SOURCE_RUN_ROOT"
 echo "output_root=$OUT_ROOT"
 echo "task_count=$N_TASKS"
 echo "array_spec=$ARRAY_SPEC"
+echo "well_count=$N_WELLS"
+echo "well_array_spec=$WELL_ARRAY_SPEC"
 echo "original_output=$ORIGINAL_OUT_DIR"
 echo "nucleated_output=$NUCLEATED_OUT_DIR"
 echo "consensus_summary=$OUT_ROOT/classification_consensus/summaries/cell_count_summary.csv"
@@ -380,7 +436,9 @@ echo "d0_d5_calibration_report=$CALIBRATION_ROOT/report_final/DEAD_CLASSIFICATIO
 printf 'manifest_sbatch_arg=%s\n' "${MANIFEST_SBATCH_ARGS[@]}"
 printf 'classification_sbatch_arg=%s\n' "${CLASSIFICATION_SBATCH_ARGS[@]}"
 printf 'merge_sbatch_arg=%s\n' "${MERGE_SBATCH_ARGS[@]}"
-printf 'late_death_sbatch_arg=%s\n' "${LATE_DEATH_SBATCH_ARGS[@]}"
+printf 'late_death_prepare_sbatch_arg=%s\n' "${LATE_DEATH_PREPARE_SBATCH_ARGS[@]}"
+printf 'late_death_well_sbatch_arg=%s\n' "${LATE_DEATH_WELL_SBATCH_ARGS[@]}"
+printf 'late_death_finalize_sbatch_arg=%s\n' "${LATE_DEATH_FINALIZE_SBATCH_ARGS[@]}"
 printf 'plot_sbatch_arg=%s\n' "${PLOT_SBATCH_ARGS[@]}"
 printf 'dose_response_sbatch_arg=%s\n' "${DOSE_RESPONSE_SBATCH_ARGS[@]}"
 printf 'calibration_report_sbatch_arg=%s\n' "${CALIBRATION_REPORT_SBATCH_ARGS[@]}"
@@ -389,7 +447,7 @@ printf 'report_sbatch_arg=%s\n' "${REPORT_SBATCH_ARGS[@]}"
 if [[ "$DRY_RUN_SUBMIT" == "1" ]]; then
   write_submission_summary
   echo "dry_run_submit=1"
-  echo "dependency_graph={d0_d5_calibration_report,manifest -> {original_array,nucleated_array} -> {original_merge,nucleated_merge} -> late_death_refinement -> well_count_plots -> dose_response} -> full_classification_report"
+  echo "dependency_graph={d0_d5_calibration_report,manifest -> {original_array,nucleated_array} -> {original_merge,nucleated_merge} -> late_death_prepare -> late_death_well_array[1-$N_WELLS] -> late_death_finalize -> well_count_plots -> dose_response} -> full_classification_report"
   exit 0
 fi
 
@@ -452,13 +510,23 @@ NUCLEATED_MERGE_JOB_ID="$(submit_job "${MERGE_SBATCH_ARGS[@]}" \
   --export=ALL,PROJECT_DIR="$PROJECT_DIR",RUN_ROOT="$SOURCE_RUN_ROOT",OUT_DIR="$NUCLEATED_OUT_DIR",FORCE_FUSION=1 \
   "$MERGE_WORKER")"
 
-LATE_DEATH_JOB_ID="$(submit_job "${LATE_DEATH_SBATCH_ARGS[@]}" \
+LATE_DEATH_PREPARE_JOB_ID="$(submit_job "${LATE_DEATH_PREPARE_SBATCH_ARGS[@]}" \
   --dependency "afterok:$ORIGINAL_MERGE_JOB_ID:$NUCLEATED_MERGE_JOB_ID" \
-  --export=ALL,PROJECT_DIR="$PROJECT_DIR",CLASSIFICATION_ROOT="$OUT_ROOT",PLATE_MAP="$PROJECT_DIR/cellpose_pipeline/scripts/analysisi/resources/SUM159_AC_Experiment1_PlateMap.csv",EXPECTED_FIELDS_PER_BRANCH="$EXPECTED_FIELDS",WORKERS="$LATE_DEATH_CPUS",FORCE_LATE_DEATH="$FORCE_LATE_DEATH",CALIBRATION_GO_NO_GO="$CALIBRATION_GO_NO_GO",SEGMENTATION_FREEZE_RECEIPT="$SEGMENTATION_FREEZE_RECEIPT" \
-  "$LATE_DEATH_WORKER")"
+  --export=ALL,PROJECT_DIR="$PROJECT_DIR",CLASSIFICATION_ROOT="$OUT_ROOT",PLATE_MAP="$PROJECT_DIR/cellpose_pipeline/scripts/analysisi/resources/SUM159_AC_Experiment1_PlateMap.csv",EXPECTED_FIELDS_PER_BRANCH="$EXPECTED_FIELDS",EXPECTED_WELLS="$N_WELLS",WORKERS="$LATE_DEATH_PREPARE_CPUS",FORCE_LATE_DEATH="$FORCE_LATE_DEATH",CALIBRATION_GO_NO_GO="$CALIBRATION_GO_NO_GO",SEGMENTATION_FREEZE_RECEIPT="$SEGMENTATION_FREEZE_RECEIPT" \
+  "$LATE_DEATH_PREPARE_WORKER")"
+
+LATE_DEATH_WELL_JOB_ID="$(submit_job "${LATE_DEATH_WELL_SBATCH_ARGS[@]}" \
+  --dependency "afterok:$LATE_DEATH_PREPARE_JOB_ID" \
+  --export=ALL,PROJECT_DIR="$PROJECT_DIR",CLASSIFICATION_ROOT="$OUT_ROOT",EXPECTED_FIELDS_PER_BRANCH="$EXPECTED_FIELDS",EXPECTED_WELLS="$N_WELLS",FORCE_LATE_DEATH="$FORCE_LATE_DEATH",CALIBRATION_GO_NO_GO="$CALIBRATION_GO_NO_GO",SEGMENTATION_FREEZE_RECEIPT="$SEGMENTATION_FREEZE_RECEIPT" \
+  "$LATE_DEATH_WELL_WORKER")"
+
+LATE_DEATH_FINALIZE_JOB_ID="$(submit_job "${LATE_DEATH_FINALIZE_SBATCH_ARGS[@]}" \
+  --dependency "afterany:$LATE_DEATH_WELL_JOB_ID" \
+  --export=ALL,PROJECT_DIR="$PROJECT_DIR",CLASSIFICATION_ROOT="$OUT_ROOT",EXPECTED_FIELDS_PER_BRANCH="$EXPECTED_FIELDS",EXPECTED_WELLS="$N_WELLS",CALIBRATION_GO_NO_GO="$CALIBRATION_GO_NO_GO",SEGMENTATION_FREEZE_RECEIPT="$SEGMENTATION_FREEZE_RECEIPT" \
+  "$LATE_DEATH_FINALIZE_WORKER")"
 
 PLOT_JOB_ID="$(submit_job "${PLOT_SBATCH_ARGS[@]}" \
-  --dependency "afterok:$LATE_DEATH_JOB_ID" \
+  --dependency "afterok:$LATE_DEATH_FINALIZE_JOB_ID" \
   --export=ALL,PROJECT_DIR="$PROJECT_DIR",RESULT_ROOT="$OUT_ROOT",EXPECTED_TIMEPOINTS="$EXPECTED_TIMEPOINTS",EXPECTED_SITES="$EXPECTED_SITES",PLOT_DPI="$PLOT_DPI" \
   "$PLOT_WORKER")"
 
@@ -479,7 +547,9 @@ echo "original_array_job_id=$ORIGINAL_JOB_ID"
 echo "original_merge_job_id=$ORIGINAL_MERGE_JOB_ID"
 echo "nucleated_array_job_id=$NUCLEATED_JOB_ID"
 echo "nucleated_merge_job_id=$NUCLEATED_MERGE_JOB_ID"
-echo "late_death_refinement_job_id=$LATE_DEATH_JOB_ID"
+echo "late_death_prepare_job_id=$LATE_DEATH_PREPARE_JOB_ID"
+echo "late_death_well_array_job_id=$LATE_DEATH_WELL_JOB_ID"
+echo "late_death_finalize_job_id=$LATE_DEATH_FINALIZE_JOB_ID"
 echo "well_count_plot_job_id=$PLOT_JOB_ID"
 echo "dose_response_job_id=$DOSE_RESPONSE_JOB_ID"
 echo "d0_d5_calibration_report_job_id=$CALIBRATION_REPORT_JOB_ID"

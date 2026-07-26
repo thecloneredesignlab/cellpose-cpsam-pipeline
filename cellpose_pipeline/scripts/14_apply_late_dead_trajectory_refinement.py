@@ -18,7 +18,7 @@ import json
 import math
 import os
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +81,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--expected-fields-per-branch", type=int, default=27200)
+    parser.add_argument("--expected-wells", type=int, default=80)
+    parser.add_argument(
+        "--mode",
+        choices=("all", "prepare", "well", "finalize"),
+        default="all",
+        help=(
+            "Execution stage. Production Slurm runs use prepare, one well "
+            "array task, then finalize. all is a sequential compatibility mode."
+        ),
+    )
+    parser.add_argument(
+        "--well-index",
+        type=int,
+        help="One-based row index in the prepared well manifest for --mode well.",
+    )
     parser.add_argument("--overlay-alpha", type=float, default=0.55)
     parser.add_argument("--force", action="store_true")
     return parser.parse_args()
@@ -127,6 +142,22 @@ def write_frame_atomic(path: Path, frame: pd.DataFrame) -> None:
     temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
     frame.to_csv(temporary, index=False, quoting=csv.QUOTE_MINIMAL)
     os.replace(temporary, path)
+
+
+def write_npz_atomic(path: Path, arrays: dict[str, np.ndarray]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    with temporary.open("wb") as stream:
+        np.savez_compressed(stream, **arrays)
+    os.replace(temporary, path)
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def bool_series(values: pd.Series) -> pd.Series:
@@ -317,6 +348,307 @@ def build_live_references(
     if missing:
         raise ValueError(f"Missing continuous d0 reference groups: {missing}")
     return arrays, counts
+
+
+def prepared_paths(dataset_root: Path) -> dict[str, Path]:
+    root = dataset_root / "prepared_refinement"
+    return {
+        "root": root,
+        "inventory": root / "inventory.csv",
+        "field_states": root / "field_states.csv",
+        "references": root / "live_references.npz",
+        "reference_index": root / "live_references.json",
+        "density_definitions": root / "density_definitions.json",
+        "reference_counts": root / "reference_counts.json",
+        "well_manifest": root / "well_manifest.tsv",
+        "receipt": root / "PREPARED.json",
+        "success": root / "_SUCCESS",
+    }
+
+
+def well_artifact_paths(
+    classification_root: Path,
+    well_index: int,
+    well: str,
+) -> dict[str, Path]:
+    root = classification_root / "late_death_refinement" / "well_tasks"
+    stem = f"{well_index:03d}_{well}"
+    return {
+        "status": root / "status" / f"{stem}.csv",
+        "success": root / "success" / f"{stem}.json",
+        "failure": root / "failure" / f"{stem}.json",
+    }
+
+
+def load_production_inputs(
+    args: argparse.Namespace,
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    Path,
+]:
+    calibration_receipt = json.loads(args.calibration_go_no_go.read_text())
+    calibration_configuration_path = (
+        args.calibration_go_no_go.parent / "best_configuration.json"
+    )
+    if not calibration_configuration_path.is_file():
+        raise FileNotFoundError(calibration_configuration_path)
+    calibration_configuration = json.loads(
+        calibration_configuration_path.read_text()
+    )
+    freeze_receipt = json.loads(args.segmentation_freeze_receipt.read_text())
+    if calibration_receipt.get("decision") != "GO":
+        raise RuntimeError(
+            "Full classification is blocked because calibration decision is "
+            f"{calibration_receipt.get('decision', 'MISSING')}"
+        )
+    if not bool(freeze_receipt.get("verified")):
+        raise RuntimeError("Segmentation freeze verification did not pass")
+    validate_approved_calibration_configuration(calibration_configuration)
+    return (
+        calibration_receipt,
+        calibration_configuration,
+        freeze_receipt,
+        calibration_configuration_path,
+    )
+
+
+def load_inventory_and_fields(
+    args: argparse.Namespace,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    inventory = pd.read_csv(
+        args.dataset_root / "feature_cache" / "shard_inventory.csv"
+    )
+    fields = pd.read_csv(
+        args.dataset_root / "feature_cache" / "field_trajectory_metrics.csv"
+    )
+    if inventory.empty or fields.empty:
+        raise ValueError(
+            "Late-death dataset inventory and field metrics must be non-empty"
+        )
+    inventory = inventory.merge(
+        fields[["branch", "key", "well"]].drop_duplicates(["branch", "key"]),
+        on=["branch", "key"],
+        how="left",
+        validate="one_to_one",
+    )
+    if inventory["well"].isna().any():
+        raise ValueError("Some inventory rows are missing well metadata")
+    counts = inventory.groupby("branch")["key"].nunique().to_dict()
+    for branch in BRANCH_DIRS:
+        if int(counts.get(branch, 0)) != args.expected_fields_per_branch:
+            raise ValueError(
+                f"Expected {args.expected_fields_per_branch} fields for {branch}, "
+                f"found {counts.get(branch, 0)}"
+            )
+    return inventory, fields
+
+
+def write_reference_artifacts(
+    paths: dict[str, Path],
+    references: dict[tuple[str, float, str, str], np.ndarray],
+) -> None:
+    payload: dict[str, np.ndarray] = {}
+    index: list[dict[str, Any]] = []
+    for array_index, key in enumerate(sorted(references), start=1):
+        branch, density_anchor, time_group, raw_feature = key
+        array_name = f"reference_{array_index:04d}"
+        values = np.asarray(references[key], dtype=float)
+        payload[array_name] = values
+        index.append(
+            {
+                "array_name": array_name,
+                "branch": branch,
+                "density_anchor": float(density_anchor),
+                "time_group": time_group,
+                "raw_feature": raw_feature,
+                "count": int(values.size),
+            }
+        )
+    write_npz_atomic(paths["references"], payload)
+    write_json_atomic(
+        paths["reference_index"],
+        {
+            "schema_version": 1,
+            "references": index,
+        },
+    )
+
+
+def load_reference_artifacts(
+    paths: dict[str, Path],
+) -> dict[tuple[str, float, str, str], np.ndarray]:
+    index_payload = json.loads(paths["reference_index"].read_text())
+    references: dict[tuple[str, float, str, str], np.ndarray] = {}
+    with np.load(paths["references"], allow_pickle=False) as archive:
+        for record in index_payload["references"]:
+            array_name = str(record["array_name"])
+            values = np.asarray(archive[array_name], dtype=float)
+            expected_count = int(record["count"])
+            if values.size != expected_count:
+                raise ValueError(
+                    f"Prepared reference count mismatch for {array_name}: "
+                    f"expected {expected_count}, found {values.size}"
+                )
+            key = (
+                str(record["branch"]),
+                float(record["density_anchor"]),
+                str(record["time_group"]),
+                str(record["raw_feature"]),
+            )
+            if key in references:
+                raise ValueError(f"Duplicate prepared reference key: {key}")
+            references[key] = values
+    return references
+
+
+def prepare_refinement_state(
+    args: argparse.Namespace,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    paths = prepared_paths(args.dataset_root)
+    if paths["success"].is_file() and not args.force:
+        _paths, receipt, manifest = validate_prepared_state(args)
+        return manifest, receipt
+    paths["success"].unlink(missing_ok=True)
+    inventory, fields = load_inventory_and_fields(args)
+    field_states, density_definitions = prepare_field_states(fields)
+    references, reference_counts = build_live_references(
+        inventory,
+        field_states,
+    )
+    well_counts = (
+        inventory.groupby(["well", "branch"])["key"]
+        .nunique()
+        .unstack(fill_value=0)
+        .reset_index()
+        .sort_values("well")
+        .reset_index(drop=True)
+    )
+    missing_branches = [
+        branch for branch in BRANCH_DIRS if branch not in well_counts.columns
+    ]
+    if missing_branches:
+        raise ValueError(
+            f"Prepared well manifest is missing branches: {missing_branches}"
+        )
+    if len(well_counts) != args.expected_wells:
+        raise ValueError(
+            f"Expected {args.expected_wells} wells, found {len(well_counts)}"
+        )
+    well_counts.insert(0, "array_index", np.arange(1, len(well_counts) + 1))
+    shard_counts = inventory.groupby("well").size().rename("total_shards")
+    well_counts = well_counts.merge(
+        shard_counts,
+        on="well",
+        how="left",
+        validate="one_to_one",
+    )
+    well_counts = well_counts.rename(
+        columns={
+            branch: f"{branch}_fields"
+            for branch in BRANCH_DIRS
+        }
+    )
+    if (
+        well_counts[[f"{branch}_fields" for branch in BRANCH_DIRS]]
+        .le(0)
+        .any()
+        .any()
+    ):
+        raise ValueError("Every prepared well must contain both branches")
+
+    inventory = inventory.sort_values(["well", "branch", "key"]).reset_index(
+        drop=True
+    )
+    field_states = field_states.sort_values(
+        ["well", "branch", "elapsed_hours", "site", "key"]
+    ).reset_index(drop=True)
+    write_frame_atomic(paths["inventory"], inventory)
+    write_frame_atomic(paths["field_states"], field_states)
+    write_reference_artifacts(paths, references)
+    write_json_atomic(paths["density_definitions"], density_definitions)
+    write_json_atomic(paths["reference_counts"], reference_counts)
+    paths["well_manifest"].parent.mkdir(parents=True, exist_ok=True)
+    temporary_manifest = paths["well_manifest"].with_name(
+        f".{paths['well_manifest'].name}.tmp.{os.getpid()}"
+    )
+    well_counts.to_csv(temporary_manifest, sep="\t", index=False)
+    os.replace(temporary_manifest, paths["well_manifest"])
+    receipt = {
+        "schema_version": 1,
+        "method_version": METHOD_VERSION,
+        "expected_fields_per_branch": args.expected_fields_per_branch,
+        "expected_wells": args.expected_wells,
+        "well_count": int(len(well_counts)),
+        "inventory_rows": int(len(inventory)),
+        "field_state_rows": int(len(field_states)),
+        "reference_group_count": int(len(references)),
+        "artifacts": {
+            name: {
+                "path": str(paths[name]),
+                "sha256": file_sha256(paths[name]),
+            }
+            for name in (
+                "inventory",
+                "field_states",
+                "references",
+                "reference_index",
+                "density_definitions",
+                "reference_counts",
+                "well_manifest",
+            )
+        },
+    }
+    write_json_atomic(paths["receipt"], receipt)
+    paths["success"].touch()
+    return well_counts, receipt
+
+
+def validate_prepared_state(
+    args: argparse.Namespace,
+) -> tuple[dict[str, Path], dict[str, Any], pd.DataFrame]:
+    paths = prepared_paths(args.dataset_root)
+    for name in (
+        "inventory",
+        "field_states",
+        "references",
+        "reference_index",
+        "density_definitions",
+        "reference_counts",
+        "well_manifest",
+        "receipt",
+        "success",
+    ):
+        if not paths[name].is_file():
+            raise FileNotFoundError(paths[name])
+    receipt = json.loads(paths["receipt"].read_text())
+    if receipt.get("method_version") != METHOD_VERSION:
+        raise RuntimeError("Prepared refinement method version does not match")
+    if int(receipt.get("expected_fields_per_branch", -1)) != int(
+        args.expected_fields_per_branch
+    ):
+        raise RuntimeError("Prepared field-count contract does not match")
+    if int(receipt.get("expected_wells", -1)) != int(args.expected_wells):
+        raise RuntimeError("Prepared well-count contract does not match")
+    for name, artifact in receipt["artifacts"].items():
+        path = paths[name]
+        if str(path) != str(artifact["path"]):
+            raise RuntimeError(f"Prepared artifact path drift: {name}")
+        if file_sha256(path) != str(artifact["sha256"]):
+            raise RuntimeError(f"Prepared artifact checksum drift: {name}")
+    manifest = pd.read_csv(paths["well_manifest"], sep="\t")
+    if len(manifest) != args.expected_wells:
+        raise ValueError(
+            f"Expected {args.expected_wells} prepared wells, found {len(manifest)}"
+        )
+    if manifest["array_index"].tolist() != list(
+        range(1, args.expected_wells + 1)
+    ):
+        raise ValueError("Prepared well array indices are not contiguous")
+    if manifest["well"].astype(str).duplicated().any():
+        raise ValueError("Prepared well manifest contains duplicate wells")
+    return paths, receipt, manifest
 
 
 def initialize_worker(
@@ -830,7 +1162,7 @@ def refine_group(task: dict[str, Any]) -> list[dict[str, Any]]:
     well = str(task["well"])
     frames: list[pd.DataFrame] = []
     for shard_path in task["shards"]:
-        frame = pd.read_csv(shard_path)
+        frame = pd.read_csv(shard_path, low_memory=False)
         frames.append(frame)
     data = pd.concat(frames, ignore_index=True)
     for column in (
@@ -1145,117 +1477,255 @@ def write_production_go_no_go(
     return out_path, payload
 
 
-def main() -> int:
-    args = parse_args()
-    args.classification_root = args.classification_root.resolve()
-    args.dataset_root = args.dataset_root.resolve()
-    if args.workers <= 0 or args.expected_fields_per_branch <= 0:
-        raise ValueError("--workers and --expected-fields-per-branch must be positive")
-    for required in (
-        args.classification_root,
-        args.dataset_root,
-        args.calibration_go_no_go,
-        args.segmentation_freeze_receipt,
+def run_one_well(
+    args: argparse.Namespace,
+    well_index: int,
+) -> dict[str, Any]:
+    paths, _prepared_receipt, manifest = validate_prepared_state(args)
+    selected = manifest.loc[manifest["array_index"].eq(well_index)]
+    if len(selected) != 1:
+        raise ValueError(
+            f"Well array index {well_index} matched {len(selected)} manifest rows"
+        )
+    manifest_row = selected.iloc[0]
+    well = str(manifest_row["well"])
+    artifacts = well_artifact_paths(args.classification_root, well_index, well)
+    if (
+        artifacts["success"].is_file()
+        and artifacts["status"].is_file()
+        and not args.force
     ):
-        if not required.exists():
-            raise FileNotFoundError(required)
-    calibration_receipt = json.loads(args.calibration_go_no_go.read_text())
-    calibration_configuration_path = (
-        args.calibration_go_no_go.parent / "best_configuration.json"
-    )
-    if not calibration_configuration_path.is_file():
-        raise FileNotFoundError(calibration_configuration_path)
-    calibration_configuration = json.loads(
-        calibration_configuration_path.read_text()
-    )
-    freeze_receipt = json.loads(args.segmentation_freeze_receipt.read_text())
-    if calibration_receipt.get("decision") != "GO":
-        raise RuntimeError(
-            "Full classification is blocked because calibration decision is "
-            f"{calibration_receipt.get('decision', 'MISSING')}"
-        )
-    if not bool(freeze_receipt.get("verified")):
-        raise RuntimeError("Segmentation freeze verification did not pass")
-    validate_approved_calibration_configuration(calibration_configuration)
-    inventory = pd.read_csv(
-        args.dataset_root / "feature_cache" / "shard_inventory.csv"
-    )
-    fields = pd.read_csv(
-        args.dataset_root / "feature_cache" / "field_trajectory_metrics.csv"
-    )
-    if inventory.empty or fields.empty:
-        raise ValueError("Late-death dataset inventory and field metrics must be non-empty")
-    inventory = inventory.merge(
-        fields[["branch", "key", "well"]].drop_duplicates(["branch", "key"]),
-        on=["branch", "key"],
-        how="left",
-        validate="one_to_one",
-    )
-    if inventory["well"].isna().any():
-        raise ValueError("Some inventory rows are missing well metadata")
-    counts = inventory.groupby("branch")["key"].nunique().to_dict()
-    for branch in BRANCH_DIRS:
-        if int(counts.get(branch, 0)) != args.expected_fields_per_branch:
-            raise ValueError(
-                f"Expected {args.expected_fields_per_branch} fields for {branch}, "
-                f"found {counts.get(branch, 0)}"
-            )
+        success = json.loads(artifacts["success"].read_text())
+        if file_sha256(artifacts["status"]) != success.get("status_sha256"):
+            raise RuntimeError(f"Completed well status checksum drift: {well}")
+        print(f"well={well}")
+        print(f"well_index={well_index}")
+        print("well_status=reused")
+        print(f"status_path={artifacts['status']}")
+        return success
 
-    field_states, density_definitions = prepare_field_states(fields)
-    references, reference_counts = build_live_references(inventory, field_states)
-    task_rows: list[dict[str, Any]] = []
-    for well, rows in inventory.groupby("well", sort=True):
-        task_rows.append(
-            {
-                "well": str(well),
-                "shards": [str(value) for value in rows["shard_path"]],
-            }
+    artifacts["success"].unlink(missing_ok=True)
+    inventory = pd.read_csv(paths["inventory"])
+    well_inventory = inventory.loc[
+        inventory["well"].astype(str).eq(well)
+    ].copy()
+    if well_inventory.empty:
+        raise ValueError(f"Prepared inventory is empty for well {well}")
+    expected_pairs = set(
+        zip(
+            well_inventory["branch"].astype(str),
+            well_inventory["key"].astype(str),
         )
-    worker_args = {
-        "classification_root": str(args.classification_root),
-        "overlay_alpha": args.overlay_alpha,
-        "force": args.force,
+    )
+    expected_total = int(
+        sum(
+            int(manifest_row[f"{branch}_fields"])
+            for branch in BRANCH_DIRS
+        )
+    )
+    if len(expected_pairs) != expected_total:
+        raise ValueError(
+            f"Prepared inventory pair count mismatch for {well}: "
+            f"expected {expected_total}, found {len(expected_pairs)}"
+        )
+
+    field_states = pd.read_csv(paths["field_states"])
+    references = load_reference_artifacts(paths)
+    initialize_worker(
+        references,
+        field_states,
+        {
+            "classification_root": str(args.classification_root),
+            "overlay_alpha": args.overlay_alpha,
+            "force": args.force,
+        },
+    )
+    task = {
+        "well": well,
+        "shards": [str(value) for value in well_inventory["shard_path"]],
     }
-    statuses: list[dict[str, Any]] = []
-    failures: list[dict[str, str]] = []
-    with ProcessPoolExecutor(
-        max_workers=args.workers,
-        initializer=initialize_worker,
-        initargs=(references, field_states, worker_args),
-    ) as executor:
-        futures = {executor.submit(refine_group, task): task for task in task_rows}
-        for completed, future in enumerate(as_completed(futures), start=1):
-            task = futures[future]
-            try:
-                statuses.extend(future.result())
-            except Exception as exc:  # noqa: BLE001
-                failures.append(
-                    {
-                        "well": str(task["well"]),
-                        "error": repr(exc),
-                    }
+    try:
+        statuses = refine_group(task)
+        status_frame = pd.DataFrame(statuses)
+        if status_frame.empty:
+            raise ValueError(f"No refinement statuses were produced for {well}")
+        if status_frame.duplicated(["branch", "key"]).any():
+            raise ValueError(f"Duplicate refinement field statuses for {well}")
+        actual_pairs = set(
+            zip(
+                status_frame["branch"].astype(str),
+                status_frame["key"].astype(str),
+            )
+        )
+        if actual_pairs != expected_pairs:
+            missing = sorted(expected_pairs - actual_pairs)[:10]
+            unexpected = sorted(actual_pairs - expected_pairs)[:10]
+            raise ValueError(
+                f"Refinement field set mismatch for {well}: "
+                f"missing={missing} unexpected={unexpected}"
+            )
+        status_frame = status_frame.sort_values(["branch", "key"]).reset_index(
+            drop=True
+        )
+        write_frame_atomic(artifacts["status"], status_frame)
+        success = {
+            "schema_version": 1,
+            "method_version": METHOD_VERSION,
+            "well": well,
+            "well_index": well_index,
+            "status": "SUCCESS",
+            "field_rows": int(len(status_frame)),
+            "branch_field_rows": {
+                branch: int(
+                    status_frame["branch"].astype(str).eq(branch).sum()
                 )
-            if completed == 1 or completed % 10 == 0 or completed == len(task_rows):
-                print(
-                    f"refined_groups={completed}/{len(task_rows)} "
-                    f"fields={len(statuses)} failures={len(failures)}",
-                    flush=True,
+                for branch in BRANCH_DIRS
+            },
+            "prepared_receipt_sha256": file_sha256(paths["receipt"]),
+            "status_path": str(artifacts["status"]),
+            "status_sha256": file_sha256(artifacts["status"]),
+        }
+        write_json_atomic(artifacts["success"], success)
+        artifacts["failure"].unlink(missing_ok=True)
+    except Exception as exc:
+        failure = {
+            "schema_version": 1,
+            "method_version": METHOD_VERSION,
+            "well": well,
+            "well_index": well_index,
+            "status": "FAILED",
+            "error": repr(exc),
+            "traceback": traceback.format_exc(),
+            "prepared_receipt_sha256": file_sha256(paths["receipt"]),
+        }
+        write_json_atomic(artifacts["failure"], failure)
+        raise
+
+    print(f"well={well}")
+    print(f"well_index={well_index}")
+    print("well_status=SUCCESS")
+    print(f"field_rows={success['field_rows']}")
+    print(f"status_path={artifacts['status']}")
+    return success
+
+
+def finalize_refinement(
+    args: argparse.Namespace,
+    calibration_receipt: dict[str, Any],
+    calibration_configuration_path: Path,
+    freeze_receipt: dict[str, Any],
+) -> dict[str, Any]:
+    paths, _prepared_receipt, manifest = validate_prepared_state(args)
+    inventory = pd.read_csv(paths["inventory"])
+    status_frames: list[pd.DataFrame] = []
+    failures: list[dict[str, Any]] = []
+    for row in manifest.itertuples(index=False):
+        well_index = int(row.array_index)
+        well = str(row.well)
+        artifacts = well_artifact_paths(
+            args.classification_root,
+            well_index,
+            well,
+        )
+        if not artifacts["success"].is_file():
+            error = "well success receipt is missing"
+            if artifacts["failure"].is_file():
+                error = str(
+                    json.loads(artifacts["failure"].read_text()).get(
+                        "error",
+                        error,
+                    )
                 )
+            failures.append(
+                {
+                    "well": well,
+                    "well_index": well_index,
+                    "error": error,
+                }
+            )
+            continue
+        if not artifacts["status"].is_file():
+            failures.append(
+                {
+                    "well": well,
+                    "well_index": well_index,
+                    "error": "well status CSV is missing",
+                }
+            )
+            continue
+        success = json.loads(artifacts["success"].read_text())
+        actual_sha256 = file_sha256(artifacts["status"])
+        if actual_sha256 != success.get("status_sha256"):
+            failures.append(
+                {
+                    "well": well,
+                    "well_index": well_index,
+                    "error": "well status CSV checksum drift",
+                }
+            )
+            continue
+        status = pd.read_csv(artifacts["status"])
+        if len(status) != int(success.get("field_rows", -1)):
+            failures.append(
+                {
+                    "well": well,
+                    "well_index": well_index,
+                    "error": "well status row-count drift",
+                }
+            )
+            continue
+        status_frames.append(status)
+
     audit_root = args.classification_root / "late_death_refinement"
     write_frame_atomic(
         audit_root / "failures.csv",
-        pd.DataFrame(failures, columns=("well", "error")),
+        pd.DataFrame(
+            failures,
+            columns=("well", "well_index", "error"),
+        ),
     )
     if failures:
         raise RuntimeError(
-            f"Death-classification consensus failed for {len(failures)} well groups"
+            f"Death-classification consensus failed for {len(failures)} wells"
         )
-    status_frame = pd.DataFrame(statuses).sort_values(["branch", "key"])
+
+    status_frame = pd.concat(status_frames, ignore_index=True, sort=False)
+    if status_frame.duplicated(["branch", "key"]).any():
+        raise ValueError("Duplicate branch/key rows across well status shards")
+    expected_pairs = set(
+        zip(
+            inventory["branch"].astype(str),
+            inventory["key"].astype(str),
+        )
+    )
+    actual_pairs = set(
+        zip(
+            status_frame["branch"].astype(str),
+            status_frame["key"].astype(str),
+        )
+    )
+    if actual_pairs != expected_pairs:
+        missing = sorted(expected_pairs - actual_pairs)[:10]
+        unexpected = sorted(actual_pairs - expected_pairs)[:10]
+        raise ValueError(
+            "Final refinement field set does not match prepared inventory: "
+            f"missing={missing} unexpected={unexpected}"
+        )
+    status_frame = status_frame.sort_values(["branch", "key"]).reset_index(
+        drop=True
+    )
     if len(status_frame) != 2 * args.expected_fields_per_branch:
         raise ValueError(
             f"Expected {2 * args.expected_fields_per_branch} refined fields, "
             f"found {len(status_frame)}"
         )
+    branch_counts = status_frame.groupby("branch")["key"].nunique().to_dict()
+    for branch in BRANCH_DIRS:
+        if int(branch_counts.get(branch, 0)) != args.expected_fields_per_branch:
+            raise ValueError(
+                f"Expected {args.expected_fields_per_branch} finalized fields "
+                f"for {branch}, found {branch_counts.get(branch, 0)}"
+            )
     write_frame_atomic(audit_root / "refinement_summary.csv", status_frame)
     summary_paths = {
         branch: str(
@@ -1279,6 +1749,8 @@ def main() -> int:
         freeze_receipt,
         args.expected_fields_per_branch,
     )
+    density_definitions = json.loads(paths["density_definitions"].read_text())
+    reference_counts = json.loads(paths["reference_counts"].read_text())
     config_payload = {
         "method_version": METHOD_VERSION,
         "method": (
@@ -1306,6 +1778,10 @@ def main() -> int:
         "production_go_no_go": str(production_receipt_path),
         "production_decision": production_receipt["decision"],
         "dataset_root": str(args.dataset_root),
+        "execution_model": "one_slurm_array_task_per_well_then_finalize",
+        "well_count": int(len(manifest)),
+        "prepared_refinement_receipt": str(paths["receipt"]),
+        "prepared_refinement_receipt_sha256": file_sha256(paths["receipt"]),
     }
     frozen_model_payload = {
         "method_version": METHOD_VERSION,
@@ -1328,6 +1804,72 @@ def main() -> int:
     print(f"total_uncertain={config_payload['total_uncertain']}")
     print(f"production_go_no_go={production_receipt_path}")
     print(f"production_decision={production_receipt['decision']}")
+    return config_payload
+
+
+def main() -> int:
+    args = parse_args()
+    args.classification_root = args.classification_root.resolve()
+    args.dataset_root = args.dataset_root.resolve()
+    if (
+        args.workers <= 0
+        or args.expected_fields_per_branch <= 0
+        or args.expected_wells <= 0
+    ):
+        raise ValueError(
+            "--workers, --expected-fields-per-branch, and --expected-wells "
+            "must be positive"
+        )
+    if args.mode == "well" and args.well_index is None:
+        raise ValueError("--well-index is required for --mode well")
+    if args.mode != "well" and args.well_index is not None:
+        raise ValueError("--well-index is only valid for --mode well")
+    for required in (
+        args.classification_root,
+        args.dataset_root,
+        args.calibration_go_no_go,
+        args.segmentation_freeze_receipt,
+    ):
+        if not required.exists():
+            raise FileNotFoundError(required)
+    (
+        calibration_receipt,
+        _calibration_configuration,
+        freeze_receipt,
+        calibration_configuration_path,
+    ) = load_production_inputs(args)
+
+    if args.mode in {"all", "prepare"}:
+        manifest, receipt = prepare_refinement_state(args)
+        print(f"prepared_wells={len(manifest)}")
+        print(f"prepared_receipt={prepared_paths(args.dataset_root)['receipt']}")
+        print(f"prepared_reference_groups={receipt['reference_group_count']}")
+        if args.mode == "prepare":
+            return 0
+
+    if args.mode == "well":
+        if not 1 <= int(args.well_index) <= args.expected_wells:
+            raise ValueError(
+                f"--well-index must be between 1 and {args.expected_wells}"
+            )
+        run_one_well(args, int(args.well_index))
+        return 0
+
+    if args.mode == "all":
+        for well_index in range(1, args.expected_wells + 1):
+            run_one_well(args, well_index)
+            if well_index == 1 or well_index % 10 == 0:
+                print(
+                    f"refined_wells={well_index}/{args.expected_wells}",
+                    flush=True,
+                )
+
+    finalize_refinement(
+        args,
+        calibration_receipt,
+        calibration_configuration_path,
+        freeze_receipt,
+    )
     return 0
 
 
