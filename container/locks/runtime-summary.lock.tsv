@@ -1,0 +1,16 @@
+component	version_or_value	provenance
+repository_commit	9c75b9b3f6d313d926759e768cd381686cc93bc6	local-origin-HPC match
+target_platform	linux/amd64	HPC uname
+hpc_glibc	2.28	HPC compute capture
+hpc_module	Anaconda3/2024.02-1	HPC compute capture
+python	3.10.20	HPC cellpose_cpsam
+conda	24.1.2	HPC module runtime
+cellpose	4.2.1.1	HPC cellpose_cpsam
+pytorch	2.12.1	HPC cellpose_cpsam
+torch_cuda_build	13.0	HPC Python runtime
+cuda_version_package	13.3	HPC Conda package
+cudnn_runtime_integer	92301	HPC torch runtime
+nccl	2.30.7.1	HPC Conda package
+hpc_gpu	NVIDIA A30	HPC compute capture
+hpc_gpu_compute_capability	8.0	HPC compute capture
+hpc_driver	580.105.08	HPC compute capture

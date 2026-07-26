@@ -1,0 +1,123 @@
+{
+  "GID": 107865,
+  "UID": 107865,
+  "active_prefix": "<HPC_HOME>/.conda/envs/cellpose_cpsam",
+  "active_prefix_name": "cellpose_cpsam",
+  "av_data_dir": "<MODULE_ROOT>/software/Anaconda3/2024.02-1/etc/conda",
+  "av_metadata_url_base": null,
+  "channels": [
+    "https://repo.anaconda.com/pkgs/main/linux-64",
+    "https://repo.anaconda.com/pkgs/main/noarch",
+    "https://repo.anaconda.com/pkgs/r/linux-64",
+    "https://repo.anaconda.com/pkgs/r/noarch"
+  ],
+  "conda_build_version": "24.1.2",
+  "conda_env_version": "24.1.2",
+  "conda_location": "<MODULE_ROOT>/software/Anaconda3/2024.02-1/lib/python3.11/site-packages/conda",
+  "conda_prefix": "<MODULE_ROOT>/software/Anaconda3/2024.02-1",
+  "conda_shlvl": 1,
+  "conda_version": "24.1.2",
+  "config_files": [],
+  "default_prefix": "<HPC_HOME>/.conda/envs/cellpose_cpsam",
+  "env_vars": {
+    "CIO_TEST": "<not set>",
+    "CONDA_DEFAULT_ENV": "cellpose_cpsam",
+    "CONDA_EXE": "<MODULE_ROOT>/software/Anaconda3/2024.02-1/bin/conda",
+    "CONDA_MKL_INTERFACE_LAYER_BACKUP": "",
+    "CONDA_PREFIX": "<HPC_HOME>/.conda/envs/cellpose_cpsam",
+    "CONDA_PROMPT_MODIFIER": "(cellpose_cpsam) ",
+    "CONDA_PYTHON_EXE": "<MODULE_ROOT>/software/Anaconda3/2024.02-1/bin/python",
+    "CONDA_ROOT": "<MODULE_ROOT>/software/Anaconda3/2024.02-1",
+    "CONDA_SHLVL": "1",
+    "CURL_CA_BUNDLE": "<not set>",
+    "FPATH": "/usr/share/lmod/lmod/init/ksh_funcs",
+    "HPC_REPO_PATH": "<HPC_REPO_PATH>",
+    "LD_PRELOAD": "<not set>",
+    "MANPATH": "<MODULE_ROOT>/software/Anaconda3/2024.02-1/share/man:<MODULE_ROOT>/software/Anaconda3/2024.02-1/man:/usr/share/lmod/lmod/share/man:/usr/local/share/man:/usr/share/man:/cm/local/apps/environment-modules/current/share/man",
+    "MODULEPATH": "/cm/local/modulefiles:/etc/modulefiles:/usr/share/modulefiles:/usr/share/Modules/modulefiles:/cm/shared/modulefiles:<MODULE_ROOT>/modules/all:/app/other/modules",
+    "PATH": "<HPC_HOME>/.conda/envs/cellpose_cpsam/bin:<MODULE_ROOT>/software/Anaconda3/2024.02-1/condabin:<MODULE_ROOT>/software/Anaconda3/2024.02-1:<MODULE_ROOT>/software/Anaconda3/2024.02-1/sbin:<MODULE_ROOT>/software/Anaconda3/2024.02-1/bin:<HPC_HOME>/.local/bin:/app/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:/opt/dell/srvadmin/bin:/cm/shared/apps/slurm/current/bin",
+    "PKG_CONFIG_PATH": "<MODULE_ROOT>/software/Anaconda3/2024.02-1/lib/pkgconfig",
+    "PYTHONNOUSERSITE": "1",
+    "REQUESTS_CA_BUNDLE": "<not set>",
+    "SSL_CERT_FILE": "<not set>",
+    "__LMOD_REF_COUNT_MANPATH": "<MODULE_ROOT>/software/Anaconda3/2024.02-1/share/man:1;<MODULE_ROOT>/software/Anaconda3/2024.02-1/man:1;/usr/share/lmod/lmod/share/man:1;/usr/local/share/man:1;/usr/share/man:1;/cm/local/apps/environment-modules/current/share/man:1",
+    "__LMOD_REF_COUNT_MODULEPATH": "/cm/local/modulefiles:1;/etc/modulefiles:1;/usr/share/modulefiles:1;/usr/share/Modules/modulefiles:1;/cm/shared/modulefiles:1;<MODULE_ROOT>/modules/all:1;/app/other/modules:1",
+    "__LMOD_REF_COUNT_PATH": "<MODULE_ROOT>/software/Anaconda3/2024.02-1:1;<MODULE_ROOT>/software/Anaconda3/2024.02-1/sbin:1;<MODULE_ROOT>/software/Anaconda3/2024.02-1/bin:1;<HPC_HOME>/.local/bin:1;/app/bin:1;/usr/local/bin:1;/usr/bin:1;/usr/local/sbin:1;/usr/sbin:1;/opt/dell/srvadmin/bin:1;/cm/shared/apps/slurm/current/bin:1",
+    "__LMOD_REF_COUNT_PKG_CONFIG_PATH": "<MODULE_ROOT>/software/Anaconda3/2024.02-1/lib/pkgconfig:1",
+    "__LMOD_SET_FPATH": "1"
+  },
+  "envs": [
+    "<MODULE_ROOT>/software/Anaconda3/2024.02-1",
+    "<MODULE_ROOT>/software/Anaconda3/2024.02-1/envs/R-4.2.3",
+    "<MODULE_ROOT>/software/Anaconda3/2024.02-1/envs/admin",
+    "<MODULE_ROOT>/software/Anaconda3/2024.02-1/envs/eb_env",
+    "<MODULE_ROOT>/software/Anaconda3/2024.02-1/envs/glances",
+    "<MODULE_ROOT>/software/Anaconda3/2024.02-1/envs/patient_notes",
+    "<MODULE_ROOT>/software/Anaconda3/2024.02-1/envs/test",
+    "<HPC_HOME>/.conda/envs/cellotype",
+    "<HPC_HOME>/.conda/envs/cellpose_cpsam"
+  ],
+  "envs_dirs": [
+    "<HPC_HOME>/.conda/envs",
+    "<MODULE_ROOT>/software/Anaconda3/2024.02-1/envs"
+  ],
+  "netrc_file": null,
+  "offline": false,
+  "pkgs_dirs": [
+    "<MODULE_ROOT>/software/Anaconda3/2024.02-1/pkgs",
+    "<HPC_HOME>/.conda/pkgs"
+  ],
+  "platform": "linux-64",
+  "python_version": "3.11.6.final.0",
+  "rc_path": "<HPC_HOME>/.condarc",
+  "requests_version": "2.32.5",
+  "root_prefix": "<MODULE_ROOT>/software/Anaconda3/2024.02-1",
+  "root_writable": false,
+  "site_dirs": [
+    "~/.local/lib/python3.10",
+    "~/.local/lib/python3.11"
+  ],
+  "solver": {
+    "default": true,
+    "name": "libmamba",
+    "user_agent": "solver/libmamba conda-libmamba-solver/24.1.0 libmambapy/1.5.6"
+  },
+  "sys.executable": "<MODULE_ROOT>/software/Anaconda3/2024.02-1/bin/python",
+  "sys.prefix": "<MODULE_ROOT>/software/Anaconda3/2024.02-1",
+  "sys.version": "3.11.6 | packaged by conda-forge | (main, Oct  3 2023, 10:40:35) [GCC 12.3.0]",
+  "sys_rc_path": "<MODULE_ROOT>/software/Anaconda3/2024.02-1/.condarc",
+  "user_agent": "conda/24.1.2 requests/2.32.5 CPython/3.11.6 Linux/4.18.0-553.70.1.el8_10.x86_64 rhel/8.10 glibc/2.28 solver/libmamba conda-libmamba-solver/24.1.0 libmambapy/1.5.6 aau/0.4.3 c/NQ3nGfswxNoA5o0QmKZ3vg s/X4RPu_qSxY8vXGb_3DTNgQ e/oKhxCsuFv_mhfwJHEArrQQ",
+  "user_rc_path": "<HPC_HOME>/.condarc",
+  "virtual_pkgs": [
+    [
+      "__archspec",
+      "1",
+      "zen3"
+    ],
+    [
+      "__conda",
+      "24.1.2",
+      "0"
+    ],
+    [
+      "__cuda",
+      "13.0",
+      "0"
+    ],
+    [
+      "__glibc",
+      "2.28",
+      "0"
+    ],
+    [
+      "__linux",
+      "4.18.0",
+      "0"
+    ],
+    [
+      "__unix",
+      "0",
+      "0"
+    ]
+  ]
+}

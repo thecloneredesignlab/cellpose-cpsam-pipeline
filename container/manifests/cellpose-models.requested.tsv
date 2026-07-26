@@ -1,0 +1,3 @@
+model	required	workflow_roles
+cpsam	TRUE	Brightfield;Combined;Combined blue-excess
+cpsam_v2	TRUE	Dead;Nuclei

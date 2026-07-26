@@ -1,0 +1,13 @@
+**
+
+!Dockerfile
+!.dockerignore
+!build.sh
+!locks/
+!locks/**
+!scripts/
+!scripts/**
+
+scripts/.DS_Store
+scripts/__pycache__/
+scripts/**/*.pyc

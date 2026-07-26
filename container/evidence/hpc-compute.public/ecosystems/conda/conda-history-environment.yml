@@ -1,0 +1,25 @@
+name: cellpose_cpsam
+channels:
+  - defaults
+dependencies:
+  - imagecodecs
+  - matplotlib
+  - numba[version='>=0.55']
+  - numpy[version='<2']
+  - opencv
+  - pandas
+  - pillow
+  - pip
+  - python-dateutil
+  - python=3.10
+  - pytorch[version='>=2.0']
+  - pytz
+  - scikit-image
+  - scikit-learn
+  - scipy
+  - setuptools
+  - six
+  - tifffile
+  - tqdm
+  - typing-extensions
+prefix: <HPC_HOME>/.conda/envs/cellpose_cpsam

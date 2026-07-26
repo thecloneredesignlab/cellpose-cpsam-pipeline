@@ -1,0 +1,5 @@
+command	version_args	required
+python	--version	TRUE
+conda	--version	TRUE
+pdftoppm	-v	TRUE
+npm	--version	FALSE

@@ -1,0 +1,10 @@
+module
+PIL
+cellpose
+cv2
+matplotlib
+numpy
+pandas
+scipy
+skimage
+tifffile

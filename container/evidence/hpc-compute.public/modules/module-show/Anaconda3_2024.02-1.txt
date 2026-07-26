@@ -1,0 +1,32 @@
+----------------------------------------------------------------------------
+   <MODULE_ROOT>/modules/all/Anaconda3/2024.02-1.lua:
+----------------------------------------------------------------------------
+help([[
+Description
+===========
+Built to complement the rich, open source Python community,
+the Anaconda platform provides an enterprise-ready data analytics platform 
+that empowers companies to adopt a modern open data science analytics architecture.
+
+
+More information
+================
+ - Homepage: https://www.anaconda.com
+]])
+whatis("Description: Built to complement the rich, open source Python community,
+the Anaconda platform provides an enterprise-ready data analytics platform 
+that empowers companies to adopt a modern open data science analytics architecture.
+")
+whatis("Homepage: https://www.anaconda.com")
+whatis("URL: https://www.anaconda.com")
+conflict("Anaconda3")
+prepend_path("MANPATH","<MODULE_ROOT>/software/Anaconda3/2024.02-1/man")
+prepend_path("MANPATH","<MODULE_ROOT>/software/Anaconda3/2024.02-1/share/man")
+prepend_path("PATH","<MODULE_ROOT>/software/Anaconda3/2024.02-1/bin")
+prepend_path("PATH","<MODULE_ROOT>/software/Anaconda3/2024.02-1/sbin")
+prepend_path("PKG_CONFIG_PATH","<MODULE_ROOT>/software/Anaconda3/2024.02-1/lib/pkgconfig")
+setenv("EBROOTANACONDA3","<MODULE_ROOT>/software/Anaconda3/2024.02-1")
+setenv("EBVERSIONANACONDA3","2024.02-1")
+setenv("EBDEVELANACONDA3","<MODULE_ROOT>/software/Anaconda3/2024.02-1/easybuild/Anaconda3-2024.02-1-easybuild-devel")
+prepend_path("PATH","<MODULE_ROOT>/software/Anaconda3/2024.02-1")
+

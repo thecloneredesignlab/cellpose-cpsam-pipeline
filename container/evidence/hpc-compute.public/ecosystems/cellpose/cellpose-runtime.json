@@ -1,0 +1,31 @@
+{
+  "available_model_names": [
+    "cpsam_v2",
+    "cpdino",
+    "cpdino-vitb",
+    "cpsam"
+  ],
+  "cellpose_model_init_parameters": [
+    "device",
+    "diam_mean",
+    "gpu",
+    "model_type",
+    "nchan",
+    "pretrained_model",
+    "use_bfloat16"
+  ],
+  "cellpose_package": "<HPC_HOME>/.conda/envs/cellpose_cpsam/lib/python3.10/site-packages/cellpose/__init__.py",
+  "cellpose_version": "4.2.1.1",
+  "model_dir": "<HPC_HOME>/.cellpose/models",
+  "model_dir_environment": "",
+  "model_url": "https://huggingface.co/mouseland/cellpose-sam/resolve/main/",
+  "models_module": "<HPC_HOME>/.conda/envs/cellpose_cpsam/lib/python3.10/site-packages/cellpose/models.py",
+  "torch_cuda_available": true,
+  "torch_cuda_build": "13.0",
+  "torch_cudnn_version": 92301,
+  "torch_device_count": 1,
+  "torch_device_names": [
+    "NVIDIA A30"
+  ],
+  "torch_version": "2.12.1"
+}

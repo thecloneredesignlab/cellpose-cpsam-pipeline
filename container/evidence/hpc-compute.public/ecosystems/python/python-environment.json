@@ -1,0 +1,16 @@
+{
+  "base_prefix": "<HPC_HOME>/.conda/envs/cellpose_cpsam",
+  "executable": "<HPC_HOME>/.conda/envs/cellpose_cpsam/bin/python3",
+  "prefix": "<HPC_HOME>/.conda/envs/cellpose_cpsam",
+  "site_packages": [
+    "<HPC_HOME>/.conda/envs/cellpose_cpsam/lib/python3.10/site-packages"
+  ],
+  "sys_path": [
+    "",
+    "<HPC_HOME>/.conda/envs/cellpose_cpsam/lib/python310.zip",
+    "<HPC_HOME>/.conda/envs/cellpose_cpsam/lib/python3.10",
+    "<HPC_HOME>/.conda/envs/cellpose_cpsam/lib/python3.10/lib-dynload",
+    "<HPC_HOME>/.conda/envs/cellpose_cpsam/lib/python3.10/site-packages"
+  ],
+  "version": "3.10.20 | packaged by conda-forge | (main, Jun 11 2026, 03:31:56) [GCC 14.3.0]"
+}

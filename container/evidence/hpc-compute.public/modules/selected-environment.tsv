@@ -1,0 +1,12 @@
+variable	value
+MODULEPATH	/cm/local/modulefiles:/etc/modulefiles:/usr/share/modulefiles:/usr/share/Modules/modulefiles:/cm/shared/modulefiles:<MODULE_ROOT>/modules/all:/app/other/modules
+PATH	<HPC_HOME>/.conda/envs/cellpose_cpsam/bin:<MODULE_ROOT>/software/Anaconda3/2024.02-1/condabin:<MODULE_ROOT>/software/Anaconda3/2024.02-1:<MODULE_ROOT>/software/Anaconda3/2024.02-1/sbin:<MODULE_ROOT>/software/Anaconda3/2024.02-1/bin:<HPC_HOME>/.local/bin:/app/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:/opt/dell/srvadmin/bin:/cm/shared/apps/slurm/current/bin
+LD_LIBRARY_PATH	
+LIBRARY_PATH	
+CPATH	
+C_INCLUDE_PATH	
+CPLUS_INCLUDE_PATH	
+PKG_CONFIG_PATH	<MODULE_ROOT>/software/Anaconda3/2024.02-1/lib/pkgconfig
+OMP_NUM_THREADS	
+OPENBLAS_NUM_THREADS	
+MKL_NUM_THREADS	

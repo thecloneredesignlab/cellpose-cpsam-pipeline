@@ -1,0 +1,5 @@
+command	path	version_args	required	version_first_line
+python	<HPC_HOME>/.conda/envs/cellpose_cpsam/bin/python	--version	TRUE	Python 3.10.20
+conda	conda	--version	TRUE	conda 24.1.2
+pdftoppm	/usr/bin/pdftoppm	-v	TRUE	pdftoppm version 20.11.0
+npm	NA	--version	FALSE	NA
