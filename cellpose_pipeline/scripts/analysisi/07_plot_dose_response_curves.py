@@ -14,6 +14,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.integrate import trapezoid
 from scipy.optimize import OptimizeWarning, curve_fit
 from scipy.stats import t as student_t
 
@@ -359,7 +360,7 @@ def extract_raw_responses(
         normalized_live = rows["live_count"].to_numpy(dtype=float) / baseline_live
         times = rows["elapsed_hours"].to_numpy(dtype=float)
         if metric == "auc":
-            raw_response = float(np.trapz(normalized_live, times))
+            raw_response = float(trapezoid(normalized_live, times))
         else:
             window_start = endpoint_hours - endpoint_window_hours
             endpoint_values = normalized_live[times >= window_start - 1e-8]
@@ -763,7 +764,10 @@ def mean_delta_gr_log_dose(doses: np.ndarray, delta_gr: np.ndarray) -> float:
     log_doses = np.log10(doses[positive])
     if log_doses.size < 2:
         raise ValueError("At least two positive doses are required to integrate delta GR")
-    return float(np.trapz(delta_gr[positive], log_doses) / (log_doses[-1] - log_doses[0]))
+    return float(
+        trapezoid(delta_gr[positive], log_doses)
+        / (log_doses[-1] - log_doses[0])
+    )
 
 
 def paired_gr_differences(rows: pd.DataFrame) -> pd.DataFrame:
@@ -2222,8 +2226,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--branch",
-        choices=("fusion", "fusion-nucleated-only", "legacy-combined"),
-        default="fusion",
+        choices=(
+            "fusion-consensus",
+            "fusion",
+            "fusion-nucleated-only",
+            "legacy-combined",
+        ),
+        default="fusion-consensus",
     )
     parser.add_argument(
         "--metric",

@@ -3,7 +3,7 @@ set -euo pipefail
 
 BASE="${BASE:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/20260619_SUM159_Doxorubicin_Cyclophosphamide}"
 PROJECT_DIR="${PROJECT_DIR:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/cellpose-cpsam-pipeline-v3}"
-CALIBRATION_ROOT="${CALIBRATION_ROOT:-$BASE/results/Tests_and_Parameters_calibration/late_dead_trajectory_optimization_20260723_024151}"
+CALIBRATION_ROOT="${CALIBRATION_ROOT:-$BASE/results/Tests_and_Parameters_calibration/death_classification_consensus_optimization_20260725_213646}"
 OUTPUT_DIR="${OUTPUT_DIR:-$CALIBRATION_ROOT/report_final}"
 PYTHON_BIN="${PYTHON_BIN:-/home/4482173/.conda/envs/cellpose_cpsam/bin/python}"
 NODE_ROOT="${NODE_ROOT:-/home/4482173/.local/opt/node-v24.18.0-linux-x64}"
@@ -11,15 +11,16 @@ REPORT_PLUGIN_ROOT="${REPORT_PLUGIN_ROOT:-/home/4482173/.local/share/data-analyt
 FORCE_REPORT="${FORCE_REPORT:-0}"
 
 for required in \
-  "$CALIBRATION_ROOT/_SUCCESS_V3" \
-  "$CALIBRATION_ROOT/RUN_SUMMARY_V3.txt" \
+  "$CALIBRATION_ROOT/_SUCCESS" \
+  "$CALIBRATION_ROOT/RUN_SUMMARY.txt" \
   "$CALIBRATION_ROOT/feature_cache/dataset_summary.json" \
-  "$CALIBRATION_ROOT/optimization_v3/best_configuration.json" \
-  "$CALIBRATION_ROOT/optimization_v3/anchor_metrics.json" \
-  "$CALIBRATION_ROOT/optimization_v3/field_parameter_trials.csv" \
-  "$CALIBRATION_ROOT/optimization_v3/object_parameter_trials.csv" \
-  "$CALIBRATION_ROOT/optimization_v3/late_death_field_summary.csv" \
-  "$CALIBRATION_ROOT/report_v3/qc_inventory.csv" \
+  "$CALIBRATION_ROOT/optimization/best_configuration.json" \
+  "$CALIBRATION_ROOT/optimization/anchor_metrics.json" \
+  "$CALIBRATION_ROOT/optimization/FULL_CLASSIFICATION_GO_NO_GO.json" \
+  "$CALIBRATION_ROOT/optimization/field_parameter_trials.csv" \
+  "$CALIBRATION_ROOT/optimization/object_parameter_trials.csv" \
+  "$CALIBRATION_ROOT/optimization/late_death_field_summary.csv" \
+  "$CALIBRATION_ROOT/report/qc_inventory.csv" \
   "$PROJECT_DIR/cellpose_pipeline/report/generate_late_dead_d0_d5_calibration_report.py"; do
   [[ -e "$required" ]] || {
     echo "Required d0+d5 calibration report input is missing: $required" >&2
@@ -85,6 +86,8 @@ assert receipt["report_mode"] == "d0_d5_calibration"
 assert receipt["completed_shards"] == 7360
 assert receipt["failed_shards"] == 0
 assert receipt["changed_d0_object_count"] == 0
+assert receipt["operational_decision"] == "GO"
+assert receipt["biological_accuracy_claimed"] is False
 assert receipt["html_enhancement"]["high_resolution_image_frames"] >= 8
 PY
 

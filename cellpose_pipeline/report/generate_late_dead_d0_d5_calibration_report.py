@@ -57,6 +57,27 @@ def median(values: list[float]) -> float:
     return float(statistics.median(values)) if values else 0.0
 
 
+def calibration_layout(root: Path) -> dict[str, Path]:
+    optimization = (
+        root / "optimization"
+        if (root / "optimization").is_dir()
+        else root / "optimization_v3"
+    )
+    report = root / "report" if (root / "report").is_dir() else root / "report_v3"
+    run_summary = (
+        root / "RUN_SUMMARY.txt"
+        if (root / "RUN_SUMMARY.txt").is_file()
+        else root / "RUN_SUMMARY_V3.txt"
+    )
+    success = root / "_SUCCESS" if (root / "_SUCCESS").is_file() else root / "_SUCCESS_V3"
+    return {
+        "optimization": optimization,
+        "report": report,
+        "run_summary": run_summary,
+        "success": success,
+    }
+
+
 def d0_datasets(d0_root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     summary = COMMON.read_csv(d0_root / "annotations" / "final_annotation_summary.csv")
     states: list[dict[str, Any]] = []
@@ -89,20 +110,26 @@ def d0_datasets(d0_root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any
 
 
 def calibration_datasets(root: Path) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    layout = calibration_layout(root)
+    optimization = layout["optimization"]
+    report = layout["report"]
     dataset_summary = COMMON.read_json(root / "feature_cache" / "dataset_summary.json")
-    anchor = COMMON.read_json(root / "optimization_v3" / "anchor_metrics.json")
-    best = COMMON.read_json(root / "optimization_v3" / "best_configuration.json")
-    run_summary = COMMON.parse_key_value_file(root / "RUN_SUMMARY_V3.txt")
+    anchor = COMMON.read_json(optimization / "anchor_metrics.json")
+    best = COMMON.read_json(optimization / "best_configuration.json")
+    go_no_go = COMMON.read_json(
+        optimization / "FULL_CLASSIFICATION_GO_NO_GO.json"
+    )
+    run_summary = COMMON.parse_key_value_file(layout["run_summary"])
     field_trials_raw = COMMON.read_csv(
-        root / "optimization_v3" / "field_parameter_trials.csv"
+        optimization / "field_parameter_trials.csv"
     )
     object_trials_raw = COMMON.read_csv(
-        root / "optimization_v3" / "object_parameter_trials.csv"
+        optimization / "object_parameter_trials.csv"
     )
     field_summary = COMMON.read_csv(
-        root / "optimization_v3" / "late_death_field_summary.csv"
+        optimization / "late_death_field_summary.csv"
     )
-    qc_inventory = COMMON.read_csv(root / "report_v3" / "qc_inventory.csv")
+    qc_inventory = COMMON.read_csv(report / "qc_inventory.csv")
 
     d0_root = COMMON.require_dir(Path(dataset_summary["d0_audit_root"]))
     d0_states, d0_relations = d0_datasets(d0_root)
@@ -117,7 +144,17 @@ def calibration_datasets(root: Path) -> tuple[dict[str, list[dict[str, Any]]], d
             "failed_shards": COMMON.as_int(dataset_summary["failed_shards"]),
             "selection_seed": COMMON.as_int(dataset_summary["selection_seed"]),
             "changed_d0_objects": COMMON.as_int(anchor["changed_d0_object_count"]),
+            "passed_validation_gates": sum(
+                bool(values["pass"]) for values in go_no_go["gates"].values()
+            ),
         }
+    ]
+    convergence_gates = [
+        {
+            "gate": name.replace("_", " ").title(),
+            "status": "PASS" if values["pass"] else "FAIL",
+        }
+        for name, values in go_no_go["gates"].items()
     ]
 
     anchor_rates = [
@@ -167,8 +204,16 @@ def calibration_datasets(root: Path) -> tuple[dict[str, list[dict[str, Any]]], d
             "new_calls_outside_e9_f9": COMMON.as_int(
                 row["new_calls_outside_e9_f9"]
             ),
+            "perturbation_stability": COMMON.as_float(
+                row.get("object_evidence_stability_rate", 0.0)
+            ),
             "development_pass": "Passed"
             if COMMON.truthy(row["passes_development"])
+            else "Rejected",
+            "production_candidate": "Passed"
+            if COMMON.truthy(
+                row.get("passes_production_candidate", False)
+            )
             else "Rejected",
             "configuration": row["configuration"],
         }
@@ -260,6 +305,7 @@ def calibration_datasets(root: Path) -> tuple[dict[str, list[dict[str, Any]]], d
         "d5_details": d5_details,
         "selected_parameters": parameters,
         "qc_summary": qc_summary,
+        "convergence_gates": convergence_gates,
     }
     metadata = {
         "dataset_summary": dataset_summary,
@@ -267,28 +313,30 @@ def calibration_datasets(root: Path) -> tuple[dict[str, list[dict[str, Any]]], d
         "best_configuration": best,
         "run_summary": run_summary,
         "d0_root": d0_root,
+        "go_no_go": go_no_go,
+        "layout": layout,
     }
     return datasets, metadata
 
 
 def report_figures(root: Path, d0_root: Path) -> dict[str, Any]:
+    report = calibration_layout(root)["report"]
     figures: dict[str, Any] = {
         "d0_e2": D0_REPORT.qc_figure(d0_root, "E2_1_00d00h00m"),
         "d0_f5": D0_REPORT.qc_figure(d0_root, "F5_1_00d00h00m"),
         "d0_h9": D0_REPORT.qc_figure(d0_root, "H9_4_00d00h00m"),
         "trajectory_overview": COMMON.read_image(
-            root / "report_v3" / "charts" / "e9_f9_timecourses.png"
+            report / "charts" / "e9_f9_timecourses.png"
         ),
         "feature_map": COMMON.read_image(
-            root / "report_v3" / "charts" / "e9_day5_feature_map.png"
+            report / "charts" / "e9_day5_feature_map.png"
         ),
     }
     qc_cases = (
         (
             "d5_e9_development",
             "E9 development: site 1 at Day 5",
-            root
-            / "report_v3"
+            report
             / "qc"
             / "E9"
             / "original__E9_1_05d00h00m__late_death_qc.png",
@@ -296,8 +344,7 @@ def report_figures(root: Path, d0_root: Path) -> dict[str, Any]:
         (
             "d5_e9_holdout",
             "E9 holdout: site 2 at Day 5",
-            root
-            / "report_v3"
+            report
             / "qc"
             / "E9"
             / "original__E9_2_05d00h00m__late_death_qc.png",
@@ -305,8 +352,7 @@ def report_figures(root: Path, d0_root: Path) -> dict[str, Any]:
         (
             "d5_f9_replicate",
             "F9 replicate diagnostic: site 1 at Day 5",
-            root
-            / "report_v3"
+            report
             / "qc"
             / "F9"
             / "original__F9_1_05d00h00m__late_death_qc.png",
@@ -332,36 +378,43 @@ def report_sources(root: Path, d0_root: Path) -> list[dict[str, Any]]:
             "field_trials",
             "Field-collapse parameter trials",
             calibration,
-            "optimization_v3/field_parameter_trials.csv",
+            "optimization/field_parameter_trials.csv",
             "Compare field-collapse candidates and untreated activation.",
         ),
         COMMON.logical_source(
             "object_trials",
             "Object-evidence parameter trials",
             calibration,
-            "optimization_v3/object_parameter_trials.csv",
+            "optimization/object_parameter_trials.csv",
             "Compare object-level rescue candidates and control false-positive proxies.",
         ),
         COMMON.logical_source(
             "configuration",
             "Approved late-death configuration",
             calibration,
-            "optimization_v3/best_configuration.json",
+            "optimization/best_configuration.json",
             "Read the approved decision layers and frozen parameters.",
         ),
         COMMON.logical_source(
             "field_summary",
             "Late-death field summary",
             calibration,
-            "optimization_v3/late_death_field_summary.csv",
+            "optimization/late_death_field_summary.csv",
             "Compare baseline and final field-level dead fractions.",
         ),
         COMMON.logical_source(
             "qc",
             "Calibration QC inventory",
             calibration,
-            "report_v3/qc_inventory.csv",
+            "report/qc_inventory.csv",
             "Validate saved d0, E9, and F9 QC coverage.",
+        ),
+        COMMON.logical_source(
+            "convergence",
+            "Operational calibration GO or NO-GO receipt",
+            calibration,
+            "optimization/FULL_CLASSIFICATION_GO_NO_GO.json",
+            "Read d0 safety, positive-anchor, branch, temporal, and perturbation gates.",
         ),
         COMMON.logical_source(
             "d0_annotations",
@@ -559,6 +612,21 @@ def report_manifest(
     ]
     tables = [
         {
+            "id": "convergence_table",
+            "title": "Operational calibration convergence gates",
+            "subtitle": (
+                "Proxy validation only; PASS does not estimate biological "
+                "sensitivity or specificity."
+            ),
+            "dataset": "convergence_gates",
+            "sourceId": "convergence",
+            "defaultSort": {"field": "gate", "direction": "asc"},
+            "columns": [
+                {"field": "gate", "label": "Gate", "type": "text"},
+                {"field": "status", "label": "Status", "type": "text"},
+            ],
+        },
+        {
             "id": "d5_detail_table",
             "title": "Day-5 calibration cohort statistics",
             "subtitle": "Exact minimum and median final dead fractions by saved cohort.",
@@ -606,7 +674,7 @@ def report_manifest(
         {
             "id": "object_trial_table",
             "title": "Object-level candidate configurations",
-            "subtitle": "Development response, untreated-live proxy, and off-sentinel calls.",
+            "subtitle": "Development response, untreated-live proxy, perturbation stability, and off-sentinel calls.",
             "dataset": "object_trials",
             "sourceId": "object_trials",
             "defaultSort": {
@@ -631,8 +699,18 @@ def report_manifest(
                     "format": "number",
                 },
                 {
+                    "field": "perturbation_stability",
+                    "label": "±0.05 stability",
+                    "format": "percent",
+                },
+                {
                     "field": "development_pass",
                     "label": "Development gate",
+                    "type": "text",
+                },
+                {
+                    "field": "production_candidate",
+                    "label": "All ranking gates",
                     "type": "text",
                 },
             ],
@@ -696,8 +774,8 @@ def report_manifest(
                     "format": "number",
                 },
                 {
-                    "label": "Selection seed",
-                    "field": "selection_seed",
+                    "label": "Validation gates passed",
+                    "field": "passed_validation_gates",
                     "format": "number",
                 },
             ],
@@ -710,14 +788,18 @@ def report_manifest(
             "type": "markdown",
             "body": (
                 "# SUM159 d0 + Day-5 Dead-Classification Calibration Report\n\n"
-                "The calibration combines a frozen d0 classifier with a new Day-5 rescue. "
+                "The calibration combines a frozen d0 classifier with a late-time consensus rescue. "
                 "The first calibration stage separated Combined-cell state from independently "
                 "segmented Death objects, preventing nearby weak blue signal from automatically "
                 "rewriting a visually live cell. The second stage addressed a different failure: "
                 "after drug exposure, dead cells can remain in place while blue and red signal "
-                "decay and the cell shrinks. A density-aware field-collapse gate followed by "
-                "object-level multi-signal evidence restores those late deaths. The late-stage "
-                "model is explicitly forbidden from changing the frozen d0 result."
+                "decay and the cell shrinks. The revised stage uses continuous density- and "
+                "time-matched references, cell-conditioned Dead signal, two frozen segmentation "
+                "views, multi-frame spatial continuity, and a recoverable field-collapse state. "
+                "Strong live evidence vetoes an initiating rescue; a high-confidence rescue is "
+                "then propagated only across a mutual-nearest dual-view pair. Final pair "
+                "disagreements become uncertainty, and the late-stage model is explicitly "
+                "forbidden from changing the frozen d0 result."
             ),
         },
         {
@@ -736,6 +818,23 @@ def report_manifest(
                 "diagnostic. Ten wells provide broader treated and untreated trajectory context. "
                 "These are operational anchors rather than manually annotated biological labels."
             ),
+        },
+        {
+            "id": "convergence",
+            "type": "markdown",
+            "body": (
+                "## Convergence is defined by predeclared operational proxy gates\n\n"
+                "The optimizer must preserve d0, retain supported-death anchors, maintain "
+                "high-confidence multi-frame temporal support, limit matched-pair dual-view "
+                "disagreement, and remain stable "
+                "under small feature-percentile perturbations. No gate is interpreted as a "
+                "biological sensitivity or specificity estimate."
+            ),
+        },
+        {
+            "id": "convergence_table_block",
+            "type": "table",
+            "tableId": "convergence_table",
         },
         {
             "id": "d0_method",
@@ -779,11 +878,13 @@ def report_manifest(
             "body": (
                 "## Field collapse gates object-level multi-signal rescue\n\n"
                 "A field is first screened for persistent, multi-site collapse in object count, "
-                "mask area, cytoplasm, red mass, and mask coverage relative to density-matched "
-                "references. Only inside an accepted late treated field can an object be rescued. "
-                "The object decision combines nucleus-to-cytoplasm ratios, area and cytoplasm "
-                "depletion, red-mass loss, shape, temporal-remnant evidence, and explicit healthy "
-                "signals. Existing confirmed deaths are preserved and d0 is never modified."
+                "mask area, cytoplasm, red mass, and mask coverage relative to continuously "
+                "density- and time-matched references. The field state can recover after sustained "
+                "normalization. Only inside a dual-view accepted late treated field can an object "
+                "be rescued. The object decision combines nucleus-to-cytoplasm ratios, area and "
+                "cytoplasm depletion, red-mass loss, shape, cell-conditioned Dead signal, "
+                "multi-frame temporal evidence, and explicit healthy signals. Existing confirmed "
+                "deaths are preserved and d0 is never modified."
             ),
         },
         {
@@ -802,9 +903,10 @@ def report_manifest(
             "type": "markdown",
             "body": (
                 "## Object-level tuning rejects unnecessary calls outside the sentinel wells\n\n"
-                "Among configurations that recover E9, the selected object thresholds minimize "
-                "unnecessary calls outside E9/F9 while preserving a zero untreated-live "
-                "counterfactual false-positive proxy."
+                "Among configurations that recover E9, the selected object thresholds must also "
+                "pass the ±0.05 feature-percentile stability gate and the untreated-live "
+                "counterfactual false-positive guardrail before unnecessary calls outside "
+                "E9/F9 are minimized."
             ),
         },
         {"id": "object_trial_block", "type": "table", "tableId": "object_trial_table"},
@@ -835,7 +937,8 @@ def report_manifest(
             "type": "markdown",
             "body": (
                 "## Safety anchors preserve supported death while protecting untreated live cells\n\n"
-                "Blue-supported deaths and tracked temporal remnants are retained, while the "
+                "Blue-supported deaths and high-confidence, multi-frame tracked temporal "
+                "remnants are retained, while the "
                 "counterfactual untreated-live proxy remains unchanged. A displayed value of "
                 "100% or 0% is an operational test outcome, not biological sensitivity or "
                 "specificity."
@@ -964,16 +1067,18 @@ def report_manifest(
 def main() -> int:
     args = parse_args()
     root = COMMON.require_dir(args.calibration_root)
+    layout = calibration_layout(root)
     for required in (
-        root / "_SUCCESS_V3",
-        root / "RUN_SUMMARY_V3.txt",
+        layout["success"],
+        layout["run_summary"],
         root / "feature_cache" / "dataset_summary.json",
-        root / "optimization_v3" / "best_configuration.json",
-        root / "optimization_v3" / "anchor_metrics.json",
-        root / "optimization_v3" / "field_parameter_trials.csv",
-        root / "optimization_v3" / "object_parameter_trials.csv",
-        root / "optimization_v3" / "late_death_field_summary.csv",
-        root / "report_v3" / "qc_inventory.csv",
+        layout["optimization"] / "best_configuration.json",
+        layout["optimization"] / "anchor_metrics.json",
+        layout["optimization"] / "FULL_CLASSIFICATION_GO_NO_GO.json",
+        layout["optimization"] / "field_parameter_trials.csv",
+        layout["optimization"] / "object_parameter_trials.csv",
+        layout["optimization"] / "late_death_field_summary.csv",
+        layout["report"] / "qc_inventory.csv",
     ):
         COMMON.require_file(required)
     output_dir = (
@@ -1024,6 +1129,8 @@ def main() -> int:
         "changed_d0_object_count": metadata["anchor_metrics"][
             "changed_d0_object_count"
         ],
+        "operational_decision": metadata["go_no_go"]["decision"],
+        "biological_accuracy_claimed": False,
         "production_integration": metadata["best_configuration"][
             "production_integration"
         ],

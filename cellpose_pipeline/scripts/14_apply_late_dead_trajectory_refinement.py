@@ -15,6 +15,7 @@ import csv
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -26,7 +27,7 @@ import pandas as pd
 import tifffile
 
 
-METHOD_VERSION = "late_dead_trajectory_v1_20260723"
+METHOD_VERSION = "death_classification_consensus_v2_20260725"
 BRANCH_DIRS = {
     "original": "classification_fusion",
     "nucleated_only": "classification_fusion_nucleated_only",
@@ -57,7 +58,7 @@ OBJECT_CONFIGURATION = dict(MODEL.APPROVED_OBJECT_CONFIGURATION)
 LATE_MIN_HOURS = float(MODEL.APPROVED_LATE_MIN_HOURS)
 
 
-WORKER_REFERENCES: dict[tuple[str, str, str], np.ndarray] = {}
+WORKER_REFERENCES: dict[tuple[str, float, str, str], np.ndarray] = {}
 WORKER_FIELD_STATES = pd.DataFrame()
 WORKER_ARGS: dict[str, Any] = {}
 
@@ -66,11 +67,52 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--classification-root", type=Path, required=True)
     parser.add_argument("--dataset-root", type=Path, required=True)
+    parser.add_argument(
+        "--calibration-go-no-go",
+        type=Path,
+        required=True,
+        help="GO receipt produced by the frozen no-ground-truth calibration run.",
+    )
+    parser.add_argument(
+        "--segmentation-freeze-receipt",
+        type=Path,
+        required=True,
+        help="Read-only segmentation freeze verification receipt.",
+    )
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--expected-fields-per-branch", type=int, default=27200)
     parser.add_argument("--overlay-alpha", type=float, default=0.55)
     parser.add_argument("--force", action="store_true")
     return parser.parse_args()
+
+
+def validate_approved_calibration_configuration(
+    calibration_configuration: dict[str, Any],
+) -> None:
+    if calibration_configuration.get("production_integration") != "approved":
+        raise RuntimeError(
+            "Selected calibration configuration is not approved for production"
+        )
+    if calibration_configuration.get("field_configuration") != FIELD_CONFIGURATION:
+        raise RuntimeError(
+            "Production field configuration does not match the approved "
+            "calibration configuration"
+        )
+    if calibration_configuration.get("object_configuration") != OBJECT_CONFIGURATION:
+        raise RuntimeError(
+            "Production object configuration does not match the approved "
+            "calibration configuration"
+        )
+    if not math.isclose(
+        float(calibration_configuration.get("late_min_hours", math.nan)),
+        LATE_MIN_HOURS,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise RuntimeError(
+            "Production late-min-hours does not match the approved "
+            "calibration configuration"
+        )
 
 
 def write_json_atomic(path: Path, payload: Any) -> None:
@@ -152,7 +194,7 @@ def capture_pre_refinement_state(
 
 def prepare_field_states(
     fields: pd.DataFrame,
-) -> tuple[pd.DataFrame, dict[str, dict[str, float]]]:
+) -> tuple[pd.DataFrame, dict[str, dict[str, Any]]]:
     result = fields.copy()
     result["treated"] = bool_series(result["treated"])
     result["density_score"] = (
@@ -161,7 +203,9 @@ def prepare_field_states(
         * MODEL.finite_numeric(result["field_mask_fraction_ratio_to_peak"])
     )
     result["density_bin"] = ""
-    definitions: dict[str, dict[str, float]] = {}
+    result["density_percentile"] = np.nan
+    result["density_anchor"] = np.nan
+    definitions: dict[str, dict[str, Any]] = {}
     for branch, indices in result.groupby("branch").groups.items():
         branch_rows = result.loc[indices]
         reference = branch_rows.loc[
@@ -176,7 +220,17 @@ def prepare_field_states(
         definitions[str(branch)] = {
             "low_middle": float(q1),
             "middle_high": float(q2),
+            "continuous_reference_count": int(reference.size),
+            "continuous_anchor_percentiles": list(MODEL.DENSITY_ANCHORS),
         }
+        density_percentiles = MODEL.empirical_density_percentile(
+            reference.to_numpy(float),
+            result.loc[indices, "density_score"].to_numpy(float),
+        )
+        result.loc[indices, "density_percentile"] = density_percentiles
+        result.loc[indices, "density_anchor"] = [
+            MODEL.nearest_density_anchor(value) for value in density_percentiles
+        ]
         result.loc[indices, "density_bin"] = np.select(
             [
                 result.loc[indices, "density_score"] <= q1,
@@ -190,64 +244,83 @@ def prepare_field_states(
         FIELD_CONFIGURATION,
         LATE_MIN_HOURS,
     )
+    states = MODEL.apply_branch_field_consensus(states)
     return states, definitions
 
 
-def build_d0_references(
+def build_live_references(
     inventory: pd.DataFrame,
     field_states: pd.DataFrame,
-) -> tuple[dict[tuple[str, str, str], np.ndarray], dict[str, int]]:
+) -> tuple[dict[tuple[str, float, str, str], np.ndarray], dict[str, int]]:
     field_density = field_states[
-        ["branch", "key", "density_bin"]
+        [
+            "branch",
+            "key",
+            "cohort",
+            "elapsed_hours",
+            "density_percentile",
+            "density_anchor",
+        ]
     ].drop_duplicates(["branch", "key"])
-    references: dict[tuple[str, str, str], list[np.ndarray]] = {}
-    d0_inventory = inventory.loc[inventory["cohort"].eq("d0_frozen")]
-    for row in d0_inventory.itertuples(index=False):
+    references: dict[tuple[str, float, str, str], list[np.ndarray]] = {}
+    for row in inventory.itertuples(index=False):
         shard = Path(row.shard_path)
         frame = pd.read_csv(shard)
         density_rows = field_density.loc[
             field_density["branch"].eq(str(row.branch))
             & field_density["key"].eq(str(row.key)),
-            "density_bin",
         ]
         if len(density_rows) != 1:
-            raise ValueError(f"Missing density bin for {row.branch}/{row.key}")
-        density_bin = str(density_rows.iloc[0])
+            raise ValueError(f"Missing density reference for {row.branch}/{row.key}")
+        density_row = density_rows.iloc[0]
+        d0 = str(row.cohort) == "d0_frozen"
         eligible = (
-            frame["proxy_type"].eq("d0_live_anchor")
+            frame["proxy_type"].eq(
+                "d0_live_anchor" if d0 else "untreated_live_anchor"
+            )
             & bool_series(frame["countable"])
             & ~bool_series(frame["border_touching"])
         )
         live = frame.loc[eligible]
+        if live.empty:
+            continue
+        time_group = MODEL.reference_time_group(
+            str(row.cohort),
+            float(density_row["elapsed_hours"]),
+            not d0,
+        )
+        density_anchor = float(density_row["density_anchor"])
         for _output, (raw, _direction) in MODEL.RAW_FEATURES.items():
             values = pd.to_numeric(live[raw], errors="coerce").to_numpy(float)
             values = values[np.isfinite(values)]
             references.setdefault(
-                (str(row.branch), density_bin, raw),
+                (str(row.branch), density_anchor, time_group, raw),
                 [],
             ).append(values)
-    arrays: dict[tuple[str, str, str], np.ndarray] = {}
+    arrays: dict[tuple[str, float, str, str], np.ndarray] = {}
     counts: dict[str, int] = {}
     for key, pieces in references.items():
         values = np.concatenate(pieces) if pieces else np.empty(0, dtype=float)
         if values.size < 20:
-            raise ValueError(f"Insufficient d0 live reference values for {key}: {values.size}")
-        arrays[key] = values
-        counts[":".join(key)] = int(values.size)
+            continue
+        arrays[key] = np.sort(values)
+        counts[
+            f"{key[0]}:{key[1]:.2f}:{key[2]}:{key[3]}"
+        ] = int(values.size)
     expected = {
-        (branch, density, raw)
+        (branch, anchor, "d0", raw)
         for branch in BRANCH_DIRS
-        for density in ("low", "middle", "high")
+        for anchor in MODEL.DENSITY_ANCHORS
         for raw, _direction in MODEL.RAW_FEATURES.values()
     }
     missing = sorted(expected - set(arrays))
     if missing:
-        raise ValueError(f"Missing d0 reference groups: {missing}")
+        raise ValueError(f"Missing continuous d0 reference groups: {missing}")
     return arrays, counts
 
 
 def initialize_worker(
-    references: dict[tuple[str, str, str], np.ndarray],
+    references: dict[tuple[str, float, str, str], np.ndarray],
     field_states: pd.DataFrame,
     worker_args: dict[str, Any],
 ) -> None:
@@ -258,24 +331,11 @@ def initialize_worker(
 
 
 def calibrate_group_features(data: pd.DataFrame) -> pd.DataFrame:
-    result = data.copy()
-    for (branch, density_bin), indices in result.groupby(
-        ["branch", "density_bin"]
-    ).groups.items():
-        for output, (raw, direction) in MODEL.RAW_FEATURES.items():
-            reference = WORKER_REFERENCES[(str(branch), str(density_bin), raw)]
-            target = pd.to_numeric(
-                result.loc[indices, raw],
-                errors="coerce",
-            ).to_numpy(float)
-            result.loc[indices, output] = MODEL.empirical_percentile(
-                reference,
-                target,
-                direction,
-            )
-    if result[list(MODEL.MODEL_FEATURES)].isna().any().any():
-        raise ValueError("Production-calibrated object features contain missing values")
-    return result
+    return MODEL.apply_empirical_feature_calibration(
+        data,
+        WORKER_REFERENCES,
+        error_context="production",
+    )
 
 
 def update_summary(
@@ -320,6 +380,14 @@ def update_summary(
     result.loc[row_index, "live_fraction"] = (
         live / total_cells if total_cells else 0.0
     )
+    uncertain_cells = int(counts.get("uncertain", 0))
+    result.loc[row_index, "classification_uncertain_count"] = uncertain_cells
+    result.loc[row_index, "dead_fraction_lower_bound"] = (
+        dead / total_cells if total_cells else 0.0
+    )
+    result.loc[row_index, "dead_fraction_upper_bound"] = (
+        (dead + uncertain_cells) / total_cells if total_cells else 0.0
+    )
     if "supplemental_dead_object_count" in result:
         supplemental_value = pd.to_numeric(
             result.loc[row_index, "supplemental_dead_object_count"],
@@ -336,6 +404,18 @@ def update_summary(
     result.loc[row_index, "late_death_refinement_version"] = METHOD_VERSION
     result.loc[row_index, "late_death_field_global"] = bool(
         field_rows["field_global_late_death"].iloc[0]
+    )
+    result.loc[row_index, "late_death_field_branch_raw_global"] = bool(
+        field_rows.get(
+            "field_branch_raw_global",
+            pd.Series([False]),
+        ).iloc[0]
+    )
+    result.loc[row_index, "late_death_field_branch_discordant"] = bool(
+        field_rows.get(
+            "field_branch_raw_discordant",
+            pd.Series([False]),
+        ).iloc[0]
     )
     result.loc[row_index, "late_death_rescue_count"] = int(
         field_rows["late_death_rescue_call"].sum()
@@ -384,30 +464,99 @@ def update_field_outputs(field_rows: pd.DataFrame) -> dict[str, Any]:
         ),
         "state",
     )
-    annotations = field_rows[
-        [
-            "combined_mask_id",
-            "field_global_late_death",
-            "field_collapse_signal_count",
-            "field_site_concordance",
-            "density_bin",
-            "death_signal_count",
-            "healthy_signal_count",
-            "death_score",
-            "strong_live_evidence",
-            "late_dead_object_evidence",
-            "temporal_carryforward_call",
-            "global_late_death_rescue_call",
-            "late_death_rescue_call",
-            "late_death_uncertain",
-            *MODEL.MODEL_FEATURES,
-        ]
-    ].copy()
+    annotation_columns = [
+        "combined_mask_id",
+        "field_global_late_death",
+        "field_branch_raw_global",
+        "field_branch_raw_discordant",
+        "field_branch_consensus_late_death",
+        "field_state_transition",
+        "field_collapse_signal_count",
+        "field_site_concordance",
+        "density_bin",
+        "density_percentile",
+        "density_anchor",
+        "death_signal_count",
+        "healthy_signal_count",
+        "death_score",
+        "strong_live_evidence",
+        "late_dead_object_evidence",
+        "branch_partner_matched",
+        "branch_partner_distance",
+        "branch_partner_current_dead",
+        "branch_partner_object_evidence",
+        "branch_partner_strong_live",
+        "branch_partner_temporal_remnant",
+        "branch_partner_death_signal_count",
+        "branch_object_evidence_agree",
+        "branch_partner_late_death_rescue_call",
+        "branch_partner_final_dead_call",
+        "branch_late_death_rescue_call_agree",
+        "branch_final_dead_call_agree",
+        "branch_final_call_discordant",
+        "temporal_track_confident",
+        "temporal_support_frames",
+        "temporal_match_confidence",
+        "temporal_carryforward_call",
+        "global_late_death_rescue_call",
+        "late_death_rescue_call",
+        "branch_discordant_uncertain",
+        "track_uncertain",
+        "field_evidence_uncertain",
+        "late_death_uncertain",
+        "classification_tier",
+        "cell_dead_snr",
+        "cell_dead_positive_fraction",
+        "cell_dead_core_enrichment",
+        *MODEL.MODEL_FEATURES,
+    ]
+    defaults: dict[str, Any] = {
+        "field_branch_raw_global": False,
+        "field_branch_raw_discordant": False,
+        "field_branch_consensus_late_death": False,
+        "field_state_transition": "inactive",
+        "density_percentile": 0.5,
+        "density_anchor": 0.5,
+        "branch_partner_matched": False,
+        "branch_partner_distance": float("inf"),
+        "branch_partner_current_dead": False,
+        "branch_partner_object_evidence": False,
+        "branch_partner_strong_live": False,
+        "branch_partner_temporal_remnant": False,
+        "branch_partner_death_signal_count": 0,
+        "branch_object_evidence_agree": False,
+        "branch_partner_late_death_rescue_call": False,
+        "branch_partner_final_dead_call": False,
+        "branch_late_death_rescue_call_agree": False,
+        "branch_final_dead_call_agree": False,
+        "branch_final_call_discordant": False,
+        "temporal_track_confident": False,
+        "temporal_support_frames": 0,
+        "temporal_match_confidence": 0.0,
+        "branch_discordant_uncertain": False,
+        "track_uncertain": False,
+        "field_evidence_uncertain": False,
+        "classification_tier": "confirmed_live",
+        "cell_dead_snr": 0.0,
+        "cell_dead_positive_fraction": 0.0,
+        "cell_dead_core_enrichment": 0.0,
+    }
+    annotation_source = field_rows.copy()
+    for column in annotation_columns:
+        if column not in annotation_source:
+            annotation_source[column] = defaults.get(column, False)
+    annotations = annotation_source[annotation_columns].copy()
     annotation_names = {
         "field_global_late_death": "late_death_field_global",
+        "field_branch_raw_global": "late_death_field_branch_raw_global",
+        "field_branch_raw_discordant": "late_death_field_branch_discordant",
+        "field_branch_consensus_late_death": "late_death_field_branch_consensus",
+        "field_state_transition": "late_death_field_state_transition",
         "field_collapse_signal_count": "late_death_field_signal_count",
         "field_site_concordance": "late_death_site_concordance",
         "density_bin": "late_death_density_bin",
+        "density_percentile": "late_death_density_percentile",
+        "density_anchor": "late_death_density_anchor",
         "death_signal_count": "late_death_signal_count",
         "healthy_signal_count": "late_death_healthy_signal_count",
         "death_score": "late_death_score",
@@ -422,6 +571,13 @@ def update_field_outputs(field_rows: pd.DataFrame) -> dict[str, Any]:
             for column in MODEL.MODEL_FEATURES
         },
     }
+    for column in annotation_columns:
+        if column != "combined_mask_id" and column not in annotation_names:
+            annotation_names[column] = (
+                column
+                if column.startswith("late_death_")
+                else f"late_death_{column}"
+            )
     annotations = annotations.rename(columns=annotation_names)
     annotations["late_death_refinement_version"] = METHOD_VERSION
     if annotations["combined_mask_id"].duplicated().any():
@@ -440,11 +596,30 @@ def update_field_outputs(field_rows: pd.DataFrame) -> dict[str, Any]:
     if updated_features["late_death_refinement_version"].isna().any():
         raise ValueError(f"Feature/annotation mismatch for {branch}/{key}")
     rescue = bool_series(updated_features["late_death_rescue_call"])
+    uncertain = (
+        bool_series(updated_features["late_death_uncertain"])
+        & updated_features["final_state"].astype(str).eq("live")
+    )
     updated_features.loc[rescue, ["state", "final_state"]] = "dead"
     updated_features.loc[rescue, "final_reason"] = (
         "late_death_trajectory_rescue"
     )
     updated_features.loc[rescue, "classification_confidence"] = "medium"
+    updated_features.loc[uncertain, ["state", "final_state"]] = "uncertain"
+    updated_features.loc[uncertain, "final_reason"] = np.select(
+        [
+            bool_series(
+                updated_features["late_death_branch_discordant_uncertain"]
+            ),
+            bool_series(updated_features["late_death_track_uncertain"]),
+        ],
+        [
+            "death_classification_branch_discordant",
+            "death_classification_track_uncertain",
+        ],
+        default="death_classification_field_evidence_uncertain",
+    )
+    updated_features.loc[uncertain, "classification_confidence"] = "low"
 
     prediction_annotations = annotations.rename(
         columns={"combined_mask_id": "mask_id"}
@@ -464,6 +639,10 @@ def update_field_outputs(field_rows: pd.DataFrame) -> dict[str, Any]:
     pred_rescue = bool_series(
         updated_predictions["late_death_rescue_call"]
     )
+    pred_uncertain = (
+        bool_series(updated_predictions["late_death_uncertain"])
+        & updated_predictions["state"].astype(str).eq("live")
+    )
     updated_predictions.loc[pred_rescue, "state"] = "dead"
     updated_predictions.loc[pred_rescue, "final_reason"] = (
         "late_death_trajectory_rescue"
@@ -471,8 +650,25 @@ def update_field_outputs(field_rows: pd.DataFrame) -> dict[str, Any]:
     updated_predictions.loc[pred_rescue, "classification_confidence"] = (
         "medium"
     )
+    updated_predictions.loc[pred_uncertain, "state"] = "uncertain"
+    updated_predictions.loc[pred_uncertain, "final_reason"] = np.select(
+        [
+            bool_series(
+                updated_predictions["late_death_branch_discordant_uncertain"]
+            ),
+            bool_series(updated_predictions["late_death_track_uncertain"]),
+        ],
+        [
+            "death_classification_branch_discordant",
+            "death_classification_track_uncertain",
+        ],
+        default="death_classification_field_evidence_uncertain",
+    )
+    updated_predictions.loc[pred_uncertain, "classification_confidence"] = "low"
     if int(rescue.sum()) != int(pred_rescue.sum()):
         raise ValueError(f"Feature/prediction rescue mismatch for {branch}/{key}")
+    if int(uncertain.sum()) != int(pred_uncertain.sum()):
+        raise ValueError(f"Feature/prediction uncertainty mismatch for {branch}/{key}")
 
     updated_summary = update_summary(
         summary_path,
@@ -576,10 +772,52 @@ def update_field_outputs(field_rows: pd.DataFrame) -> dict[str, Any]:
         "field_global_late_death": bool(
             field_rows["field_global_late_death"].iloc[0]
         ),
+        "field_branch_raw_global": bool(
+            field_rows.get(
+                "field_branch_raw_global",
+                pd.Series([False]),
+            ).iloc[0]
+        ),
+        "field_branch_raw_discordant": bool(
+            field_rows.get(
+                "field_branch_raw_discordant",
+                pd.Series([False]),
+            ).iloc[0]
+        ),
         "baseline_dead": int(field_rows["current_dead_call"].sum()),
         "refined_dead": int(field_rows["final_dead_call"].sum()),
         "rescued": int(field_rows["late_death_rescue_call"].sum()),
         "uncertain": int(field_rows["late_death_uncertain"].sum()),
+        "branch_discordant_uncertain": int(
+            field_rows.get(
+                "branch_discordant_uncertain",
+                pd.Series(False, index=field_rows.index),
+            ).sum()
+        ),
+        "track_uncertain": int(
+            field_rows.get(
+                "track_uncertain",
+                pd.Series(False, index=field_rows.index),
+            ).sum()
+        ),
+        "matched_objects": int(
+            field_rows.get(
+                "branch_partner_matched",
+                pd.Series(False, index=field_rows.index),
+            ).sum()
+        ),
+        "matched_rescue_call_agree": int(
+            field_rows.get(
+                "branch_late_death_rescue_call_agree",
+                pd.Series(False, index=field_rows.index),
+            ).sum()
+        ),
+        "matched_final_dead_call_agree": int(
+            field_rows.get(
+                "branch_final_dead_call_agree",
+                pd.Series(False, index=field_rows.index),
+            ).sum()
+        ),
         "objects": int(len(field_rows)),
         "annotation_path": str(annotation_path),
         "rescued_mask_path": str(rescued_mask_path) if rescued_ids.size else "",
@@ -589,7 +827,6 @@ def update_field_outputs(field_rows: pd.DataFrame) -> dict[str, Any]:
 
 
 def refine_group(task: dict[str, Any]) -> list[dict[str, Any]]:
-    branch = str(task["branch"])
     well = str(task["well"])
     frames: list[pd.DataFrame] = []
     for shard_path in task["shards"]:
@@ -605,7 +842,13 @@ def refine_group(task: dict[str, Any]) -> list[dict[str, Any]]:
         data[column] = bool_series(data[column])
     data["elapsed_hours"] = MODEL.finite_numeric(data["elapsed_hours"])
     density = WORKER_FIELD_STATES[
-        ["branch", "key", "density_bin"]
+        [
+            "branch",
+            "key",
+            "density_bin",
+            "density_percentile",
+            "density_anchor",
+        ]
     ].drop_duplicates(["branch", "key"])
     data = data.merge(
         density,
@@ -614,11 +857,10 @@ def refine_group(task: dict[str, Any]) -> list[dict[str, Any]]:
         validate="many_to_one",
     )
     if data["density_bin"].isna().any():
-        raise ValueError(f"Missing density bins for {branch}/{well}")
+        raise ValueError(f"Missing density calibration for {well}")
     calibrated = calibrate_group_features(data)
     field_subset = WORKER_FIELD_STATES.loc[
-        WORKER_FIELD_STATES["branch"].eq(branch)
-        & WORKER_FIELD_STATES["well"].eq(well)
+        WORKER_FIELD_STATES["well"].eq(well)
     ]
     calls = MODEL.classification_calls(
         calibrated,
@@ -628,7 +870,7 @@ def refine_group(task: dict[str, Any]) -> list[dict[str, Any]]:
         apply_treatment_scope=True,
     )
     statuses = []
-    for _key, rows in calls.groupby("key", sort=False):
+    for (_branch, _key), rows in calls.groupby(["branch", "key"], sort=False):
         statuses.append(update_field_outputs(rows.copy()))
     return statuses
 
@@ -660,15 +902,281 @@ def merge_branch_summaries(
     return out_path
 
 
+def write_consensus_summary(
+    classification_root: Path,
+    summary_paths: dict[str, str],
+) -> Path:
+    """Publish one authoritative field table with both branch diagnostics."""
+    original = pd.read_csv(summary_paths["original"])
+    nucleated = pd.read_csv(summary_paths["nucleated_only"])
+    partner_columns = [
+        "key",
+        "total_cell_count",
+        "live_cell_count",
+        "dead_cell_count",
+        "uncertain_count",
+        "dead_fraction",
+        "dead_fraction_lower_bound",
+        "dead_fraction_upper_bound",
+        "late_death_field_branch_raw_global",
+        "late_death_field_branch_discordant",
+        "late_death_rescue_count",
+        "late_death_uncertain_count",
+    ]
+    partner_columns = [
+        column for column in partner_columns if column in nucleated.columns
+    ]
+    partner = nucleated[partner_columns].rename(
+        columns={
+            column: f"nucleated_only_{column}"
+            for column in partner_columns
+            if column != "key"
+        }
+    )
+    consensus = original.merge(
+        partner,
+        on="key",
+        how="left",
+        validate="one_to_one",
+    )
+    if consensus.filter(like="nucleated_only_").isna().any().any():
+        raise ValueError("Consensus summary lost nucleated-only fields")
+    consensus["consensus_source_branch"] = "original"
+    consensus["consensus_method_version"] = METHOD_VERSION
+    consensus["branch_dead_fraction_abs_diff"] = (
+        pd.to_numeric(consensus["dead_fraction"], errors="raise")
+        - pd.to_numeric(
+            consensus["nucleated_only_dead_fraction"],
+            errors="raise",
+        )
+    ).abs()
+    out_path = (
+        classification_root
+        / "classification_consensus"
+        / "summaries"
+        / "cell_count_summary.csv"
+    )
+    write_frame_atomic(out_path, consensus)
+    return out_path
+
+
+def write_production_go_no_go(
+    classification_root: Path,
+    status_frame: pd.DataFrame,
+    consensus_summary_path: Path,
+    calibration_receipt: dict[str, Any],
+    freeze_receipt: dict[str, Any],
+    expected_fields_per_branch: int,
+) -> tuple[Path, dict[str, Any]]:
+    """Record operational convergence without claiming biological accuracy."""
+    consensus = pd.read_csv(consensus_summary_path)
+    expected_keys = int(expected_fields_per_branch)
+    key_counts = status_frame.groupby("branch")["key"].nunique().to_dict()
+    d0 = status_frame["key"].astype(str).str.endswith("_00d00h00m")
+    field_states = status_frame.pivot(
+        index="key",
+        columns="branch",
+        values="field_global_late_death",
+    )
+    field_mismatch = (
+        field_states["original"].astype(bool)
+        != field_states["nucleated_only"].astype(bool)
+    )
+    branch_difference = pd.to_numeric(
+        consensus["branch_dead_fraction_abs_diff"],
+        errors="raise",
+    )
+    original_rescue_fraction = (
+        pd.to_numeric(
+            consensus["late_death_rescue_count"],
+            errors="raise",
+        )
+        / pd.to_numeric(
+            consensus["total_cell_count"],
+            errors="raise",
+        ).replace(0, np.nan)
+    ).fillna(0.0)
+    nucleated_rescue_fraction = (
+        pd.to_numeric(
+            consensus["nucleated_only_late_death_rescue_count"],
+            errors="raise",
+        )
+        / pd.to_numeric(
+            consensus["nucleated_only_total_cell_count"],
+            errors="raise",
+        ).replace(0, np.nan)
+    ).fillna(0.0)
+    rescue_difference = (
+        original_rescue_fraction - nucleated_rescue_fraction
+    ).abs()
+    object_count = int(status_frame["objects"].sum())
+    uncertain_count = int(status_frame["uncertain"].sum())
+    original_status = status_frame.loc[status_frame["branch"].eq("original")]
+    matched_pair_count = int(original_status["matched_objects"].sum())
+    matched_rescue_agree = int(
+        original_status["matched_rescue_call_agree"].sum()
+    )
+    matched_final_agree = int(
+        original_status["matched_final_dead_call_agree"].sum()
+    )
+    diagnostics = {
+        "field_state_mismatch_count": int(field_mismatch.sum()),
+        "field_state_mismatch_rate": float(field_mismatch.mean()),
+        "field_dead_fraction_abs_diff_median": float(branch_difference.median()),
+        "field_dead_fraction_abs_diff_gt_0p10_count": int(
+            branch_difference.gt(0.10).sum()
+        ),
+        "field_dead_fraction_abs_diff_gt_0p10_rate": float(
+            branch_difference.gt(0.10).mean()
+        ),
+        "field_dead_fraction_abs_diff_gt_0p25_count": int(
+            branch_difference.gt(0.25).sum()
+        ),
+        "field_dead_fraction_abs_diff_gt_0p25_rate": float(
+            branch_difference.gt(0.25).mean()
+        ),
+        "field_rescue_fraction_abs_diff_median": float(
+            rescue_difference.median()
+        ),
+        "field_rescue_fraction_abs_diff_gt_0p10_count": int(
+            rescue_difference.gt(0.10).sum()
+        ),
+        "field_rescue_fraction_abs_diff_gt_0p10_rate": float(
+            rescue_difference.gt(0.10).mean()
+        ),
+        "field_rescue_fraction_abs_diff_gt_0p25_count": int(
+            rescue_difference.gt(0.25).sum()
+        ),
+        "field_rescue_fraction_abs_diff_gt_0p25_rate": float(
+            rescue_difference.gt(0.25).mean()
+        ),
+        "uncertain_object_count": uncertain_count,
+        "uncertain_object_rate": (
+            uncertain_count / object_count if object_count else 0.0
+        ),
+        "matched_pair_count": matched_pair_count,
+        "matched_pair_rescue_call_agreement": (
+            matched_rescue_agree / matched_pair_count
+            if matched_pair_count
+            else 0.0
+        ),
+        "matched_pair_final_dead_call_agreement": (
+            matched_final_agree / matched_pair_count
+            if matched_pair_count
+            else 0.0
+        ),
+    }
+    gates = {
+        "SEGMENTATION_FROZEN": {
+            "pass": bool(freeze_receipt.get("verified")),
+            "verification_receipt": str(
+                freeze_receipt.get("receipt_path", "")
+            ),
+            "source_run_root": str(freeze_receipt.get("source_run_root", "")),
+            "verified_file_count": int(
+                freeze_receipt.get("verified_file_count", 0)
+            ),
+        },
+        "CALIBRATION_CONVERGENCE": {
+            "pass": calibration_receipt.get("decision") == "GO",
+            "calibration_decision": str(
+                calibration_receipt.get("decision", "MISSING")
+            ),
+            "metric_semantics": str(
+                calibration_receipt.get("metric_semantics", "")
+            ),
+        },
+        "FULL_COHORT_COMPLETENESS": {
+            "pass": (
+                int(key_counts.get("original", 0)) == expected_keys
+                and int(key_counts.get("nucleated_only", 0)) == expected_keys
+                and len(consensus) == expected_keys
+            ),
+            "expected_fields_per_branch": expected_keys,
+            "original_fields": int(key_counts.get("original", 0)),
+            "nucleated_only_fields": int(
+                key_counts.get("nucleated_only", 0)
+            ),
+            "consensus_fields": int(len(consensus)),
+        },
+        "D0_INVARIANCE": {
+            "pass": bool(
+                int(status_frame.loc[d0, "rescued"].sum()) == 0
+                and int(status_frame.loc[d0, "uncertain"].sum()) == 0
+            ),
+            "d0_field_rows": int(d0.sum()),
+            "d0_rescued_objects": int(
+                status_frame.loc[d0, "rescued"].sum()
+            ),
+            "d0_uncertain_objects": int(
+                status_frame.loc[d0, "uncertain"].sum()
+            ),
+        },
+        "DUAL_VIEW_DIAGNOSTICS": {
+            "pass": bool(diagnostics["field_state_mismatch_rate"] <= 0.01)
+            and bool(
+                diagnostics["matched_pair_rescue_call_agreement"] >= 0.99
+            )
+            and bool(
+                diagnostics["matched_pair_final_dead_call_agreement"] >= 0.99
+            ),
+            **diagnostics,
+        },
+    }
+    decision = (
+        "GO" if all(bool(gate["pass"]) for gate in gates.values()) else "NO_GO"
+    )
+    payload = {
+        "schema_version": 1,
+        "decision": decision,
+        "metric_semantics": (
+            "operational_proxy_validation_without_manual_biological_ground_truth"
+        ),
+        "biological_accuracy_claimed": False,
+        "method_version": METHOD_VERSION,
+        "gates": gates,
+    }
+    out_path = (
+        classification_root
+        / "late_death_refinement"
+        / "FULL_CLASSIFICATION_GO_NO_GO.json"
+    )
+    write_json_atomic(out_path, payload)
+    return out_path, payload
+
+
 def main() -> int:
     args = parse_args()
     args.classification_root = args.classification_root.resolve()
     args.dataset_root = args.dataset_root.resolve()
     if args.workers <= 0 or args.expected_fields_per_branch <= 0:
         raise ValueError("--workers and --expected-fields-per-branch must be positive")
-    for required in (args.classification_root, args.dataset_root):
+    for required in (
+        args.classification_root,
+        args.dataset_root,
+        args.calibration_go_no_go,
+        args.segmentation_freeze_receipt,
+    ):
         if not required.exists():
             raise FileNotFoundError(required)
+    calibration_receipt = json.loads(args.calibration_go_no_go.read_text())
+    calibration_configuration_path = (
+        args.calibration_go_no_go.parent / "best_configuration.json"
+    )
+    if not calibration_configuration_path.is_file():
+        raise FileNotFoundError(calibration_configuration_path)
+    calibration_configuration = json.loads(
+        calibration_configuration_path.read_text()
+    )
+    freeze_receipt = json.loads(args.segmentation_freeze_receipt.read_text())
+    if calibration_receipt.get("decision") != "GO":
+        raise RuntimeError(
+            "Full classification is blocked because calibration decision is "
+            f"{calibration_receipt.get('decision', 'MISSING')}"
+        )
+    if not bool(freeze_receipt.get("verified")):
+        raise RuntimeError("Segmentation freeze verification did not pass")
+    validate_approved_calibration_configuration(calibration_configuration)
     inventory = pd.read_csv(
         args.dataset_root / "feature_cache" / "shard_inventory.csv"
     )
@@ -694,12 +1202,11 @@ def main() -> int:
             )
 
     field_states, density_definitions = prepare_field_states(fields)
-    references, reference_counts = build_d0_references(inventory, field_states)
+    references, reference_counts = build_live_references(inventory, field_states)
     task_rows: list[dict[str, Any]] = []
-    for (branch, well), rows in inventory.groupby(["branch", "well"], sort=True):
+    for well, rows in inventory.groupby("well", sort=True):
         task_rows.append(
             {
-                "branch": str(branch),
                 "well": str(well),
                 "shards": [str(value) for value in rows["shard_path"]],
             }
@@ -724,7 +1231,6 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001
                 failures.append(
                     {
-                        "branch": str(task["branch"]),
                         "well": str(task["well"]),
                         "error": repr(exc),
                     }
@@ -738,11 +1244,11 @@ def main() -> int:
     audit_root = args.classification_root / "late_death_refinement"
     write_frame_atomic(
         audit_root / "failures.csv",
-        pd.DataFrame(failures, columns=("branch", "well", "error")),
+        pd.DataFrame(failures, columns=("well", "error")),
     )
     if failures:
         raise RuntimeError(
-            f"Late-death refinement failed for {len(failures)} branch/well groups"
+            f"Death-classification consensus failed for {len(failures)} well groups"
         )
     status_frame = pd.DataFrame(statuses).sort_values(["branch", "key"])
     if len(status_frame) != 2 * args.expected_fields_per_branch:
@@ -761,9 +1267,24 @@ def main() -> int:
         )
         for branch in BRANCH_DIRS
     }
+    consensus_summary_path = write_consensus_summary(
+        args.classification_root,
+        summary_paths,
+    )
+    production_receipt_path, production_receipt = write_production_go_no_go(
+        args.classification_root,
+        status_frame,
+        consensus_summary_path,
+        calibration_receipt,
+        freeze_receipt,
+        args.expected_fields_per_branch,
+    )
     config_payload = {
         "method_version": METHOD_VERSION,
-        "method": "density_aware_field_collapse_with_object_evidence_and_absorbing_time_state",
+        "method": (
+            "dual_branch_consensus_with_continuous_density_time_calibration_"
+            "multiframe_tracking_and_recoverable_field_state"
+        ),
         "metric_semantics": "operational_model_without_manual_object_ground_truth",
         "field_configuration": FIELD_CONFIGURATION,
         "object_configuration": OBJECT_CONFIGURATION,
@@ -776,6 +1297,14 @@ def main() -> int:
         "total_rescued": int(status_frame["rescued"].sum()),
         "total_uncertain": int(status_frame["uncertain"].sum()),
         "summary_paths": summary_paths,
+        "authoritative_consensus_summary": str(consensus_summary_path),
+        "calibration_go_no_go": str(args.calibration_go_no_go),
+        "calibration_best_configuration": str(
+            calibration_configuration_path
+        ),
+        "segmentation_freeze_receipt": str(args.segmentation_freeze_receipt),
+        "production_go_no_go": str(production_receipt_path),
+        "production_decision": production_receipt["decision"],
         "dataset_root": str(args.dataset_root),
     }
     frozen_model_payload = {
@@ -797,6 +1326,8 @@ def main() -> int:
     print(f"production_configuration={audit_root / 'production_configuration.json'}")
     print(f"total_rescued={config_payload['total_rescued']}")
     print(f"total_uncertain={config_payload['total_uncertain']}")
+    print(f"production_go_no_go={production_receipt_path}")
+    print(f"production_decision={production_receipt['decision']}")
     return 0
 
 

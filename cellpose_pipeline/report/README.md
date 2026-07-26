@@ -281,7 +281,7 @@ identified as operational proxies.
 ```bash
 /home/4482173/.conda/envs/cellpose_cpsam/bin/python -I \
   cellpose_pipeline/report/generate_late_dead_d0_d5_calibration_report.py \
-  --calibration-root /share/.../results/Tests_and_Parameters_calibration/late_dead_trajectory_optimization_20260723_024151 \
+  --calibration-root /share/.../results/Tests_and_Parameters_calibration/death_classification_consensus_optimization_20260725_213646 \
   --plugin-root /home/4482173/.local/share/data-analytics/0.2.8
 ```
 
@@ -310,13 +310,14 @@ The report includes:
 - final Death-object relation composition and uncertainty totals;
 - six deterministic before/final QC comparisons with each branch kept in one
   vertical column;
-- rebuilt AUC, Day-4, Day-5, GR, and excess-lethal-fraction results.
+- rebuilt AUC, Day-4, Day-5, GR, and excess-lethal-fraction results for the
+  original, nucleated-only, and authoritative fusion-consensus branches.
 
 ```bash
 /home/4482173/.conda/envs/cellpose_cpsam/bin/python -I \
   cellpose_pipeline/report/generate_full_classification_report.py \
-  --classification-root /share/.../results/classification_20260723_101944 \
-  --calibration-root /share/.../results/Tests_and_Parameters_calibration/late_dead_trajectory_optimization_20260723_024151 \
+  --classification-root /share/.../results/classification_<timestamp> \
+  --calibration-root /share/.../results/Tests_and_Parameters_calibration/death_classification_consensus_optimization_20260725_213646 \
   --plugin-root /home/4482173/.local/share/data-analytics/0.2.8
 ```
 

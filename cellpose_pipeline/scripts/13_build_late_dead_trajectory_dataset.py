@@ -22,6 +22,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import tifffile
+from scipy import ndimage
 from scipy.spatial import cKDTree
 from skimage.measure import regionprops_table
 
@@ -210,6 +211,19 @@ def build_manifest(args: argparse.Namespace) -> pd.DataFrame:
     ]
     selected.loc[~selected["previous_key"].isin(available_keys), "previous_key"] = ""
     selected.loc[~selected["next_key"].isin(available_keys), "next_key"] = ""
+    selected["previous_2_key"] = [
+        key_for_time(str(row.well), int(row.site), float(row.elapsed_hours) - 4.0)
+        for row in selected.itertuples()
+    ]
+    selected["next_2_key"] = [
+        key_for_time(str(row.well), int(row.site), float(row.elapsed_hours) + 4.0)
+        for row in selected.itertuples()
+    ]
+    selected.loc[
+        ~selected["previous_2_key"].isin(available_keys),
+        "previous_2_key",
+    ] = ""
+    selected.loc[~selected["next_2_key"].isin(available_keys), "next_2_key"] = ""
     selected["sentinel"] = selected["key"].eq("E9_1_05d00h00m")
     selected["development_anchor"] = selected["well"].eq("E9") & selected["site"].eq(1)
     selected["holdout_anchor"] = selected["well"].eq("E9") & selected["site"].ne(1)
@@ -266,8 +280,12 @@ def build_manifest(args: argparse.Namespace) -> pd.DataFrame:
                 "replicate_diagnostic": False,
                 "record_path": str(record_path(d0_manifest_root, key)),
                 "previous_key": "",
+                "previous_2_key": "",
                 "next_key": key_for_time(well, int(key.split("_")[1]), 2.0)
                 if key_for_time(well, int(key.split("_")[1]), 2.0) in available_keys
+                else "",
+                "next_2_key": key_for_time(well, int(key.split("_")[1]), 4.0)
+                if key_for_time(well, int(key.split("_")[1]), 4.0) in available_keys
                 else "",
                 "ploidy": str(plate_row["ploidy"]),
                 "cyclophosphamide": cyclophosphamide,
@@ -293,7 +311,9 @@ def build_manifest(args: argparse.Namespace) -> pd.DataFrame:
                 "replicate_diagnostic": bool(row.replicate_diagnostic),
                 "record_path": str(record_path(full_manifest_root, str(row.key))),
                 "previous_key": str(row.previous_key),
+                "previous_2_key": str(row.previous_2_key),
                 "next_key": str(row.next_key),
+                "next_2_key": str(row.next_2_key),
                 "ploidy": str(row.ploidy),
                 "cyclophosphamide": bool(row.cyclophosphamide),
                 "doxorubicin_nm": float(row.doxorubicin_nm),
@@ -363,6 +383,128 @@ def overlap_counts(cell_labels: np.ndarray, nucleus_labels: np.ndarray) -> np.nd
         cell_labels.ravel(),
         weights=(nucleus_labels.ravel() > 0).astype(np.float64),
         minlength=int(cell_labels.max()) + 1,
+    )
+
+
+def scalar_raw_image(path: str | Path) -> np.ndarray:
+    image = np.squeeze(tifffile.imread(path))
+    if image.ndim == 2:
+        return image.astype(np.float32, copy=False)
+    if image.ndim == 3 and image.shape[-1] in {3, 4}:
+        return image[..., :3].max(axis=-1).astype(np.float32, copy=False)
+    if image.ndim == 3 and image.shape[0] in {3, 4}:
+        return image[:3].max(axis=0).astype(np.float32, copy=False)
+    raise ValueError(f"Expected a scalar-compatible raw image: {path}, shape={image.shape}")
+
+
+def cell_conditioned_dead_features(
+    cell_labels: np.ndarray,
+    nucleus_labels: np.ndarray,
+    dead_raw: np.ndarray,
+) -> pd.DataFrame:
+    """Measure Dead signal inside every existing cell without changing masks."""
+    if cell_labels.shape != nucleus_labels.shape or cell_labels.shape != dead_raw.shape:
+        raise ValueError(
+            "Cell-conditioned Dead inputs must have identical 2D shapes: "
+            f"cell={cell_labels.shape}, nucleus={nucleus_labels.shape}, "
+            f"dead={dead_raw.shape}"
+        )
+    labels = cell_labels.astype(np.int32, copy=False)
+    raw = dead_raw.astype(np.float64, copy=False)
+    max_label = int(labels.max())
+    label_ids = np.arange(1, max_label + 1, dtype=int)
+    flat_labels = labels.ravel()
+    flat_raw = raw.ravel()
+    counts = np.bincount(flat_labels, minlength=max_label + 1).astype(float)
+    sums = np.bincount(
+        flat_labels,
+        weights=flat_raw,
+        minlength=max_label + 1,
+    )
+    background = flat_raw[flat_labels == 0]
+    if background.size < 32:
+        background = flat_raw
+    bg_median = float(np.median(background))
+    bg_sigma = float(
+        max(
+            1e-6,
+            1.4826 * np.median(np.abs(background - bg_median)),
+        )
+    )
+    positive = raw >= (bg_median + 3.0 * bg_sigma)
+    positive_counts = np.bincount(
+        flat_labels,
+        weights=positive.ravel().astype(float),
+        minlength=max_label + 1,
+    )
+    nucleus = nucleus_labels > 0
+    nucleus_counts = np.bincount(
+        flat_labels,
+        weights=nucleus.ravel().astype(float),
+        minlength=max_label + 1,
+    )
+    nucleus_sums = np.bincount(
+        flat_labels,
+        weights=(raw * nucleus).ravel(),
+        minlength=max_label + 1,
+    )
+    cytoplasm = (labels > 0) & ~nucleus
+    cytoplasm_counts = np.bincount(
+        flat_labels,
+        weights=cytoplasm.ravel().astype(float),
+        minlength=max_label + 1,
+    )
+    cytoplasm_sums = np.bincount(
+        flat_labels,
+        weights=(raw * cytoplasm).ravel(),
+        minlength=max_label + 1,
+    )
+    maxima = ndimage.maximum(raw, labels=labels, index=label_ids)
+    cell_mean = np.divide(
+        sums[label_ids],
+        counts[label_ids],
+        out=np.full(max_label, bg_median, dtype=float),
+        where=counts[label_ids] > 0,
+    )
+    nucleus_mean = np.divide(
+        nucleus_sums[label_ids],
+        nucleus_counts[label_ids],
+        out=np.full(max_label, bg_median, dtype=float),
+        where=nucleus_counts[label_ids] > 0,
+    )
+    cytoplasm_mean = np.divide(
+        cytoplasm_sums[label_ids],
+        cytoplasm_counts[label_ids],
+        out=np.full(max_label, bg_median, dtype=float),
+        where=cytoplasm_counts[label_ids] > 0,
+    )
+    return pd.DataFrame(
+        {
+            "combined_mask_id": label_ids,
+            "cell_dead_mean": cell_mean,
+            "cell_dead_max": np.asarray(maxima, dtype=float),
+            "cell_dead_background": bg_median,
+            "cell_dead_background_sigma": bg_sigma,
+            "cell_dead_mean_delta": cell_mean - bg_median,
+            "cell_dead_max_delta": np.asarray(maxima, dtype=float) - bg_median,
+            "cell_dead_snr": (cell_mean - bg_median) / bg_sigma,
+            "cell_dead_peak_snr": (
+                np.asarray(maxima, dtype=float) - bg_median
+            )
+            / bg_sigma,
+            "cell_dead_positive_fraction": np.divide(
+                positive_counts[label_ids],
+                counts[label_ids],
+                out=np.zeros(max_label, dtype=float),
+                where=counts[label_ids] > 0,
+            ),
+            "nuclear_dead_mean": nucleus_mean,
+            "cytoplasm_dead_mean": cytoplasm_mean,
+            "cell_dead_core_enrichment": (
+                nucleus_mean - cytoplasm_mean
+            )
+            / bg_sigma,
+        }
     )
 
 
@@ -476,6 +618,9 @@ def extract_one(task: dict[str, Any]) -> dict[str, Any]:
 
     required_cache_fields = {
         "proxy_type",
+        "temporal_track_confident",
+        "temporal_support_frames",
+        "temporal_match_confidence",
         "red_mass_proxy",
         "cytoplasm_red_mass_proxy",
         "core_nucleus_to_cytoplasm",
@@ -484,6 +629,9 @@ def extract_one(task: dict[str, Any]) -> dict[str, Any]:
         "core_cytoplasm_area",
         "mask_circularity",
         "mask_solidity",
+        "cell_dead_snr",
+        "cell_dead_positive_fraction",
+        "cell_dead_core_enrichment",
         "field_cell_count",
         "field_mask_fraction",
         "field_median_nn",
@@ -549,8 +697,14 @@ def extract_one(task: dict[str, Any]) -> dict[str, Any]:
     cell_mask = read_mask(profiles["Combined"][mask_field])
     core_mask = read_mask(profiles["Nuclei"]["core_mask"])
     extent_mask = read_mask(profiles["Nuclei"]["extent_mask"])
+    dead_raw = scalar_raw_image(profiles["Dead"]["raw"])
     if cell_mask.shape != core_mask.shape or cell_mask.shape != extent_mask.shape:
         raise ValueError(f"Mask shape mismatch for {branch}/{key}")
+    if dead_raw.shape != cell_mask.shape:
+        raise ValueError(
+            f"Dead raw/cell mask shape mismatch for {branch}/{key}: "
+            f"dead={dead_raw.shape}, cell={cell_mask.shape}"
+        )
 
     if cohort == "d0_frozen" and str(task.get("feature_source")) == "d0_audit":
         branch_root = Path(task["d0_audit_root"]) / D0_BRANCH_DIRS[branch]
@@ -579,8 +733,22 @@ def extract_one(task: dict[str, Any]) -> dict[str, Any]:
     metrics["core_nucleus_fraction"] = metrics["nucleus_core_overlap"] / metrics["mask_area"]
     metrics["extent_nucleus_fraction"] = metrics["nucleus_extent_overlap"] / metrics["mask_area"]
     current = current.merge(metrics, on="combined_mask_id", how="left", validate="one_to_one")
+    current = current.merge(
+        cell_conditioned_dead_features(cell_mask, core_mask, dead_raw),
+        on="combined_mask_id",
+        how="left",
+        validate="one_to_one",
+    )
     if current["mask_area"].isna().any():
         raise ValueError(f"Feature/mask label mismatch for {branch}/{key}")
+    if current[
+        [
+            "cell_dead_snr",
+            "cell_dead_positive_fraction",
+            "cell_dead_core_enrichment",
+        ]
+    ].isna().any().any():
+        raise ValueError(f"Cell-conditioned Dead feature mismatch for {branch}/{key}")
     current["red_mass_proxy"] = (
         pd.to_numeric(current["median_r"], errors="coerce").fillna(0.0)
         * current["mask_area"]
@@ -623,10 +791,17 @@ def extract_one(task: dict[str, Any]) -> dict[str, Any]:
 
     if cohort == "trajectory":
         previous_key = str(task.get("previous_key", ""))
+        previous_2_key = str(task.get("previous_2_key", ""))
         next_key = str(task.get("next_key", ""))
+        next_2_key = str(task.get("next_2_key", ""))
         previous = (
             read_features(feature_path(branch_root, previous_key))
             if previous_key
+            else pd.DataFrame()
+        )
+        previous_2 = (
+            read_features(feature_path(branch_root, previous_2_key))
+            if previous_2_key
             else pd.DataFrame()
         )
         following = (
@@ -634,10 +809,27 @@ def extract_one(task: dict[str, Any]) -> dict[str, Any]:
             if next_key
             else pd.DataFrame()
         )
+        following_2 = (
+            read_features(feature_path(branch_root, next_2_key))
+            if next_2_key
+            else pd.DataFrame()
+        )
         prev_match = nearest_rows(current, previous, "prev")
+        prev2_match = nearest_rows(current, previous_2, "prev2")
         next_match = nearest_rows(current, following, "next")
-        current = pd.concat([current.reset_index(drop=True), prev_match, next_match], axis=1)
+        next2_match = nearest_rows(current, following_2, "next2")
+        current = pd.concat(
+            [
+                current.reset_index(drop=True),
+                prev_match,
+                prev2_match,
+                next_match,
+                next2_match,
+            ],
+            axis=1,
+        )
         prior_strong = strong_dead(current, "prev_")
+        prior_2_strong = strong_dead(current, "prev2_")
         current_strong = strong_dead(current)
         current_non_dead = current["final_state"].astype(str) != "dead"
         current["temporal_area_ratio"] = current["area"] / pd.to_numeric(
@@ -650,16 +842,69 @@ def extract_one(task: dict[str, Any]) -> dict[str, Any]:
             pd.to_numeric(current["prev_median_r"], errors="coerce")
             * pd.to_numeric(current["prev_area"], errors="coerce")
         ).replace(0, np.nan)
+        adaptive_distance = float(task["temporal_distance_px"])
+        if math.isfinite(median_nn):
+            adaptive_distance = min(
+                adaptive_distance,
+                max(3.0, 0.45 * median_nn),
+            )
         temporal_remnant = (
             current_non_dead
             & prior_strong
             & current["prev_mutual_nearest"].astype(bool)
-            & (current["prev_distance"] <= float(task["temporal_distance_px"]))
+            & (current["prev_distance"] <= adaptive_distance)
             & (current["temporal_area_ratio"] <= float(task["remnant_max_area_ratio"]))
             & (
                 current["temporal_red_mass_ratio"]
                 <= float(task["remnant_max_red_ratio"])
             )
+        )
+        current["temporal_support_frames"] = (
+            (
+                prior_strong
+                & current["prev_mutual_nearest"].astype(bool)
+                & (current["prev_distance"] <= adaptive_distance)
+            ).astype(int)
+            + (
+                prior_2_strong
+                & current["prev2_mutual_nearest"].astype(bool)
+                & (current["prev2_distance"] <= 1.5 * adaptive_distance)
+            ).astype(int)
+            + (
+                current["next_mutual_nearest"].astype(bool)
+                & (current["next_distance"] <= adaptive_distance)
+            ).astype(int)
+            + (
+                current["next2_mutual_nearest"].astype(bool)
+                & (current["next2_distance"] <= 1.5 * adaptive_distance)
+            ).astype(int)
+        )
+        current["temporal_track_confident"] = (
+            temporal_remnant & current["temporal_support_frames"].ge(2)
+        )
+        distance_score = np.clip(
+            1.0
+            - pd.to_numeric(current["prev_distance"], errors="coerce").fillna(
+                adaptive_distance * 2
+            )
+            / max(adaptive_distance, 1e-6),
+            0.0,
+            1.0,
+        )
+        current["temporal_match_confidence"] = np.clip(
+            0.50 * distance_score
+            + 0.25
+            * np.clip(current["temporal_support_frames"] / 3.0, 0.0, 1.0)
+            + 0.15
+            * np.clip(1.0 - current["temporal_area_ratio"].fillna(1.0), 0.0, 1.0)
+            + 0.10
+            * np.clip(
+                1.0 - current["temporal_red_mass_ratio"].fillna(1.0),
+                0.0,
+                1.0,
+            ),
+            0.0,
+            1.0,
         )
         untreated_live_anchor = (
             (not bool(task["treated"]))
@@ -708,6 +953,9 @@ def extract_one(task: dict[str, Any]) -> dict[str, Any]:
         current["temporal_area_ratio"] = np.nan
         current["temporal_red_ratio"] = np.nan
         current["temporal_red_mass_ratio"] = np.nan
+        current["temporal_support_frames"] = 0
+        current["temporal_track_confident"] = False
+        current["temporal_match_confidence"] = 0.0
 
     current.insert(0, "branch", branch)
     current.insert(0, "cohort", cohort)
@@ -916,8 +1164,12 @@ def main() -> int:
         ],
         "temporal_carryforward_definition": {
             "previous_state": "strong_dead",
-            "matching": "mutual_nearest_centroid",
+            "matching": (
+                "mutual_nearest_centroid_across_previous_2_and_next_2_frames"
+            ),
             "maximum_centroid_distance_px": args.temporal_distance_px,
+            "adaptive_distance_cap": "45_percent_of_current_field_median_nn",
+            "minimum_support_frames": 2,
             "maximum_current_to_previous_area_ratio": args.remnant_max_area_ratio,
             "maximum_current_to_previous_red_mass_ratio": args.remnant_max_red_ratio,
         },

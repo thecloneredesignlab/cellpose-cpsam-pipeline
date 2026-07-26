@@ -54,6 +54,31 @@ class PlotWellCountsTests(unittest.TestCase):
             self.assertEqual(legacy_source.branch, "legacy-combined")
             self.assertEqual(legacy_source.path, legacy_predictions.resolve())
 
+    def test_auto_source_prefers_authoritative_consensus(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            consensus_summary = (
+                root
+                / "classification_consensus"
+                / "summaries"
+                / "cell_count_summary.csv"
+            )
+            fusion_summary = (
+                root
+                / "classification_fusion"
+                / "summaries"
+                / "cell_count_summary.csv"
+            )
+            consensus_summary.parent.mkdir(parents=True)
+            fusion_summary.parent.mkdir(parents=True)
+            consensus_summary.write_text("image_id\n")
+            fusion_summary.write_text("image_id\n")
+
+            source = PLOTTER.resolve_input_source(root, "auto")
+
+            self.assertEqual(source.branch, "fusion-consensus")
+            self.assertEqual(source.path, consensus_summary.resolve())
+
     def test_fusion_aggregation_uses_countable_cell_denominator(self) -> None:
         fieldnames = [
             "image_id",

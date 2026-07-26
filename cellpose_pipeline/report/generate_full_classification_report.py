@@ -45,6 +45,7 @@ BRANCH_DIRS = {
     "nucleated_only": "classification_fusion_nucleated_only",
 }
 BRANCH_ANALYSIS_DIRS = {
+    "consensus": "fusion-consensus",
     "original": "fusion",
     "nucleated_only": "fusion-nucleated-only",
 }
@@ -89,7 +90,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--expected-fields-per-branch", type=int, default=27200)
     parser.add_argument("--expected-timepoints", type=int, default=85)
-    parser.add_argument("--expected-dose-response-files", type=int, default=82)
+    parser.add_argument("--expected-dose-response-files", type=int, default=123)
     parser.add_argument("--force", action="store_true")
     return parser.parse_args()
 
@@ -136,6 +137,20 @@ def validate_inputs(
                 f"Expected {expected_timepoints} {branch} time points, found {len(timepoints)}"
             )
         summaries[branch] = rows
+    consensus_rows = COMMON.read_csv(
+        root
+        / "classification_consensus"
+        / "summaries"
+        / "cell_count_summary.csv"
+    )
+    if len(consensus_rows) != expected_fields:
+        raise RuntimeError(
+            f"Expected {expected_fields} consensus summaries, "
+            f"found {len(consensus_rows)}"
+        )
+    if len({row["key"] for row in consensus_rows}) != expected_fields:
+        raise RuntimeError("Duplicate consensus summary keys detected")
+    summaries = {"consensus": consensus_rows, **summaries}
 
     dose_root = root / "analysis" / "dose_response"
     dose_files = sorted(path for path in dose_root.rglob("*") if path.is_file())
@@ -157,10 +172,15 @@ def validate_inputs(
     production = COMMON.read_json(
         root / "late_death_refinement" / "production_configuration.json"
     )
+    production_go_no_go = COMMON.read_json(
+        root
+        / "late_death_refinement"
+        / "FULL_CLASSIFICATION_GO_NO_GO.json"
+    )
     approved_source = Path(production["approved_configuration_source"])
     if calibration_root is not None:
         approved_source = (
-            calibration_root / "optimization_v3" / "best_configuration.json"
+            calibration_root / "optimization" / "best_configuration.json"
         )
     approved = COMMON.read_json(approved_source)
     for field in ("field_configuration", "object_configuration", "late_min_hours"):
@@ -172,6 +192,7 @@ def validate_inputs(
         "refinement": refinement,
         "summaries": summaries,
         "production": production,
+        "production_go_no_go": production_go_no_go,
         "approved_source": approved_source,
         "dose_files": dose_files,
     }
@@ -192,6 +213,7 @@ def aggregate_datasets(
 ) -> dict[str, list[dict[str, Any]]]:
     summaries = validated["summaries"]
     production = validated["production"]
+    production_go_no_go = validated["production_go_no_go"]
     overview = [
         {
             "fields_per_branch": production["fields_per_branch"],
@@ -199,8 +221,22 @@ def aggregate_datasets(
             "total_rescued": production["total_rescued"],
             "total_uncertain": production["total_uncertain"],
             "dose_response_files": len(validated["dose_files"]),
-            "analysis_branches": 2,
+            "analysis_branches": 3,
+            "production_decision": production_go_no_go["decision"],
+            "passed_validation_gates": sum(
+                bool(values["pass"])
+                for values in production_go_no_go["gates"].values()
+            ),
+            "total_validation_gates": len(production_go_no_go["gates"]),
         }
+    ]
+    convergence_gates = [
+        {
+            "gate": name.replace("_", " ").title(),
+            "status": "PASS" if values["pass"] else "FAIL",
+            "pass": bool(values["pass"]),
+        }
+        for name, values in production_go_no_go["gates"].items()
     ]
     branch_totals: list[dict[str, Any]] = []
     stage_composition: list[dict[str, Any]] = []
@@ -441,6 +477,7 @@ def aggregate_datasets(
         "dose_hill": dose_hill,
         "gr_delta": gr_delta,
         "death_delta": death_delta,
+        "convergence_gates": convergence_gates,
     }
 
 
@@ -666,10 +703,10 @@ def sources(root: Path, calibration_root: Path | None) -> list[dict[str, Any]]:
         ),
         COMMON.logical_source(
             "summaries",
-            "Final branch cell-count summaries",
+            "Authoritative consensus cell-count summary",
             label,
-            "classification_fusion/summaries/cell_count_summary.csv",
-            "Aggregate pre-refinement and final full-cohort cell states.",
+            "classification_consensus/summaries/cell_count_summary.csv",
+            "Aggregate authoritative full-cohort cell states with dual-view diagnostics.",
         ),
         COMMON.logical_source(
             "refinement",
@@ -687,16 +724,16 @@ def sources(root: Path, calibration_root: Path | None) -> list[dict[str, Any]]:
         ),
         COMMON.logical_source(
             "well_counts",
-            "Well time-course cell-state counts",
+            "Authoritative well time-course cell-state counts",
             label,
-            "analysis/well_count_timecourses/fusion/well_time_cell_state_counts.csv",
+            "analysis/well_count_timecourses/fusion-consensus/well_time_cell_state_counts.csv",
             "Read strict-completeness well-by-time live and dead counts.",
         ),
         COMMON.logical_source(
             "dose",
-            "Full-cohort dose-response analyses",
+            "Authoritative full-cohort dose-response analyses",
             label,
-            "analysis/dose_response/fusion/auc/hill_fit_parameters.csv",
+            "analysis/dose_response/fusion-consensus/auc/hill_fit_parameters.csv",
             "Read AUC, endpoint, GR, and excess-lethal-fraction analyses.",
         ),
         COMMON.logical_source(
@@ -711,12 +748,21 @@ def sources(root: Path, calibration_root: Path | None) -> list[dict[str, Any]]:
         result.append(
             COMMON.logical_source(
                 "calibration",
-                "Approved d0 and Day-5 calibration",
+                "Approved no-ground-truth d0 and late-time calibration",
                 calibration_root.name,
-                "optimization_v3/best_configuration.json",
+                "optimization/best_configuration.json",
                 "Verify that the production configuration matches the approved calibration.",
             )
         )
+    result.append(
+        COMMON.logical_source(
+            "convergence",
+            "Operational GO or NO-GO receipt",
+            label,
+            "late_death_refinement/FULL_CLASSIFICATION_GO_NO_GO.json",
+            "Read completeness, d0 invariance, dual-view, and calibration gates.",
+        )
+    )
     return result
 
 
@@ -911,6 +957,21 @@ def report_manifest(
     ]
     tables = [
         {
+            "id": "convergence_table",
+            "title": "Operational full-cohort validation gates",
+            "subtitle": (
+                "Proxy validation only; PASS does not estimate biological "
+                "sensitivity or specificity."
+            ),
+            "dataset": "convergence_gates",
+            "sourceId": "convergence",
+            "defaultSort": {"field": "gate", "direction": "asc"},
+            "columns": [
+                {"field": "gate", "label": "Gate", "type": "text"},
+                {"field": "status", "label": "Status", "type": "text"},
+            ],
+        },
+        {
             "id": "branch_table",
             "title": "Full-cohort classification totals",
             "subtitle": "Exact pre-refinement, final, supplemental, and object-aware totals.",
@@ -1079,10 +1140,18 @@ def report_manifest(
         },
         {
             "id": "analysis_card",
-            "description": "Rebuilt downstream dose-response artifact inventory.",
+            "description": (
+                "Operational validation decision and rebuilt downstream "
+                "dose-response inventory."
+            ),
             "dataset": "overview",
-            "sourceId": "dose",
+            "sourceId": "convergence",
             "metrics": [
+                {
+                    "label": "Validation gates passed",
+                    "field": "passed_validation_gates",
+                    "format": "number",
+                },
                 {
                     "label": "Dose-response files",
                     "field": "dose_response_files",
@@ -1097,13 +1166,16 @@ def report_manifest(
             "type": "markdown",
             "body": (
                 "# SUM159 Full-Cohort Dead-Classification Report\n\n"
-                "The full cohort applies two complementary death-classification corrections. "
-                "The production run first applies the d0-calibrated object-aware classifier to "
-                "every field. Cell state and independent Death-object evidence remain separate, "
-                "which protects live cells from nearby weak blue signal. A final trajectory stage "
-                "then detects persistent late field collapse and rescues only objects with "
-                "multi-signal late-death evidence. Segmentation is frozen throughout; only "
-                "classification and its annotations are changed."
+                "This classification-only run reuses the frozen v3 segmentation masks. "
+                "The original and nucleated-only mask views are treated as independent "
+                "diagnostic evidence, while the original-cell-mask summary remains the "
+                "authoritative counting unit. A post-classification consensus stage combines "
+                "continuous density- and time-matched live references, cell-conditioned Dead "
+                "signal, nuclear-to-cytoplasmic ratio, red-mass loss, object shape, recoverable "
+                "field-collapse states, and multi-frame spatial continuity. Strong live evidence "
+                "vetoes an initiating rescue. A supported call is propagated only across a "
+                "mutual-nearest dual-view pair, and any remaining final-call or tracking conflict "
+                "is retained as uncertainty rather than forced into dead."
             ),
         },
         {
@@ -1117,7 +1189,9 @@ def report_manifest(
             "body": (
                 "## Scope, outputs, and denominators\n\n"
                 "Both the original-cell-mask and nucleated-only branches contain 27,200 fields "
-                "covering 80 wells, four sites, and 85 time points. Cell-state percentages use "
+                "covering 80 wells, four sites, and 85 time points. The consensus output uses "
+                "the original branch as the authoritative cell denominator and carries the "
+                "nucleated-only measurements as diagnostics. Cell-state percentages use "
                 "live plus dead cells unless stated otherwise; artifacts are excluded. Confirmed "
                 "Death objects may be associated with a dead cell or retained as supplemental "
                 "objects, so the object-aware death total is not identical to dead-cell count."
@@ -1130,11 +1204,34 @@ def report_manifest(
                 "## Classification proceeds from per-field object attribution to late trajectory rescue\n\n"
                 "The first stage combines RGB state, Dead-channel evidence, Brightfield support, "
                 "nucleus support, object overlap, and nucleus multiplicity. The late stage begins "
-                "only after per-field classification is merged. It checks density-matched changes "
-                "in count, area, cytoplasm, red mass, mask coverage, site concordance, and temporal "
-                "persistence. Within an accepted late field, object evidence and explicit healthy "
-                "signals determine whether a previously live object is rescued as dead."
+                "only after both per-field classification branches are merged. It calibrates "
+                "object features against continuous d0 density percentiles and untreated "
+                "time-matched live references; then it checks count, area, cytoplasm, red mass, "
+                "cell-conditioned Dead signal, nuclear-to-cytoplasmic ratio, mask coverage, "
+                "multi-site concordance, and multi-frame persistence. A field-collapse state can "
+                "recover after sustained normalization, preventing a transient collapse from "
+                "remaining active forever. Automatic rescue requires compatible dual-view or "
+                "strong unmatched evidence and is blocked by strong live evidence. Dual-view "
+                "stability is evaluated on mutual-matched objects rather than raw branch-level "
+                "fractions, because the two frozen segmentation branches intentionally contain "
+                "different cell populations."
             ),
+        },
+        {
+            "id": "convergence_result",
+            "type": "markdown",
+            "body": (
+                "## GO or NO-GO is based on operational proxies, not manual ground truth\n\n"
+                "The receipt checks the frozen-segmentation contract, calibration convergence, "
+                "full-cohort completeness, d0 invariance, and dual-view stability. Because no "
+                "manual object-level annotations exist, these gates do not measure biological "
+                "sensitivity or specificity and cannot substantiate a numerical accuracy claim."
+            ),
+        },
+        {
+            "id": "convergence_table_block",
+            "type": "table",
+            "tableId": "convergence_table",
         },
         {
             "id": "stage_result",
@@ -1142,8 +1239,8 @@ def report_manifest(
             "body": (
                 "## Late-death rescue changes the full-cohort composition without rewriting d0\n\n"
                 "The chart compares saved pre-refinement counts with the final production result. "
-                "The d0 no-change invariant is enforced by the frozen model, while later treated "
-                "fields can accumulate rescued deaths."
+                "The d0 no-change invariant is verified in the production receipt, while later "
+                "treated fields can accumulate probable-death rescues or explicit uncertainty."
             ),
         },
         {"id": "stage_block", "type": "chart", "chartId": "stage_chart"},
@@ -1154,8 +1251,9 @@ def report_manifest(
             "body": (
                 "## Rescue and field-collapse calls emerge after the late-time gate\n\n"
                 "Rescue rates and global field-collapse calls are summarized by experimental day. "
-                "They should remain absent at d0 and increase only when persistent trajectory "
-                "evidence is present."
+                "They remain absent at d0 and require persistent trajectory evidence. Unlike the "
+                "previous absorbing state, the current field gate can deactivate after three "
+                "sustained normalized frames."
             ),
         },
         {"id": "rescue_day_block", "type": "chart", "chartId": "rescue_day_chart"},
@@ -1226,10 +1324,10 @@ def report_manifest(
                 "type": "markdown",
                 "body": (
                     "## Full-cohort dose response is rebuilt from the refined classifications\n\n"
-                    "The dose-response stage consumes the strict-completeness well-by-time tables "
-                    "generated after late-death refinement. It recreates AUC, exact Day-4, exact "
-                    "Day-5, growth-rate inhibition, and excess-lethal-fraction analyses for both "
-                    "classification branches."
+                "The dose-response stage consumes the strict-completeness well-by-time tables "
+                "generated after late-death refinement. It recreates AUC, exact Day-4, exact "
+                "Day-5, growth-rate inhibition, and excess-lethal-fraction analyses for the "
+                "authoritative consensus and both diagnostic classification branches."
                 ),
             },
         )
@@ -1281,7 +1379,8 @@ def report_manifest(
                 "type": "markdown",
                 "body": (
                     "## Recommended downstream use\n\n"
-                    "Use final dead-cell counts when the analytical unit is a Combined cell. Use "
+                    "Use the fusion-consensus outputs for primary well-level and dose-response "
+                    "analysis. Use final dead-cell counts when the analytical unit is a Combined cell. Use "
                     "object-aware death totals when supplemental confirmed Death objects are part "
                     "of the biological question. Preserve the analysis branch, uncertainty layer, "
                     "configuration hash, and pre-refinement counts in every downstream comparison."

@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT_DIR="${PROJECT_DIR:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/cellpose-cpsam-pipeline-v3}"
 RESULT_ROOT="${RESULT_ROOT:?RESULT_ROOT is required}"
 DOSE_DPI="${DOSE_DPI:-220}"
-EXPECTED_FILES="${EXPECTED_FILES:-82}"
+EXPECTED_FILES="${EXPECTED_FILES:-123}"
 FORCE_DOSE_RESPONSE="${FORCE_DOSE_RESPONSE:-0}"
 
 module load Anaconda3/2024.02-1
@@ -21,7 +21,7 @@ export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 mkdir -p "$MPLCONFIGDIR" "$RESULT_ROOT/analysis" "$RESULT_ROOT/workflow_status/dose_response"
 
-for branch in fusion fusion-nucleated-only; do
+for branch in fusion-consensus fusion fusion-nucleated-only; do
   required="$RESULT_ROOT/analysis/well_count_timecourses/$branch/well_time_cell_state_counts.csv"
   [[ -s "$required" ]] || {
     echo "Required well-count table is missing: $required" >&2
@@ -49,7 +49,7 @@ echo "result_root=$RESULT_ROOT"
 echo "python_bin=$PYTHON_BIN"
 echo "dose_dpi=$DOSE_DPI"
 
-for branch in fusion fusion-nucleated-only; do
+for branch in fusion-consensus fusion fusion-nucleated-only; do
   echo "dose_response_branch=$branch"
   "$PYTHON_BIN" -I cellpose_pipeline/scripts/analysisi/07_plot_dose_response_curves.py \
     "$RESULT_ROOT" \
@@ -64,7 +64,7 @@ if [[ "$actual_files" -ne "$EXPECTED_FILES" ]]; then
   echo "Expected $EXPECTED_FILES dose-response files but found $actual_files" >&2
   exit 2
 fi
-for branch in fusion fusion-nucleated-only; do
+for branch in fusion-consensus fusion fusion-nucleated-only; do
   for relative in \
     auc/hill_fit_parameters.csv \
     day4/hill_fit_parameters.csv \

@@ -33,9 +33,359 @@ REFINEMENT = load_module(
     "late_dead_trajectory_refinement_test",
     SCRIPT_DIR / "14_apply_late_dead_trajectory_refinement.py",
 )
+try:
+    DATASET_BUILDER = load_module(
+        "late_dead_trajectory_dataset_test",
+        SCRIPT_DIR / "13_build_late_dead_trajectory_dataset.py",
+    )
+except ModuleNotFoundError:
+    DATASET_BUILDER = None
 
 
 class LateDeathTrajectoryRefinementTests(unittest.TestCase):
+    @unittest.skipUnless(
+        DATASET_BUILDER is not None,
+        "The local lightweight test environment does not include scikit-image.",
+    )
+    def test_cell_conditioned_dead_features_use_existing_masks(self) -> None:
+        cell_labels = np.zeros((10, 10), dtype=np.int32)
+        cell_labels[3:7, 3:7] = 1
+        nucleus_labels = np.zeros_like(cell_labels)
+        nucleus_labels[4:6, 4:6] = 1
+        yy, xx = np.indices(cell_labels.shape)
+        dead_raw = np.where((yy + xx) % 2 == 0, 9.0, 11.0)
+        dead_raw[cell_labels == 1] = 20.0
+        dead_raw[nucleus_labels == 1] = 40.0
+
+        features = DATASET_BUILDER.cell_conditioned_dead_features(
+            cell_labels,
+            nucleus_labels,
+            dead_raw,
+        )
+
+        self.assertEqual(features["combined_mask_id"].tolist(), [1])
+        self.assertGreater(float(features.loc[0, "cell_dead_snr"]), 0.0)
+        self.assertEqual(float(features.loc[0, "cell_dead_positive_fraction"]), 1.0)
+        self.assertGreater(
+            float(features.loc[0, "cell_dead_core_enrichment"]),
+            0.0,
+        )
+
+    def test_continuous_density_anchor_weights(self) -> None:
+        self.assertEqual(MODEL.density_anchor_weights(0.0), ((0.1, 1.0),))
+        self.assertEqual(MODEL.density_anchor_weights(1.0), ((0.9, 1.0),))
+        weights = MODEL.density_anchor_weights(0.40)
+        self.assertEqual(tuple(anchor for anchor, _weight in weights), (0.3, 0.5))
+        self.assertAlmostEqual(sum(weight for _anchor, weight in weights), 1.0)
+        self.assertAlmostEqual(weights[0][1], 0.5)
+        self.assertAlmostEqual(weights[1][1], 0.5)
+
+    def test_vectorized_feature_calibration_matches_scalar_interpolation(self) -> None:
+        densities = [0.0, 0.10, 0.20, 0.40, 0.90, 1.0]
+        rows = []
+        arrays = {}
+        for index, density in enumerate(densities):
+            row = {
+                "branch": "original",
+                "key": f"E2_1_{index:02d}d00h00m",
+                "elapsed_hours": 0.0,
+                "density_percentile": density,
+            }
+            for _output, (raw, _direction) in MODEL.RAW_FEATURES.items():
+                row[raw] = 25.0 + index
+            rows.append(row)
+        for anchor in MODEL.DENSITY_ANCHORS:
+            for _output, (raw, _direction) in MODEL.RAW_FEATURES.items():
+                arrays[("original", anchor, "d0", raw)] = np.linspace(
+                    anchor * 10.0,
+                    100.0 + anchor * 10.0,
+                    101,
+                )
+        calibrated = MODEL.apply_empirical_feature_calibration(
+            pd.DataFrame(rows),
+            arrays,
+            error_context="test",
+        )
+        for row_index, density in enumerate(densities):
+            for output, (raw, direction) in MODEL.RAW_FEATURES.items():
+                expected = 0.0
+                used_weight = 0.0
+                for anchor, weight in MODEL.density_anchor_weights(density):
+                    expected += weight * MODEL.empirical_percentile(
+                        arrays[("original", anchor, "d0", raw)],
+                        np.asarray([rows[row_index][raw]], dtype=float),
+                        direction,
+                        reference_sorted=True,
+                    )[0]
+                    used_weight += weight
+                self.assertAlmostEqual(
+                    float(calibrated.loc[row_index, output]),
+                    expected / used_weight,
+                    places=12,
+                )
+
+    def test_field_state_can_recover_after_sustained_normalization(self) -> None:
+        rows = []
+        for site in range(1, 5):
+            for offset, collapsed in enumerate(
+                (True, True, True, True, False, False, False)
+            ):
+                rows.append(
+                    {
+                        "branch": "original",
+                        "well": "E9",
+                        "site": site,
+                        "elapsed_hours": 72.0 + 2.0 * offset,
+                        "key": f"E9_{site}_{72 + 2 * offset:03d}h",
+                        "field_count_ratio_to_peak": 0.50 if collapsed else 1.0,
+                        "field_area_ratio_to_peak": 0.20 if collapsed else 1.0,
+                        "field_cytoplasm_ratio_to_peak": (
+                            0.20 if collapsed else 1.0
+                        ),
+                        "field_red_mass_ratio_to_peak": (
+                            0.20 if collapsed else 1.0
+                        ),
+                        "field_mask_fraction_ratio_to_peak": (
+                            0.40 if collapsed else 1.0
+                        ),
+                    }
+                )
+        fields = MODEL.apply_field_configuration(
+            pd.DataFrame(rows),
+            REFINEMENT.FIELD_CONFIGURATION,
+            REFINEMENT.LATE_MIN_HOURS,
+        )
+        site_one = fields.loc[fields["site"].eq(1)].sort_values("elapsed_hours")
+        self.assertIn("entered", set(site_one["field_state_transition"]))
+        self.assertEqual(site_one.iloc[-1]["field_state_transition"], "recovered")
+        self.assertFalse(bool(site_one.iloc[-1]["field_global_late_death"]))
+
+    def test_field_consensus_requires_both_segmentation_views(self) -> None:
+        fields = pd.DataFrame(
+            {
+                "branch": [
+                    "original",
+                    "nucleated_only",
+                    "original",
+                    "nucleated_only",
+                ],
+                "key": ["E9_1_t1", "E9_1_t1", "E9_1_t2", "E9_1_t2"],
+                "field_global_late_death": [True, False, True, True],
+            }
+        )
+        consensus = MODEL.apply_branch_field_consensus(fields)
+        first = consensus.loc[consensus["key"].eq("E9_1_t1")]
+        second = consensus.loc[consensus["key"].eq("E9_1_t2")]
+        self.assertTrue(first["field_branch_raw_discordant"].astype(bool).all())
+        self.assertFalse(first["field_global_late_death"].astype(bool).any())
+        self.assertFalse(second["field_branch_raw_discordant"].astype(bool).any())
+        self.assertTrue(second["field_global_late_death"].astype(bool).all())
+        self.assertEqual(
+            first.loc[first["branch"].eq("original"), "field_branch_raw_global"].iloc[0],
+            True,
+        )
+
+    def test_temporal_rescue_requires_consensus_and_respects_live_veto(self) -> None:
+        base = {
+            "cohort": "trajectory",
+            "key": "E9_1_05d00h00m",
+            "well": "E9",
+            "site": 1,
+            "elapsed_hours": 120.0,
+            "treated": True,
+            "countable": True,
+            "border_touching": False,
+            "final_state": "live",
+            "proxy_type": "temporal_dead_remnant",
+            "temporal_track_confident": True,
+            "temporal_support_frames": 3,
+            "temporal_match_confidence": 0.95,
+            "centroid_y": 50.0,
+            "centroid_x": 50.0,
+        }
+        rows = []
+        for branch in ("original", "nucleated_only"):
+            row = dict(base, branch=branch, combined_mask_id=1)
+            row.update({feature: 0.10 for feature in MODEL.MODEL_FEATURES})
+            rows.append(row)
+        fields = pd.DataFrame(
+            {
+                "branch": ["original", "nucleated_only"],
+                "key": [base["key"], base["key"]],
+                "field_global_late_death": [True, True],
+                "field_collapse_signal_count": [5, 5],
+                "field_site_concordance": [1.0, 1.0],
+                "field_branch_raw_discordant": [False, False],
+                "field_branch_raw_global": [True, True],
+                "field_branch_consensus_late_death": [True, True],
+            }
+        )
+        vetoed = MODEL.classification_calls(
+            pd.DataFrame(rows),
+            fields,
+            REFINEMENT.OBJECT_CONFIGURATION,
+            REFINEMENT.LATE_MIN_HOURS,
+            apply_treatment_scope=True,
+        )
+        self.assertTrue(vetoed["strong_live_evidence"].astype(bool).all())
+        self.assertFalse(vetoed["late_death_rescue_call"].astype(bool).any())
+
+        death_supported = pd.DataFrame(rows)
+        for feature in MODEL.MODEL_FEATURES:
+            death_supported[feature] = 0.95
+        rescued = MODEL.classification_calls(
+            death_supported,
+            fields,
+            REFINEMENT.OBJECT_CONFIGURATION,
+            REFINEMENT.LATE_MIN_HOURS,
+            apply_treatment_scope=True,
+        )
+        self.assertTrue(rescued["branch_partner_matched"].astype(bool).all())
+        self.assertTrue(rescued["temporal_carryforward_call"].astype(bool).all())
+        self.assertTrue(rescued["late_death_rescue_call"].astype(bool).all())
+
+    def test_cached_branch_matches_preserve_classification_calls(self) -> None:
+        rows = []
+        for branch, x_offset in (
+            ("original", 0.0),
+            ("nucleated_only", 0.5),
+        ):
+            for object_id, x_position, percentile in (
+                (1, 20.0, 0.95),
+                (2, 80.0, 0.10),
+            ):
+                row = {
+                    "cohort": "trajectory",
+                    "branch": branch,
+                    "key": "E9_1_05d00h00m",
+                    "well": "E9",
+                    "site": 1,
+                    "elapsed_hours": 120.0,
+                    "treated": True,
+                    "combined_mask_id": object_id,
+                    "centroid_y": 50.0,
+                    "centroid_x": x_position + x_offset,
+                    "countable": True,
+                    "border_touching": False,
+                    "final_state": "live",
+                    "proxy_type": (
+                        "temporal_dead_remnant"
+                        if object_id == 1
+                        else "unlabeled"
+                    ),
+                    "temporal_track_confident": object_id == 1,
+                    "temporal_support_frames": 3 if object_id == 1 else 0,
+                    "temporal_match_confidence": 0.95 if object_id == 1 else 0.0,
+                }
+                row.update(
+                    {feature: percentile for feature in MODEL.MODEL_FEATURES}
+                )
+                rows.append(row)
+        objects = pd.DataFrame(rows)
+        fields = pd.DataFrame(
+            {
+                "branch": ["original", "nucleated_only"],
+                "key": ["E9_1_05d00h00m", "E9_1_05d00h00m"],
+                "field_global_late_death": [True, True],
+                "field_collapse_signal_count": [5, 5],
+                "field_site_concordance": [1.0, 1.0],
+                "field_branch_raw_discordant": [False, False],
+                "field_branch_raw_global": [True, True],
+                "field_branch_consensus_late_death": [True, True],
+            }
+        )
+        direct = MODEL.classification_calls(
+            objects,
+            fields,
+            REFINEMENT.OBJECT_CONFIGURATION,
+            REFINEMENT.LATE_MIN_HOURS,
+            apply_treatment_scope=True,
+        )
+        cached = MODEL.classification_calls(
+            MODEL.precompute_branch_object_matches(objects, 10.0),
+            fields,
+            REFINEMENT.OBJECT_CONFIGURATION,
+            REFINEMENT.LATE_MIN_HOURS,
+            apply_treatment_scope=True,
+        )
+        columns = [
+            "branch_partner_matched",
+            "branch_partner_distance",
+            "branch_partner_current_dead",
+            "branch_partner_object_evidence",
+            "branch_partner_strong_live",
+            "branch_partner_temporal_remnant",
+            "branch_partner_death_signal_count",
+            "branch_object_evidence_agree",
+            "temporal_carryforward_call",
+            "global_late_death_rescue_call",
+            "late_death_rescue_call",
+            "final_dead_call",
+            "late_death_uncertain",
+            "classification_tier",
+        ]
+        pd.testing.assert_frame_equal(
+            direct[columns].reset_index(drop=True),
+            cached[columns].reset_index(drop=True),
+            check_dtype=False,
+        )
+
+    def test_confirmed_temporal_rescue_propagates_across_matched_views(self) -> None:
+        rows = []
+        for branch, proxy_type, x_offset in (
+            ("original", "temporal_dead_remnant", 0.0),
+            ("nucleated_only", "unlabeled", 0.5),
+        ):
+            row = {
+                "cohort": "trajectory",
+                "branch": branch,
+                "key": "E9_1_05d00h00m",
+                "well": "E9",
+                "site": 1,
+                "elapsed_hours": 120.0,
+                "treated": True,
+                "combined_mask_id": 1,
+                "centroid_y": 50.0,
+                "centroid_x": 50.0 + x_offset,
+                "countable": True,
+                "border_touching": False,
+                "final_state": "live",
+                "proxy_type": proxy_type,
+                "temporal_track_confident": proxy_type == "temporal_dead_remnant",
+                "temporal_support_frames": (
+                    3 if proxy_type == "temporal_dead_remnant" else 0
+                ),
+                "temporal_match_confidence": (
+                    0.95 if proxy_type == "temporal_dead_remnant" else 0.0
+                ),
+            }
+            row.update({feature: 0.95 for feature in MODEL.MODEL_FEATURES})
+            rows.append(row)
+        fields = pd.DataFrame(
+            {
+                "branch": ["original", "nucleated_only"],
+                "key": ["E9_1_05d00h00m", "E9_1_05d00h00m"],
+                "field_global_late_death": [False, False],
+                "field_collapse_signal_count": [0, 0],
+                "field_site_concordance": [0.0, 0.0],
+                "field_branch_raw_discordant": [False, False],
+                "field_branch_raw_global": [False, False],
+                "field_branch_consensus_late_death": [False, False],
+            }
+        )
+        calls = MODEL.classification_calls(
+            pd.DataFrame(rows),
+            fields,
+            REFINEMENT.OBJECT_CONFIGURATION,
+            REFINEMENT.LATE_MIN_HOURS,
+            apply_treatment_scope=True,
+        )
+        self.assertTrue(calls["temporal_carryforward_call"].astype(bool).all())
+        self.assertTrue(
+            calls["branch_late_death_rescue_call_agree"].astype(bool).all()
+        )
+        self.assertTrue(calls["branch_final_dead_call_agree"].astype(bool).all())
+
     def test_persistent_field_collapse_and_object_evidence_rescue(self) -> None:
         rows = []
         for site in range(1, 5):
@@ -145,6 +495,84 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
             captured.loc[0, "pre_late_death_classification_confidence"],
             "high",
         )
+
+    def test_production_rejects_calibration_configuration_drift(self) -> None:
+        approved = {
+            "production_integration": "approved",
+            "field_configuration": dict(REFINEMENT.FIELD_CONFIGURATION),
+            "object_configuration": dict(REFINEMENT.OBJECT_CONFIGURATION),
+            "late_min_hours": REFINEMENT.LATE_MIN_HOURS,
+        }
+        REFINEMENT.validate_approved_calibration_configuration(approved)
+        drifted = json.loads(json.dumps(approved))
+        drifted["object_configuration"]["feature_threshold"] += 0.10
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "object configuration does not match",
+        ):
+            REFINEMENT.validate_approved_calibration_configuration(drifted)
+
+    def test_production_receipt_reports_operational_go(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            consensus_path = (
+                root
+                / "classification_consensus"
+                / "summaries"
+                / "cell_count_summary.csv"
+            )
+            consensus_path.parent.mkdir(parents=True)
+            pd.DataFrame(
+                {
+                    "key": ["E2_1_00d00h00m", "E9_1_05d00h00m"],
+                    "branch_dead_fraction_abs_diff": [0.0, 0.005],
+                    "late_death_rescue_count": [0, 10],
+                    "total_cell_count": [100, 100],
+                    "nucleated_only_late_death_rescue_count": [0, 10],
+                    "nucleated_only_total_cell_count": [100, 100],
+                }
+            ).to_csv(consensus_path, index=False)
+            status_rows = []
+            for branch in ("original", "nucleated_only"):
+                for key in ("E2_1_00d00h00m", "E9_1_05d00h00m"):
+                    status_rows.append(
+                        {
+                            "branch": branch,
+                            "key": key,
+                            "field_global_late_death": key.startswith("E9"),
+                            "objects": 100,
+                            "rescued": 0 if key.startswith("E2") else 10,
+                            "uncertain": 0,
+                            "matched_objects": 100,
+                            "matched_rescue_call_agree": 100,
+                            "matched_final_dead_call_agree": 100,
+                        }
+                    )
+            receipt_path, receipt = REFINEMENT.write_production_go_no_go(
+                root,
+                pd.DataFrame(status_rows),
+                consensus_path,
+                {
+                    "decision": "GO",
+                    "metric_semantics": (
+                        "operational_proxies_without_manual_biological_ground_truth"
+                    ),
+                },
+                {
+                    "verified": True,
+                    "receipt_path": "freeze.json",
+                    "source_run_root": "frozen",
+                    "verified_file_count": 34,
+                },
+                expected_fields_per_branch=2,
+            )
+            self.assertTrue(receipt_path.is_file())
+            self.assertEqual(receipt["decision"], "GO")
+            self.assertFalse(receipt["biological_accuracy_claimed"])
+            self.assertTrue(receipt["gates"]["D0_INVARIANCE"]["pass"])
+            self.assertTrue(
+                receipt["gates"]["FULL_COHORT_COMPLETENESS"]["pass"]
+            )
 
     def test_field_outputs_are_updated_and_force_rerun_stays_clean(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -155,6 +155,19 @@ def resolve_input_source(result_root: Path, requested_branch: str) -> InputSourc
     if not result_root.exists():
         raise SystemExit(f"Result path does not exist: {result_root}")
 
+    if requested_branch in {"auto", "fusion-consensus"}:
+        candidates = fusion_summary_candidates(result_root, "classification_consensus")
+        if candidates:
+            return source_from_fusion_summary(
+                require_single_candidate(
+                    candidates,
+                    "classification_consensus summary",
+                ),
+                "fusion-consensus",
+            )
+        if requested_branch == "fusion-consensus":
+            require_single_candidate(candidates, "classification_consensus summary")
+
     if requested_branch in {"auto", "fusion"}:
         candidates = fusion_summary_candidates(result_root, "classification_fusion")
         if candidates:
@@ -185,8 +198,9 @@ def resolve_input_source(result_root: Path, requested_branch: str) -> InputSourc
             require_single_candidate(candidates, "legacy Combined classification/predictions directory")
 
     raise SystemExit(
-        "No supported cell-state summary found. Expected classification_fusion/summaries/"
-        "cell_count_summary.csv or Combined/classification/predictions/."
+        "No supported cell-state summary found. Expected classification_consensus/"
+        "summaries/cell_count_summary.csv, classification_fusion/summaries/"
+        "cell_count_summary.csv, or Combined/classification/predictions/."
     )
 
 
@@ -447,6 +461,11 @@ def dose_label(value: float) -> str:
 
 
 def source_description(branch: str) -> str:
+    if branch == "fusion-consensus":
+        return (
+            "Authoritative dual-view death-classification consensus "
+            "(original cell masks with nucleated-only diagnostics)"
+        )
     if branch == "fusion":
         return "Primary multichannel fusion on original Combined cell masks"
     if branch == "fusion-nucleated-only":
@@ -655,9 +674,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--branch",
-        choices=("auto", "fusion", "fusion-nucleated-only", "legacy-combined"),
+        choices=(
+            "auto",
+            "fusion-consensus",
+            "fusion",
+            "fusion-nucleated-only",
+            "legacy-combined",
+        ),
         default="auto",
-        help="Classification source. Auto prefers the primary fusion summary.",
+        help=(
+            "Classification source. Auto prefers the authoritative dual-view "
+            "consensus summary."
+        ),
     )
     parser.add_argument("--plate-map", type=Path, default=DEFAULT_PLATE_MAP)
     parser.add_argument("--out-dir", type=Path, default=None)

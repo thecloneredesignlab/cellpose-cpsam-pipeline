@@ -20,7 +20,12 @@ LATE_DEATH_WORKER="${LATE_DEATH_WORKER:-$SCRIPT_DIR/run_late_dead_trajectory_ref
 PLOT_WORKER="${PLOT_WORKER:-$SCRIPT_DIR/analysisi/05_run_well_count_timecourse_plots.sh}"
 DOSE_RESPONSE_WORKER="${DOSE_RESPONSE_WORKER:-$SCRIPT_DIR/analysisi/06_run_dose_response_analysis.sh}"
 REPORT_WORKER="${REPORT_WORKER:-$SCRIPT_DIR/analysisi/07_run_full_classification_report.sh}"
-CALIBRATION_ROOT="${CALIBRATION_ROOT:-$BASE/results/Tests_and_Parameters_calibration/late_dead_trajectory_optimization_20260723_024151}"
+CALIBRATION_REPORT_WORKER="${CALIBRATION_REPORT_WORKER:-$SCRIPT_DIR/Parameter_calibration/27_generate_late_dead_d0_d5_report.sh}"
+CALIBRATION_ROOT="${CALIBRATION_ROOT:-$BASE/results/Tests_and_Parameters_calibration/death_classification_consensus_optimization_20260725_213646}"
+CALIBRATION_CONFIGURATION_DIR="${CALIBRATION_CONFIGURATION_DIR:-$CALIBRATION_ROOT/optimization}"
+CALIBRATION_GO_NO_GO="${CALIBRATION_GO_NO_GO:-$CALIBRATION_CONFIGURATION_DIR/FULL_CLASSIFICATION_GO_NO_GO.json}"
+SEGMENTATION_FREEZE_MANIFEST="${SEGMENTATION_FREEZE_MANIFEST:-$PROJECT_DIR/cellpose_pipeline/configs/segmentation_freeze_v3_20260725.json}"
+SEGMENTATION_FREEZE_VERIFIER="${SEGMENTATION_FREEZE_VERIFIER:-$PROJECT_DIR/cellpose_pipeline/scripts/15_verify_segmentation_freeze.py}"
 
 FIELD_MANIFEST_DIR="$OUT_ROOT/workflow_status/postsegmentation_manifest"
 TASK_DIR="$OUT_ROOT/workflow_status/task_lists"
@@ -34,6 +39,7 @@ ORIGINAL_PLOT_DIR="$OUT_ROOT/analysis/well_count_timecourses/fusion"
 NUCLEATED_PLOT_DIR="$OUT_ROOT/analysis/well_count_timecourses/fusion-nucleated-only"
 DOSE_RESPONSE_DIR="$OUT_ROOT/analysis/dose_response"
 FULL_REPORT_DIR="$OUT_ROOT/analysis/reports"
+SEGMENTATION_FREEZE_RECEIPT="$OUT_ROOT/workflow_status/segmentation_freeze_verification.json"
 
 EXPECTED_FIELDS="${EXPECTED_FIELDS:-27200}"
 JOB_QOS="${JOB_QOS:-xxlarge}"
@@ -61,9 +67,12 @@ DOSE_RESPONSE_MEM="${DOSE_RESPONSE_MEM:-16G}"
 REPORT_TIME="${REPORT_TIME:-06:00:00}"
 REPORT_CPUS="${REPORT_CPUS:-4}"
 REPORT_MEM="${REPORT_MEM:-32G}"
+CALIBRATION_REPORT_TIME="${CALIBRATION_REPORT_TIME:-04:00:00}"
+CALIBRATION_REPORT_CPUS="${CALIBRATION_REPORT_CPUS:-4}"
+CALIBRATION_REPORT_MEM="${CALIBRATION_REPORT_MEM:-32G}"
 EXPECTED_TIMEPOINTS="${EXPECTED_TIMEPOINTS:-85}"
 EXPECTED_SITES="${EXPECTED_SITES:-4}"
-EXPECTED_DOSE_RESPONSE_FILES="${EXPECTED_DOSE_RESPONSE_FILES:-82}"
+EXPECTED_DOSE_RESPONSE_FILES="${EXPECTED_DOSE_RESPONSE_FILES:-123}"
 PLOT_DPI="${PLOT_DPI:-200}"
 DOSE_DPI="${DOSE_DPI:-220}"
 FORCE_FUSION="${FORCE_FUSION:-1}"
@@ -85,7 +94,7 @@ required_directories=(
   "$SOURCE_RUN_ROOT/Nuclei/nucleus_core_seeds"
   "$NUCLEATED_BRANCH_ROOT/Combined/segmentations"
   "$NUCLEATED_BRANCH_ROOT/Brightfield/segmentations"
-  "$CALIBRATION_ROOT/optimization_v3"
+  "$CALIBRATION_CONFIGURATION_DIR"
 )
 for required in "${required_directories[@]}"; do
   if [[ ! -d "$required" ]]; then
@@ -100,12 +109,33 @@ for worker in \
   "$LATE_DEATH_WORKER" \
   "$PLOT_WORKER" \
   "$DOSE_RESPONSE_WORKER" \
-  "$REPORT_WORKER"; do
+  "$REPORT_WORKER" \
+  "$CALIBRATION_REPORT_WORKER"; do
   if [[ ! -x "$worker" ]]; then
     echo "Required production worker is missing or not executable: $worker" >&2
     exit 2
   fi
 done
+for required_file in \
+  "$CALIBRATION_GO_NO_GO" \
+  "$SEGMENTATION_FREEZE_MANIFEST" \
+  "$SEGMENTATION_FREEZE_VERIFIER"; do
+  if [[ ! -f "$required_file" ]]; then
+    echo "Required classification validation input is missing: $required_file" >&2
+    exit 2
+  fi
+done
+calibration_decision="$(
+  python3 - "$CALIBRATION_GO_NO_GO" <<'PY'
+import json
+import sys
+print(json.load(open(sys.argv[1], encoding="utf-8")).get("decision", "MISSING"))
+PY
+)"
+if [[ "$calibration_decision" != "GO" ]]; then
+  echo "Full classification is blocked by calibration decision: $calibration_decision" >&2
+  exit 2
+fi
 if [[ ! "$EXPECTED_FIELDS" =~ ^[1-9][0-9]*$ ]]; then
   echo "EXPECTED_FIELDS must be a positive integer: $EXPECTED_FIELDS" >&2
   exit 2
@@ -135,6 +165,11 @@ if [[ -e "$OUT_ROOT" ]]; then
 fi
 
 mkdir -p "$TASK_DIR" "$LOG_DIR" "$ORIGINAL_OUT_DIR" "$NUCLEATED_OUT_DIR"
+python3 -I "$SEGMENTATION_FREEZE_VERIFIER" \
+  --repo-root "$PROJECT_DIR" \
+  --manifest "$SEGMENTATION_FREEZE_MANIFEST" \
+  --source-run-root "$SOURCE_RUN_ROOT" \
+  --output "$SEGMENTATION_FREEZE_RECEIPT"
 temporary_task_list="$TASK_LIST_FUSION.tmp.$$"
 find "$INPUT_ROOT/Combined" -maxdepth 1 -type f \( \
     -iname '*.tif' -o -iname '*.tiff' -o -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \
@@ -244,6 +279,15 @@ REPORT_SBATCH_ARGS=(
   --cpus-per-task "$REPORT_CPUS"
   --mem "$REPORT_MEM"
 )
+CALIBRATION_REPORT_SBATCH_ARGS=(
+  "${COMMON_SBATCH_ARGS[@]}"
+  --job-name "${SBATCH_JOB_PREFIX}_d0_d5_report"
+  --output "$LOG_DIR/%x_%j.out"
+  --error "$LOG_DIR/%x_%j.err"
+  --time "$CALIBRATION_REPORT_TIME"
+  --cpus-per-task "$CALIBRATION_REPORT_CPUS"
+  --mem "$CALIBRATION_REPORT_MEM"
+)
 
 write_submission_summary() {
   {
@@ -261,13 +305,19 @@ write_submission_summary() {
     echo "array_spec=$ARRAY_SPEC"
     echo "original_output=$ORIGINAL_OUT_DIR"
     echo "nucleated_output=$NUCLEATED_OUT_DIR"
+    echo "consensus_summary=$OUT_ROOT/classification_consensus/summaries/cell_count_summary.csv"
+    echo "consensus_well_count_plot=$OUT_ROOT/analysis/well_count_timecourses/fusion-consensus/well_live_dead_counts_over_time.png"
     echo "original_well_count_plot=$ORIGINAL_PLOT_DIR/well_live_dead_counts_over_time.png"
     echo "nucleated_well_count_plot=$NUCLEATED_PLOT_DIR/well_live_dead_counts_over_time.png"
     echo "dose_response_root=$DOSE_RESPONSE_DIR"
     echo "full_classification_report=$FULL_REPORT_DIR/DEAD_CLASSIFICATION_FULL_COHORT_REPORT.html"
+    echo "d0_d5_calibration_report=$CALIBRATION_ROOT/report_final/DEAD_CLASSIFICATION_D0_D5_CALIBRATION_REPORT.html"
     echo "calibration_root=$CALIBRATION_ROOT"
+    echo "calibration_go_no_go=$CALIBRATION_GO_NO_GO"
+    echo "segmentation_freeze_manifest=$SEGMENTATION_FREEZE_MANIFEST"
+    echo "segmentation_freeze_receipt=$SEGMENTATION_FREEZE_RECEIPT"
     echo "classification_method=cellpose_pipeline/scripts/08_fuse_multichannel_classification.py+cellpose_pipeline/scripts/14_apply_late_dead_trajectory_refinement.py"
-    echo "late_death_method_version=late_dead_trajectory_v1_20260723"
+    echo "late_death_method_version=death_classification_consensus_v2_20260725"
     echo "classification_timepoint=all"
     echo "classification_cpus_per_task=$CLASSIFICATION_CPUS"
     echo "classification_mem_per_task=$CLASSIFICATION_MEM"
@@ -294,6 +344,9 @@ write_submission_summary() {
     echo "report_cpus_per_task=$REPORT_CPUS"
     echo "report_mem_per_task=$REPORT_MEM"
     echo "report_time=$REPORT_TIME"
+    echo "calibration_report_cpus_per_task=$CALIBRATION_REPORT_CPUS"
+    echo "calibration_report_mem_per_task=$CALIBRATION_REPORT_MEM"
+    echo "calibration_report_time=$CALIBRATION_REPORT_TIME"
     echo "manifest_job_id=${MANIFEST_JOB_ID:-not_submitted}"
     echo "original_array_job_id=${ORIGINAL_JOB_ID:-not_submitted}"
     echo "original_merge_job_id=${ORIGINAL_MERGE_JOB_ID:-not_submitted}"
@@ -302,6 +355,7 @@ write_submission_summary() {
     echo "late_death_refinement_job_id=${LATE_DEATH_JOB_ID:-not_submitted}"
     echo "well_count_plot_job_id=${PLOT_JOB_ID:-not_submitted}"
     echo "dose_response_job_id=${DOSE_RESPONSE_JOB_ID:-not_submitted}"
+    echo "d0_d5_calibration_report_job_id=${CALIBRATION_REPORT_JOB_ID:-not_submitted}"
     echo "full_classification_report_job_id=${REPORT_JOB_ID:-not_submitted}"
   } > "$SUBMISSION_SUMMARY"
 }
@@ -314,22 +368,26 @@ echo "task_count=$N_TASKS"
 echo "array_spec=$ARRAY_SPEC"
 echo "original_output=$ORIGINAL_OUT_DIR"
 echo "nucleated_output=$NUCLEATED_OUT_DIR"
+echo "consensus_summary=$OUT_ROOT/classification_consensus/summaries/cell_count_summary.csv"
+echo "consensus_well_count_plot=$OUT_ROOT/analysis/well_count_timecourses/fusion-consensus/well_live_dead_counts_over_time.png"
 echo "original_well_count_plot=$ORIGINAL_PLOT_DIR/well_live_dead_counts_over_time.png"
 echo "nucleated_well_count_plot=$NUCLEATED_PLOT_DIR/well_live_dead_counts_over_time.png"
 echo "dose_response_root=$DOSE_RESPONSE_DIR"
 echo "full_classification_report=$FULL_REPORT_DIR/DEAD_CLASSIFICATION_FULL_COHORT_REPORT.html"
+echo "d0_d5_calibration_report=$CALIBRATION_ROOT/report_final/DEAD_CLASSIFICATION_D0_D5_CALIBRATION_REPORT.html"
 printf 'manifest_sbatch_arg=%s\n' "${MANIFEST_SBATCH_ARGS[@]}"
 printf 'classification_sbatch_arg=%s\n' "${CLASSIFICATION_SBATCH_ARGS[@]}"
 printf 'merge_sbatch_arg=%s\n' "${MERGE_SBATCH_ARGS[@]}"
 printf 'late_death_sbatch_arg=%s\n' "${LATE_DEATH_SBATCH_ARGS[@]}"
 printf 'plot_sbatch_arg=%s\n' "${PLOT_SBATCH_ARGS[@]}"
 printf 'dose_response_sbatch_arg=%s\n' "${DOSE_RESPONSE_SBATCH_ARGS[@]}"
+printf 'calibration_report_sbatch_arg=%s\n' "${CALIBRATION_REPORT_SBATCH_ARGS[@]}"
 printf 'report_sbatch_arg=%s\n' "${REPORT_SBATCH_ARGS[@]}"
 
 if [[ "$DRY_RUN_SUBMIT" == "1" ]]; then
   write_submission_summary
   echo "dry_run_submit=1"
-  echo "dependency_graph=manifest -> {original_array,nucleated_array} -> {original_merge,nucleated_merge} -> late_death_refinement -> well_count_plots -> dose_response -> full_classification_report"
+  echo "dependency_graph={d0_d5_calibration_report,manifest -> {original_array,nucleated_array} -> {original_merge,nucleated_merge} -> late_death_refinement -> well_count_plots -> dose_response} -> full_classification_report"
   exit 0
 fi
 
@@ -359,6 +417,10 @@ submit_job() {
   fi
   printf '%s\n' "$output"
 }
+
+CALIBRATION_REPORT_JOB_ID="$(submit_job "${CALIBRATION_REPORT_SBATCH_ARGS[@]}" \
+  --export=ALL,PROJECT_DIR="$PROJECT_DIR",CALIBRATION_ROOT="$CALIBRATION_ROOT",FORCE_REPORT=0 \
+  "$CALIBRATION_REPORT_WORKER")"
 
 MANIFEST_JOB_ID="$(submit_job "${MANIFEST_SBATCH_ARGS[@]}" \
   --export=ALL,PROJECT_DIR="$PROJECT_DIR",INPUT_ROOT="$INPUT_ROOT",RUN_ROOT="$SOURCE_RUN_ROOT",TASK_LIST_FUSION="$TASK_LIST_FUSION",FIELD_MANIFEST_DIR="$FIELD_MANIFEST_DIR",NUCLEATED_BRANCH_ROOT="$NUCLEATED_BRANCH_ROOT",FORCE_FIELD_MANIFEST=1 \
@@ -390,7 +452,7 @@ NUCLEATED_MERGE_JOB_ID="$(submit_job "${MERGE_SBATCH_ARGS[@]}" \
 
 LATE_DEATH_JOB_ID="$(submit_job "${LATE_DEATH_SBATCH_ARGS[@]}" \
   --dependency "afterok:$ORIGINAL_MERGE_JOB_ID:$NUCLEATED_MERGE_JOB_ID" \
-  --export=ALL,PROJECT_DIR="$PROJECT_DIR",CLASSIFICATION_ROOT="$OUT_ROOT",PLATE_MAP="$PROJECT_DIR/cellpose_pipeline/scripts/analysisi/resources/SUM159_AC_Experiment1_PlateMap.csv",EXPECTED_FIELDS_PER_BRANCH="$EXPECTED_FIELDS",WORKERS="$LATE_DEATH_CPUS",FORCE_LATE_DEATH="$FORCE_LATE_DEATH" \
+  --export=ALL,PROJECT_DIR="$PROJECT_DIR",CLASSIFICATION_ROOT="$OUT_ROOT",PLATE_MAP="$PROJECT_DIR/cellpose_pipeline/scripts/analysisi/resources/SUM159_AC_Experiment1_PlateMap.csv",EXPECTED_FIELDS_PER_BRANCH="$EXPECTED_FIELDS",WORKERS="$LATE_DEATH_CPUS",FORCE_LATE_DEATH="$FORCE_LATE_DEATH",CALIBRATION_GO_NO_GO="$CALIBRATION_GO_NO_GO",SEGMENTATION_FREEZE_RECEIPT="$SEGMENTATION_FREEZE_RECEIPT" \
   "$LATE_DEATH_WORKER")"
 
 PLOT_JOB_ID="$(submit_job "${PLOT_SBATCH_ARGS[@]}" \
@@ -404,7 +466,7 @@ DOSE_RESPONSE_JOB_ID="$(submit_job "${DOSE_RESPONSE_SBATCH_ARGS[@]}" \
   "$DOSE_RESPONSE_WORKER")"
 
 REPORT_JOB_ID="$(submit_job "${REPORT_SBATCH_ARGS[@]}" \
-  --dependency "afterok:$DOSE_RESPONSE_JOB_ID" \
+  --dependency "afterok:$DOSE_RESPONSE_JOB_ID:$CALIBRATION_REPORT_JOB_ID" \
   --export=ALL,PROJECT_DIR="$PROJECT_DIR",RESULT_ROOT="$OUT_ROOT",CALIBRATION_ROOT="$CALIBRATION_ROOT",EXPECTED_FIELDS_PER_BRANCH="$EXPECTED_FIELDS",EXPECTED_TIMEPOINTS="$EXPECTED_TIMEPOINTS",EXPECTED_DOSE_RESPONSE_FILES="$EXPECTED_DOSE_RESPONSE_FILES",FORCE_REPORT="$FORCE_REPORT" \
   "$REPORT_WORKER")"
 
@@ -418,5 +480,6 @@ echo "nucleated_merge_job_id=$NUCLEATED_MERGE_JOB_ID"
 echo "late_death_refinement_job_id=$LATE_DEATH_JOB_ID"
 echo "well_count_plot_job_id=$PLOT_JOB_ID"
 echo "dose_response_job_id=$DOSE_RESPONSE_JOB_ID"
+echo "d0_d5_calibration_report_job_id=$CALIBRATION_REPORT_JOB_ID"
 echo "full_classification_report_job_id=$REPORT_JOB_ID"
 echo "submission_summary=$SUBMISSION_SUMMARY"

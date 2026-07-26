@@ -93,6 +93,8 @@ def as_int(value: Any, default: int = 0) -> int:
 
 def display_branch(value: str) -> str:
     return {
+        "consensus": "Consensus (authoritative)",
+        "fusion-consensus": "Consensus (authoritative)",
         "original": "Original",
         "fusion": "Original",
         "nucleated_only": "Nucleated-only",

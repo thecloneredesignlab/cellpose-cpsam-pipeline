@@ -8,6 +8,8 @@ WORK_DIR="${WORK_DIR:-$CLASSIFICATION_ROOT/workflow_status/late_death_trajectory
 EXPECTED_FIELDS_PER_BRANCH="${EXPECTED_FIELDS_PER_BRANCH:-27200}"
 WORKERS="${WORKERS:-${SLURM_CPUS_PER_TASK:-16}}"
 FORCE_LATE_DEATH="${FORCE_LATE_DEATH:-0}"
+CALIBRATION_GO_NO_GO="${CALIBRATION_GO_NO_GO:?CALIBRATION_GO_NO_GO is required}"
+SEGMENTATION_FREEZE_RECEIPT="${SEGMENTATION_FREEZE_RECEIPT:?SEGMENTATION_FREEZE_RECEIPT is required}"
 
 module load Anaconda3/2024.02-1
 source "$(conda info --base)/etc/profile.d/conda.sh"
@@ -27,6 +29,8 @@ for required in \
   "$CLASSIFICATION_ROOT/classification_fusion/summaries/cell_count_summary.csv" \
   "$CLASSIFICATION_ROOT/classification_fusion_nucleated_only/summaries/cell_count_summary.csv" \
   "$CLASSIFICATION_ROOT/workflow_status/postsegmentation_manifest" \
+  "$CALIBRATION_GO_NO_GO" \
+  "$SEGMENTATION_FREEZE_RECEIPT" \
   "$PLATE_MAP"; do
   [[ -e "$required" ]] || {
     echo "Required late-death production input is missing: $required" >&2
@@ -62,6 +66,8 @@ REFINEMENT_ARGS=(
   cellpose_pipeline/scripts/14_apply_late_dead_trajectory_refinement.py
   --classification-root "$CLASSIFICATION_ROOT"
   --dataset-root "$WORK_DIR"
+  --calibration-go-no-go "$CALIBRATION_GO_NO_GO"
+  --segmentation-freeze-receipt "$SEGMENTATION_FREEZE_RECEIPT"
   --workers "$WORKERS"
   --expected-fields-per-branch "$EXPECTED_FIELDS_PER_BRANCH"
 )

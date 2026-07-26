@@ -4,7 +4,7 @@ set -euo pipefail
 BASE="${BASE:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/20260619_SUM159_Doxorubicin_Cyclophosphamide}"
 PROJECT_DIR="${PROJECT_DIR:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/cellpose-cpsam-pipeline-v3}"
 RESULT_ROOT="${RESULT_ROOT:?RESULT_ROOT is required}"
-CALIBRATION_ROOT="${CALIBRATION_ROOT:-$BASE/results/Tests_and_Parameters_calibration/late_dead_trajectory_optimization_20260723_024151}"
+CALIBRATION_ROOT="${CALIBRATION_ROOT:-$BASE/results/Tests_and_Parameters_calibration/death_classification_consensus_optimization_20260725_213646}"
 PLATE_MAP="${PLATE_MAP:-$PROJECT_DIR/cellpose_pipeline/scripts/analysisi/resources/SUM159_AC_Experiment1_PlateMap.csv}"
 OUTPUT_DIR="${OUTPUT_DIR:-$RESULT_ROOT/analysis/reports}"
 PYTHON_BIN="${PYTHON_BIN:-/home/4482173/.conda/envs/cellpose_cpsam/bin/python}"
@@ -12,7 +12,7 @@ NODE_ROOT="${NODE_ROOT:-/home/4482173/.local/opt/node-v24.18.0-linux-x64}"
 REPORT_PLUGIN_ROOT="${REPORT_PLUGIN_ROOT:-/home/4482173/.local/share/data-analytics/0.2.8}"
 EXPECTED_FIELDS_PER_BRANCH="${EXPECTED_FIELDS_PER_BRANCH:-27200}"
 EXPECTED_TIMEPOINTS="${EXPECTED_TIMEPOINTS:-85}"
-EXPECTED_DOSE_RESPONSE_FILES="${EXPECTED_DOSE_RESPONSE_FILES:-82}"
+EXPECTED_DOSE_RESPONSE_FILES="${EXPECTED_DOSE_RESPONSE_FILES:-123}"
 FORCE_REPORT="${FORCE_REPORT:-0}"
 
 for required in \
@@ -21,7 +21,10 @@ for required in \
   "$RESULT_ROOT/SUBMISSION_SUMMARY.txt" \
   "$RESULT_ROOT/late_death_refinement/production_configuration.json" \
   "$RESULT_ROOT/late_death_refinement/refinement_summary.csv" \
-  "$CALIBRATION_ROOT/optimization_v3/best_configuration.json" \
+  "$RESULT_ROOT/late_death_refinement/FULL_CLASSIFICATION_GO_NO_GO.json" \
+  "$RESULT_ROOT/classification_consensus/summaries/cell_count_summary.csv" \
+  "$CALIBRATION_ROOT/optimization/best_configuration.json" \
+  "$CALIBRATION_ROOT/optimization/FULL_CLASSIFICATION_GO_NO_GO.json" \
   "$PLATE_MAP" \
   "$PROJECT_DIR/cellpose_pipeline/report/generate_full_classification_report.py"; do
   [[ -e "$required" ]] || {

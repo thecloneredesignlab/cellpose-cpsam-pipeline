@@ -31,7 +31,7 @@ echo "python_bin=$PYTHON_BIN"
 echo "expected_timepoints=$EXPECTED_TIMEPOINTS"
 echo "expected_sites=$EXPECTED_SITES"
 
-for branch in fusion fusion-nucleated-only; do
+for branch in fusion-consensus fusion fusion-nucleated-only; do
   out_dir="$RESULT_ROOT/analysis/well_count_timecourses/$branch"
   echo "plot_branch=$branch"
   echo "plot_out_dir=$out_dir"
