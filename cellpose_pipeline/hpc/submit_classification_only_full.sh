@@ -7,6 +7,7 @@ set -euo pipefail
 
 BASE="/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/20260619_SUM159_Doxorubicin_Cyclophosphamide"
 PROJECT_DIR="${PROJECT_DIR:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/cellpose-cpsam-pipeline-v3}"
+PYTHON="${PYTHON:-/home/4482173/.conda/envs/cellpose_cpsam/bin/python}"
 INPUT_ROOT="${INPUT_ROOT:-$BASE/20260626_SUM159_AC_Exp1_SeparateImages}"
 SOURCE_RUN_ROOT="${SOURCE_RUN_ROOT:-$BASE/results/full_fusion_shape_strict_20260711_155940}"
 STAMP="${RUN_STAMP:-$(date +%Y%m%d_%H%M%S)}"
@@ -117,6 +118,7 @@ for worker in \
   fi
 done
 for required_file in \
+  "$PYTHON" \
   "$CALIBRATION_GO_NO_GO" \
   "$SEGMENTATION_FREEZE_MANIFEST" \
   "$SEGMENTATION_FREEZE_VERIFIER"; do
@@ -126,7 +128,7 @@ for required_file in \
   fi
 done
 calibration_decision="$(
-  python3 - "$CALIBRATION_GO_NO_GO" <<'PY'
+  "$PYTHON" - "$CALIBRATION_GO_NO_GO" <<'PY'
 import json
 import sys
 print(json.load(open(sys.argv[1], encoding="utf-8")).get("decision", "MISSING"))
@@ -165,7 +167,7 @@ if [[ -e "$OUT_ROOT" ]]; then
 fi
 
 mkdir -p "$TASK_DIR" "$LOG_DIR" "$ORIGINAL_OUT_DIR" "$NUCLEATED_OUT_DIR"
-python3 -I "$SEGMENTATION_FREEZE_VERIFIER" \
+"$PYTHON" -I "$SEGMENTATION_FREEZE_VERIFIER" \
   --repo-root "$PROJECT_DIR" \
   --manifest "$SEGMENTATION_FREEZE_MANIFEST" \
   --source-run-root "$SOURCE_RUN_ROOT" \
