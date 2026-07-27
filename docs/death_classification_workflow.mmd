@@ -1,0 +1,126 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Arial, Helvetica, sans-serif"}}}%%
+flowchart LR
+    subgraph S0["0. Immutable inputs and execution scope"]
+        direction TB
+        I1["Raw images<br/>Combined / Brightfield / Dead / Nuclei"]
+        I2["Frozen segmentation<br/>original + nucleated-only cell masks<br/>Dead masks / nucleus core and extent"]
+        I3{"Segmentation freeze<br/>verification passed?"}
+        I4["Classification only<br/>run both segmentation branches"]
+        IX["Stop submission"]
+        I1 --> I3
+        I2 --> I3
+        I3 -- "Yes" --> I4
+        I3 -- "No" --> IX
+    end
+
+    subgraph S1["1. Base multichannel classification for every field"]
+        direction TB
+        B1["Combined-mask RGB state<br/>red / blue fractions / saturation<br/>live / dead / transitional / uncertain / artifact"]
+        B2["Dead-object signal QC and cell matching<br/>area 20-2500 px / aspect &lt;= 4<br/>p90 &gt;= 15 / p90 delta &gt;= 2 / SNR &gt;= 3<br/>overlap, then centroid distance &lt;= 25 px"]
+        B3["Brightfield and nucleus support<br/>nearest masks / nuclei inside cell<br/>nucleus-aware Dead/cell relation"]
+        B4{"Fuse RGB, Dead,<br/>BF and nucleus evidence"}
+        B5["Pre-late-death cell state<br/>dead / live / uncertain / artifact"]
+        B6["Supplemental confirmed Dead objects<br/>dead-only or overlapping/adjacent objects<br/>may coexist with a live cell mask"]
+        B7["Save both branch outputs<br/>features / predictions / summaries<br/>state masks / Dead-object annotations / QC"]
+
+        I4 --> B1
+        I4 --> B2
+        I4 --> B3
+        B1 --> B4
+        B2 --> B4
+        B3 --> B4
+        B4 --> B5
+        B3 --> B6
+        B5 --> B7
+        B6 --> B7
+    end
+
+    subgraph S2["2. Late-death trajectory preparation and calibration"]
+        direction TB
+        P1["Build complete well/site trajectories<br/>current, previous/next 2 h and 4 h<br/>mutual-nearest object matching"]
+        P2["Measure every existing cell mask<br/>nucleus/cytoplasm ratio / area/cytoplasm loss<br/>red-mass loss / shape<br/>raw Dead SNR / positive fraction / core enrichment"]
+        P3["Reference calibration by branch<br/>continuous d0 density anchors<br/>+ untreated time drift<br/>d0 / 24-48 h / 50-72 h / 74-96 h"]
+        P4["Convert all object features to<br/>density- and time-calibrated percentiles"]
+
+        B7 --> P1 --> P2 --> P3 --> P4
+    end
+
+    subgraph S3["3. Three evidence paths for late-death rescue"]
+        direction TB
+        F1["Field-collapse path<br/>time &gt;= 72 h / at least 4 of 5 signals:<br/>cell count, cell area, cytoplasm area,<br/>red mass, mask-covered fraction"]
+        F2["Field consensus<br/>&gt;= 75% sites agree<br/>enter after 3 persistent frames<br/>recover after 3 frames with &lt;= 1 signal<br/>both branches must confirm collapse"]
+        O1["Object multisignal path<br/>high nuclear/cytoplasm ratio<br/>area/cytoplasm depletion / red loss<br/>round/solid shape / cell-conditioned Dead signal"]
+        O2["Object consensus<br/>percentile &gt;= 0.50 in at least 2 groups<br/>fewer than 3 strong-live groups<br/>matched partner &lt;= 10 px: both branches agree<br/>unmatched: at least 3 death groups"]
+        T1["Temporal-remnant path<br/>previously supported death followed by signal loss<br/>confident track / at least 2 supporting frames<br/>no strong-live evidence / branch support"]
+
+        P4 --> F1 --> F2
+        P4 --> O1 --> O2
+        P4 --> T1
+    end
+
+    subgraph S4["4. Final cell-state decision"]
+        direction TB
+        D1{"Pre-refinement state?"}
+        D2["Preserve confirmed dead<br/>late stage never demotes it"]
+        D3{"Currently live, countable,<br/>non-border, treated,<br/>and time &gt;= 72 h?"}
+        D4{"Field + object consensus<br/>OR temporal-remnant<br/>consensus satisfied?"}
+        D5["Final dead<br/>late_death_trajectory_rescue<br/>confidence: medium"]
+        D6{"Conflicting branch, field,<br/>object, track, or final call?"}
+        D7["Final uncertain<br/>confidence: low"]
+        D8["Retain pre-refinement state"]
+        D0["Current all-timepoint rule<br/>matched branch-final disagreement can<br/>change a d0 live object to uncertain"]
+
+        B7 --> D1
+        D1 -- "dead" --> D2
+        D1 -- "live" --> D3
+        D1 -- "uncertain / artifact" --> D8
+        D3 -- "No" --> D8
+        D3 -- "Yes" --> D4
+        F2 --> D4
+        O2 --> D4
+        T1 --> D4
+        D4 -- "Yes" --> D5
+        D4 -- "No" --> D6
+        D6 -- "Yes" --> D7
+        D6 -- "No" --> D8
+        D0 -.-> D7
+    end
+
+    subgraph S5["5. Final outputs and interpretation"]
+        direction TB
+        OUTF["Per-cell final states<br/>dead / live / uncertain / artifact"]
+        OUTO["Object-aware dead count<br/>dead cells + supplemental<br/>confirmed Dead objects"]
+        OUTB["Dead-fraction interval<br/>lower = dead<br/>upper = dead + uncertain"]
+        OUTC["Authoritative field summary<br/>original branch counts<br/>+ nucleated-only diagnostics"]
+        OUTQ["Audit and reports<br/>annotations / refinement summary<br/>GO/NO-GO / dose response / HTML"]
+        OUTL["No manual biological ground truth<br/>confidence and GO/NO-GO<br/>are operational proxies"]
+
+        D2 --> OUTF
+        D5 --> OUTF
+        D7 --> OUTF
+        D8 --> OUTF
+        OUTF --> OUTO
+        B6 --> OUTO
+        OUTF --> OUTB
+        OUTO --> OUTC
+        OUTB --> OUTC
+        OUTC --> OUTQ --> OUTL
+    end
+
+    classDef input fill:#e8f1fb,stroke:#2b5d8a,color:#16344d;
+    classDef process fill:#eef6ee,stroke:#3e7443,color:#244529;
+    classDef decision fill:#fff4d6,stroke:#9b7115,color:#533b08;
+    classDef dead fill:#f8dddd,stroke:#9d3131,color:#561b1b;
+    classDef live fill:#e5f4ea,stroke:#3c7b50,color:#20452c;
+    classDef uncertain fill:#eee6f7,stroke:#72508f,color:#402b52;
+    classDef output fill:#e8eef8,stroke:#4b6285,color:#26354c;
+    classDef warning fill:#fff0e5,stroke:#a85825,color:#5c3018;
+
+    class I1,I2 input;
+    class I4,B1,B2,B3,B5,B6,B7,P1,P2,P3,P4,F1,F2,O1,O2,T1 process;
+    class I3,B4,D1,D3,D4,D6 decision;
+    class D2,D5 dead;
+    class D8 live;
+    class D7 uncertain;
+    class OUTF,OUTO,OUTB,OUTC,OUTQ output;
+    class IX,D0,OUTL warning;

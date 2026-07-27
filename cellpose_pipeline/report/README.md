@@ -317,6 +317,7 @@ The report includes:
 /home/4482173/.conda/envs/cellpose_cpsam/bin/python -I \
   cellpose_pipeline/report/generate_full_classification_report.py \
   --classification-root /share/.../results/classification_<timestamp> \
+  --previous-classification-root /share/.../results/classification_20260721_102004 \
   --calibration-root /share/.../results/Tests_and_Parameters_calibration/death_classification_consensus_optimization_20260725_213646 \
   --plugin-root /home/4482173/.local/share/data-analytics/0.2.8
 ```

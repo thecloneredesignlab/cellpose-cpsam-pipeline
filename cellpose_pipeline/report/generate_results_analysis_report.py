@@ -46,6 +46,7 @@ QC_RENDER_SCALE = 6
 HIGH_RES_PRINT_PPI = 600
 HIGH_RES_WEBP_QUALITY = 96
 HIGH_RES_JPEG_QUALITY = 98
+CAROUSEL_IMAGE_HEIGHT_CAP = 1800
 
 BG = (18, 20, 24)
 PANEL_BG = (29, 32, 38)
@@ -2464,6 +2465,62 @@ def report_image_frames(artifact: dict[str, Any]) -> list[dict[str, int | str]]:
     return frames
 
 
+def report_carousel_groups(artifact: dict[str, Any]) -> list[dict[str, Any]]:
+    blocks = artifact.get("manifest", {}).get("blocks", [])
+    blocks_by_id = {
+        str(block.get("id", "")): block
+        for block in blocks
+        if str(block.get("id", ""))
+    }
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    seen_blocks: set[str] = set()
+    for block in blocks:
+        if block.get("type") != "html" or "carouselGroup" not in block:
+            continue
+        image_id = str(block.get("id", ""))
+        group_id = str(block.get("carouselGroup", ""))
+        text_id = str(block.get("carouselTextId", ""))
+        label = str(block.get("carouselLabel", "")).strip()
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", group_id):
+            raise ValueError(f"Invalid report carousel group id: {group_id!r}")
+        if image_id in seen_blocks or text_id in seen_blocks:
+            raise ValueError(f"Report carousel block is reused: {image_id} / {text_id}")
+        if text_id not in blocks_by_id or blocks_by_id[text_id].get("type") != "markdown":
+            raise ValueError(
+                f"Report carousel image {image_id} references missing markdown block {text_id}"
+            )
+        try:
+            index = int(block.get("carouselIndex"))
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Report carousel image {image_id} has an invalid index"
+            ) from error
+        if index < 0 or not label:
+            raise ValueError(
+                f"Report carousel image {image_id} requires a nonnegative index and label"
+            )
+        grouped.setdefault(group_id, []).append(
+            {
+                "index": index,
+                "label": label,
+                "textId": text_id,
+                "imageId": image_id,
+            }
+        )
+        seen_blocks.update((image_id, text_id))
+
+    result: list[dict[str, Any]] = []
+    for group_id, slides in grouped.items():
+        slides.sort(key=lambda slide: slide["index"])
+        indices = [slide["index"] for slide in slides]
+        if len(slides) < 2 or indices != list(range(len(slides))):
+            raise ValueError(
+                f"Report carousel {group_id} must contain contiguous indices from zero: {indices}"
+            )
+        result.append({"id": group_id, "slides": slides})
+    return result
+
+
 def validate_high_resolution_image_payload(
     payload: dict[str, Any] | None,
     image_frames: list[dict[str, int | str]],
@@ -2563,6 +2620,29 @@ def navigation_style(image_frames: list[dict[str, int | str]]) -> str:
 #report-lightbox-image{position:absolute;top:50%;left:50%;max-width:none;max-height:none;transform-origin:center center;cursor:grab;user-select:none;-webkit-user-drag:none;will-change:transform}
 #report-lightbox-viewport.is-dragging #report-lightbox-image{cursor:grabbing}
 body.report-lightbox-open{overflow:hidden!important}
+#data-analytics-portable-fallback .portable-block-stack{width:100%!important;max-width:none!important;margin-right:0!important;margin-left:0!important}
+.report-image-interaction-host{position:relative!important}
+.report-image-interaction-surface{position:absolute;z-index:3;inset:0;display:block;min-width:0;min-height:0;margin:0;padding:0;border:0;background:transparent;cursor:zoom-in;touch-action:pan-y}
+.report-image-interaction-surface:focus-visible{outline:2px solid var(--portable-accent,#0b57d0);outline-offset:-4px}
+.report-carousel{--report-carousel-image-height-cap:1800px;position:relative;grid-column:1/-1!important;width:100%!important;max-width:none!important;max-height:calc(100dvh - 64px);box-sizing:border-box;margin:10px 0 28px;padding:0 50px 14px;border:1px solid var(--portable-border,#d9d9d9);border-radius:16px;background:var(--portable-canvas,Canvas);box-shadow:0 8px 24px rgba(0,0,0,.06)}
+.report-carousel-viewport{width:100%;min-height:0;overflow:hidden;overflow:clip;touch-action:pan-y;overscroll-behavior-x:contain}
+.report-carousel-track{display:flex;width:100%;align-items:stretch;transform:translate3d(0,0,0);transition:transform .32s cubic-bezier(.22,.61,.36,1);will-change:transform}
+.report-carousel.is-dragging .report-carousel-track{transition:none}
+.report-carousel-slide{display:flex;flex:0 0 100%;min-width:0;min-height:0;flex-direction:column;align-self:stretch;box-sizing:border-box;padding:0 4px}
+.report-carousel-slide>*{width:100%!important;max-width:100%!important;box-sizing:border-box}
+.report-carousel-arrow{position:absolute;z-index:4;top:50%;display:grid;width:38px;height:38px;margin-top:-31px;padding:0;place-items:center;border:1px solid rgba(255,255,255,.32);border-radius:999px;background:rgba(23,28,38,.78);color:#fff;font:600 27px/1 system-ui,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.22);cursor:pointer;transition:opacity .16s ease,transform .16s ease,background .16s ease}
+.report-carousel-arrow:hover:not(:disabled){background:rgba(23,28,38,.94);transform:scale(1.06)}
+.report-carousel-arrow:disabled{opacity:.24;cursor:default}
+.report-carousel-arrow:focus-visible,.report-carousel-dot:focus-visible,.report-carousel-viewport:focus-visible{outline:2px solid var(--portable-accent,#0b57d0);outline-offset:3px}
+.report-carousel-prev{left:7px}.report-carousel-next{right:7px}
+.report-carousel-progress{display:flex;min-height:28px;align-items:center;justify-content:center;gap:9px;padding:10px 0 0}
+.report-carousel-dot{width:11px;height:11px;padding:0;border:1.5px solid var(--portable-muted,#777);border-radius:999px;background:transparent;cursor:pointer;transition:width .16s ease,background .16s ease,border-color .16s ease}
+.report-carousel-dot[aria-current="true"]{width:25px;border-color:var(--portable-accent,#0b57d0);background:var(--portable-accent,#0b57d0)}
+.report-carousel-status{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.report-carousel iframe{display:block;max-width:100%!important;max-height:var(--report-carousel-image-height-cap)!important;margin-right:auto!important;margin-left:auto!important}
+@media screen and (min-width:1280px){
+  #data-analytics-portable-fallback .portable-block-stack{width:calc(100% - 244px)!important;margin-left:244px!important}
+}
 	@media screen and (max-width:1279px){
 	  #report-toc{top:12px;left:12px;max-height:calc(100vh - 24px);transform:translateX(calc(-100% - 24px));transition:transform .2s ease}
   #report-toc-close,#report-toc-mobile-toggle{display:block}
@@ -2570,8 +2650,17 @@ body.report-lightbox-open{overflow:hidden!important}
   body.report-toc-open #report-toc{transform:translateX(0)}
   body.report-toc-open #report-toc-backdrop{display:block}
   #report-lightbox-hint{display:none}
+  .report-carousel{padding-right:42px;padding-left:42px}
+  .report-carousel-arrow{width:34px;height:34px;font-size:24px}
 }
-@media print{#report-toc,#report-toc-mobile-toggle,#report-toc-backdrop{display:none!important}}
+@media print{
+  #report-toc,#report-toc-mobile-toggle,#report-toc-backdrop,.report-carousel-arrow,.report-carousel-progress{display:none!important}
+  .report-carousel{padding:0;border:0;box-shadow:none}
+  .report-carousel-viewport{overflow:visible}
+  .report-carousel-track{display:block!important;transform:none!important}
+  .report-carousel-slide{display:block!important;width:100%!important;break-inside:avoid;page-break-inside:avoid}
+  .report-carousel iframe{width:100%!important;height:auto!important;max-height:none!important}
+}
 	""" + "\n".join(frame_rules) + "\n</style>"
 
 
@@ -2600,14 +2689,24 @@ def lightbox_markup() -> str:
     )
 
 
-def navigation_script(entries: list[dict[str, Any]], image_frames: list[dict[str, int | str]]) -> str:
+def navigation_script(
+    entries: list[dict[str, Any]],
+    image_frames: list[dict[str, int | str]],
+    carousel_groups: list[dict[str, Any]],
+) -> str:
     entries_json = json.dumps(entries, ensure_ascii=True, separators=(",", ":")).replace("</", "<\\/")
     image_ids_json = json.dumps([frame["id"] for frame in image_frames], separators=(",", ":"))
+    carousels_json = json.dumps(
+        carousel_groups,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).replace("</", "<\\/")
     return """
 <script id="report-navigation-script" data-report-navigation-version="1">
 (()=>{
 const entries=__ENTRIES__;
 const imageIds=__IMAGE_IDS__;
+const carouselGroups=__CAROUSELS__;
 const toc=document.getElementById("report-toc");
 const list=document.getElementById("report-toc-list");
 const mobileToggle=document.getElementById("report-toc-mobile-toggle");
@@ -2629,6 +2728,10 @@ const links=new Map();
 const groups=new Map();
 const toggles=new Map();
 const childMap=new Map();
+const carouselStates=new WeakMap();
+const CAROUSEL_IMAGE_HEIGHT_CAP=1800;
+const CAROUSEL_VIEWPORT_TOP=56;
+const CAROUSEL_VIEWPORT_BOTTOM=16;
 for(const entry of entries){if(entry.level===3){if(!childMap.has(entry.parent))childMap.set(entry.parent,[]);childMap.get(entry.parent).push(entry)}}
 function targetFor(id){
   const reader=document.getElementById("data-analytics-portable-reader");
@@ -2637,6 +2740,254 @@ function targetFor(id){
   const fallback=document.getElementById("data-analytics-portable-fallback");
   if(fallback&&getComputedStyle(fallback).display!=="none")return fallback.querySelector(`[data-artifact-block-id="${id}"]`);
   return enhanced||fallback?.querySelector(`[data-artifact-block-id="${id}"]`)||null;
+}
+function blockForSurface(root,surface,id){
+  if(surface==="reader")return root.querySelector(`#${id}`);
+  return root.querySelector(`.portable-block[data-artifact-block-id="${id}"]`);
+}
+function visibleViewportHeight(){
+  return Math.max(320,Math.floor(window.visualViewport?.height||window.innerHeight||800));
+}
+function numericStyle(style,name){
+  const value=Number.parseFloat(style.getPropertyValue(name));return Number.isFinite(value)?value:0;
+}
+function frameAspectRatio(frame){
+  const declared=getComputedStyle(frame).aspectRatio||"";
+  const parts=declared.split("/").map(value=>Number.parseFloat(value.trim()));
+  if(parts.length===2&&parts.every(value=>Number.isFinite(value)&&value>0))return parts[0]/parts[1];
+  const rect=frame.getBoundingClientRect();
+  if(rect.width>0&&rect.height>0)return rect.width/rect.height;
+  const id=frame.dataset.reportImageId||frame.closest(".portable-block")?.dataset.artifactBlockId;
+  const image=id?highResolutionImages[id]:null;
+  if(image?.width>0&&image?.height>0)return image.width/image.height;
+  return 1;
+}
+function fitCarouselToViewport(state){
+  if(!state?.wrapper?.isConnected)return;
+  const viewportHeight=visibleViewportHeight();
+  const wrapperStyle=getComputedStyle(state.wrapper);
+  const progressHeight=state.progress.getBoundingClientRect().height;
+  const wrapperChrome=
+    numericStyle(wrapperStyle,"padding-top")+numericStyle(wrapperStyle,"padding-bottom")+
+    numericStyle(wrapperStyle,"border-top-width")+numericStyle(wrapperStyle,"border-bottom-width")+
+    progressHeight+12;
+  const availableWidth=Math.max(160,state.viewport.clientWidth-8);
+  let maximumFittedHeight=0;
+  state.slideNodes.forEach(slide=>{
+    const frame=slide.querySelector("iframe");if(!frame)return;
+    const textBlock=slide.children[0];
+    const textHeight=textBlock?.getBoundingClientRect().height||0;
+    const availableHeight=Math.max(
+      120,
+      viewportHeight-CAROUSEL_VIEWPORT_TOP-CAROUSEL_VIEWPORT_BOTTOM-wrapperChrome-textHeight,
+    );
+    const heightCap=Math.min(CAROUSEL_IMAGE_HEIGHT_CAP,availableHeight);
+    const ratio=Math.max(.1,frameAspectRatio(frame));
+    const fittedWidth=Math.max(1,Math.min(availableWidth,heightCap*ratio));
+    const fittedHeight=Math.max(1,fittedWidth/ratio);
+    frame.style.setProperty("width",`${Math.floor(fittedWidth)}px`,"important");
+    frame.style.setProperty("height",`${Math.floor(fittedHeight)}px`,"important");
+    frame.style.setProperty("max-height",`${CAROUSEL_IMAGE_HEIGHT_CAP}px`,"important");
+    maximumFittedHeight=Math.max(maximumFittedHeight,fittedHeight);
+  });
+  state.wrapper.dataset.carouselImageHeightCap=String(CAROUSEL_IMAGE_HEIGHT_CAP);
+  state.wrapper.dataset.carouselFittedImageHeight=String(Math.round(maximumFittedHeight));
+}
+function fitStandaloneImageFrame(frame){
+  if(!frame?.isConnected||frame.closest(".report-carousel"))return;
+  const host=frame.parentElement;
+  const availableWidth=Math.max(
+    160,
+    host?.clientWidth||frame.getBoundingClientRect().width||160,
+  );
+  const heightCap=Math.min(
+    CAROUSEL_IMAGE_HEIGHT_CAP,
+    Math.max(
+      120,
+      visibleViewportHeight()-CAROUSEL_VIEWPORT_TOP-CAROUSEL_VIEWPORT_BOTTOM-140,
+    ),
+  );
+  const ratio=Math.max(.1,frameAspectRatio(frame));
+  const fittedWidth=Math.max(1,Math.min(availableWidth,heightCap*ratio));
+  frame.style.setProperty("width",`${Math.floor(fittedWidth)}px`,"important");
+  frame.style.setProperty("height",`${Math.floor(fittedWidth/ratio)}px`,"important");
+  frame.style.setProperty("max-height",`${CAROUSEL_IMAGE_HEIGHT_CAP}px`,"important");
+  frame.dataset.reportViewportFitted="true";
+}
+function fitAllCarousels(keepVisible=false){
+  let visibleState=null;let visibleArea=0;
+  const viewportHeight=visibleViewportHeight();
+  document.querySelectorAll(".report-carousel").forEach(wrapper=>{
+    const state=carouselStates.get(wrapper);if(!state)return;
+    fitCarouselToViewport(state);
+    if(keepVisible){
+      const rect=wrapper.getBoundingClientRect();
+      const area=Math.max(
+        0,
+        Math.min(rect.bottom,viewportHeight-CAROUSEL_VIEWPORT_BOTTOM)-
+        Math.max(rect.top,CAROUSEL_VIEWPORT_TOP),
+      );
+      if(area>visibleArea){visibleArea=area;visibleState=state}
+    }
+  });
+  document.querySelectorAll("iframe[data-report-image-id]").forEach(
+    frame=>fitStandaloneImageFrame(frame),
+  );
+  if(visibleState&&visibleArea>0)requestAnimationFrame(()=>keepCarouselInViewport(visibleState));
+}
+function keepCarouselInViewport(state){
+  const rect=state.wrapper.getBoundingClientRect();
+  const viewportHeight=visibleViewportHeight();
+  if(rect.height>viewportHeight-CAROUSEL_VIEWPORT_TOP-CAROUSEL_VIEWPORT_BOTTOM)return;
+  if(rect.top<CAROUSEL_VIEWPORT_TOP||rect.bottom>viewportHeight-CAROUSEL_VIEWPORT_BOTTOM){
+    window.scrollTo({
+      top:Math.max(0,window.scrollY+rect.top-CAROUSEL_VIEWPORT_TOP),
+      behavior:"smooth",
+    });
+  }
+}
+function updateCarousel(state,index,animate=true){
+  const last=state.slides.length-1;
+  state.index=Math.max(0,Math.min(last,index));
+  state.viewport.scrollLeft=0;
+  state.track.style.transition=animate?"":"none";
+  state.track.style.transform=`translate3d(${-100*state.index}%,0,0)`;
+  if(!animate)requestAnimationFrame(()=>{state.track.style.transition=""});
+  state.previous.disabled=state.index===0;
+  state.next.disabled=state.index===last;
+  state.dots.forEach((dot,dotIndex)=>{
+    const current=dotIndex===state.index;
+    dot.setAttribute("aria-current",String(current));
+    dot.setAttribute("aria-label",`${current?"Current: ":"Show "}${state.slides[dotIndex].label}, slide ${dotIndex+1} of ${state.slides.length}`);
+  });
+  state.slideNodes.forEach((slide,slideIndex)=>{
+    const current=slideIndex===state.index;
+    slide.setAttribute("aria-hidden",String(!current));
+    if("inert" in slide)slide.inert=!current;
+  });
+  state.status.textContent=`${state.slides[state.index].label}, slide ${state.index+1} of ${state.slides.length}`;
+  fitCarouselToViewport(state);
+  requestAnimationFrame(()=>{
+    state.viewport.scrollLeft=0;fitCarouselToViewport(state);
+    if(animate)keepCarouselInViewport(state);
+  });
+}
+function beginCarouselDrag(state,event,captureTarget){
+  if(document.body.classList.contains("report-lightbox-open")||event.button!==0)return;
+  state.pointerId=event.pointerId;state.startX=event.clientX;state.startY=event.clientY;
+  state.lastX=event.clientX;state.dragging=false;state.horizontal=false;state.captureTarget=captureTarget;
+  try{captureTarget.setPointerCapture(event.pointerId)}catch(error){}
+}
+function moveCarouselDrag(state,event){
+  if(event.pointerId!==state.pointerId)return;
+  const dx=event.clientX-state.startX;const dy=event.clientY-state.startY;state.lastX=event.clientX;
+  if(!state.horizontal&&Math.hypot(dx,dy)>8){
+    if(Math.abs(dx)<=Math.abs(dy)){state.pointerId=null;return}
+    state.horizontal=true;state.dragging=true;state.wrapper.classList.add("is-dragging");
+  }
+  if(!state.horizontal)return;
+  event.preventDefault();
+  const width=Math.max(1,state.viewport.getBoundingClientRect().width);
+  const boundedDx=(state.index===0&&dx>0)||(state.index===state.slides.length-1&&dx<0)?dx*.28:dx;
+  state.track.style.transform=`translate3d(calc(${-100*state.index}% + ${boundedDx}px),0,0)`;
+}
+function endCarouselDrag(state,event){
+  if(event.pointerId!==state.pointerId)return false;
+  const dx=event.clientX-state.startX;
+  const wasDragging=state.dragging;
+  if(state.captureTarget?.hasPointerCapture?.(event.pointerId))state.captureTarget.releasePointerCapture(event.pointerId);
+  state.pointerId=null;state.captureTarget=null;state.dragging=false;state.horizontal=false;state.wrapper.classList.remove("is-dragging");
+  if(wasDragging){
+    const width=Math.max(1,state.viewport.getBoundingClientRect().width);
+    const threshold=Math.min(120,Math.max(45,width*.10));
+    const target=Math.abs(dx)>=threshold?state.index+(dx<0?1:-1):state.index;
+    updateCarousel(state,target,true);
+    state.suppressClick=true;setTimeout(()=>{state.suppressClick=false},180);
+  }else updateCarousel(state,state.index,true);
+  return wasDragging;
+}
+function bindCarouselPointerSurface(state,target){
+  target.addEventListener("pointerdown",event=>{
+    if(event.target.closest?.("button"))return;
+    beginCarouselDrag(state,event,target);
+  });
+  target.addEventListener("pointermove",event=>moveCarouselDrag(state,event));
+  target.addEventListener("pointerup",event=>endCarouselDrag(state,event));
+  target.addEventListener("pointercancel",event=>endCarouselDrag(state,event));
+}
+function buildCarousel(root,surface,group){
+  if(root.querySelector(`.report-carousel[data-carousel-group="${group.id}"]`))return;
+  const nodes=group.slides.map(slide=>({
+    meta:slide,
+    text:blockForSurface(root,surface,slide.textId),
+    image:blockForSurface(root,surface,slide.imageId),
+  }));
+  if(nodes.some(item=>!item.text||!item.image))return;
+  const parent=nodes[0].text.parentNode;
+  if(!parent||nodes.some(item=>item.text.parentNode!==parent||item.image.parentNode!==parent))return;
+  const wrapper=document.createElement("section");wrapper.className="report-carousel";
+  wrapper.dataset.carouselGroup=group.id;wrapper.dataset.carouselSurface=surface;
+  wrapper.setAttribute("role","region");wrapper.setAttribute("aria-roledescription","carousel");
+  wrapper.setAttribute("aria-label",`Figure carousel: ${group.slides.map(slide=>slide.label).join(", ")}`);
+  const viewport=document.createElement("div");viewport.className="report-carousel-viewport";
+  viewport.tabIndex=0;
+  const track=document.createElement("div");track.className="report-carousel-track";
+  const slideNodes=[];
+  parent.insertBefore(wrapper,nodes[0].text);
+  for(const item of nodes){
+    const slide=document.createElement("div");slide.className="report-carousel-slide";
+    slide.dataset.carouselIndex=String(item.meta.index);
+    slide.setAttribute("role","group");slide.setAttribute("aria-roledescription","slide");
+    slide.setAttribute("aria-label",`${item.meta.label}, slide ${item.meta.index+1} of ${nodes.length}`);
+    slide.append(item.text,item.image);track.appendChild(slide);slideNodes.push(slide);
+  }
+  viewport.appendChild(track);
+  const previous=document.createElement("button");previous.type="button";
+  previous.className="report-carousel-arrow report-carousel-prev";previous.textContent="‹";
+  previous.setAttribute("aria-label","Show previous figure");
+  const next=document.createElement("button");next.type="button";
+  next.className="report-carousel-arrow report-carousel-next";next.textContent="›";
+  next.setAttribute("aria-label","Show next figure");
+  const progress=document.createElement("div");progress.className="report-carousel-progress";
+  const dots=group.slides.map((slide,index)=>{
+    const dot=document.createElement("button");dot.type="button";dot.className="report-carousel-dot";
+    dot.title=slide.label;dot.addEventListener("click",()=>updateCarousel(state,index,true));
+    progress.appendChild(dot);return dot;
+  });
+  const status=document.createElement("div");status.className="report-carousel-status";
+  status.setAttribute("aria-live","polite");progress.appendChild(status);
+  const state={wrapper,viewport,track,previous,next,progress,status,dots,slides:group.slides,slideNodes,index:0,pointerId:null,startX:0,startY:0,lastX:0,dragging:false,horizontal:false,captureTarget:null,suppressClick:false};
+  carouselStates.set(wrapper,state);
+  previous.addEventListener("click",()=>updateCarousel(state,state.index-1,true));
+  next.addEventListener("click",()=>updateCarousel(state,state.index+1,true));
+  viewport.addEventListener("keydown",event=>{
+    if(document.body.classList.contains("report-lightbox-open"))return;
+    if(event.key==="ArrowLeft"){event.preventDefault();updateCarousel(state,state.index-1,true)}
+    else if(event.key==="ArrowRight"){event.preventDefault();updateCarousel(state,state.index+1,true)}
+    else if(event.key==="Home"){event.preventDefault();updateCarousel(state,0,true)}
+    else if(event.key==="End"){event.preventDefault();updateCarousel(state,state.slides.length-1,true)}
+  });
+  bindCarouselPointerSurface(state,viewport);
+  wrapper.append(viewport,previous,next,progress);
+  updateCarousel(state,0,false);
+}
+function configureCarousels(){
+  const reader=document.getElementById("data-analytics-portable-reader");
+  const fallback=document.getElementById("data-analytics-portable-fallback");
+  if(carouselGroups.length&&fallback){
+    fallback.classList.remove("portable-enhanced-hidden");
+    fallback.style.display="block";fallback.removeAttribute("aria-hidden");
+    if(reader){reader.style.display="none";reader.setAttribute("aria-hidden","true")}
+  }
+  for(const group of carouselGroups){
+    if(reader)buildCarousel(reader,"reader",group);
+    if(fallback)buildCarousel(fallback,"fallback",group);
+  }
+  requestAnimationFrame(()=>fitAllCarousels(false));
+}
+function carouselStateForFrame(frame){
+  const wrapper=frame.closest(".report-carousel");
+  return wrapper?carouselStates.get(wrapper):null;
 }
 function closeDrawer(){document.body.classList.remove("report-toc-open");mobileToggle?.setAttribute("aria-expanded","false")}
 function scrollToEntry(entry){const target=targetFor(entry.id);if(!target)return;const top=target.getBoundingClientRect().top+window.scrollY-68;window.scrollTo({top:Math.max(0,top),behavior:"smooth"});closeDrawer()}
@@ -2726,24 +3077,66 @@ function upgradeImageFrame(frame,id){
   upgraded=upgraded.replace(/width=["']\\d+["']\\s+height=["']\\d+["']/i,`width="${image.width}" height="${image.height}"`);
   if(upgraded===source)return;frame.dataset.reportHighResolutionSha=image.sha256;frame.setAttribute("srcdoc",upgraded);
 }
+function bindImageInteractionSurface(frame,id,carouselState){
+  const host=frame.parentElement;if(!host)return;
+  host.classList.add("report-image-interaction-host");
+  let surface=host.querySelector(`.report-image-interaction-surface[data-report-image-id="${id}"]`);
+  if(surface)return;
+  const slide=frame.closest(".report-carousel-slide");
+  const label=slide?.getAttribute("aria-label")||`High-resolution report image ${id}`;
+  surface=document.createElement("button");surface.type="button";
+  surface.className="report-image-interaction-surface";
+  surface.dataset.reportImageId=id;
+  surface.setAttribute("role","button");surface.setAttribute("tabindex","0");
+  surface.setAttribute("aria-label",`Open high-resolution image: ${label}`);
+  surface.setAttribute("title","Click to inspect the embedded high-resolution image");
+  if(carouselState){
+    surface.addEventListener("pointerdown",event=>beginCarouselDrag(carouselState,event,surface));
+    surface.addEventListener("pointermove",event=>moveCarouselDrag(carouselState,event));
+    surface.addEventListener("pointerup",event=>{
+      if(event.pointerId!==carouselState.pointerId)return;
+      const wasDragging=endCarouselDrag(carouselState,event);
+      if(!wasDragging){
+        carouselState.suppressClick=true;
+        openLightbox(id,label);
+        setTimeout(()=>{carouselState.suppressClick=false},220);
+      }
+    });
+    surface.addEventListener("pointercancel",event=>endCarouselDrag(carouselState,event));
+  }
+  surface.addEventListener("click",event=>{event.preventDefault();if(!carouselState?.suppressClick)openLightbox(id,label)});
+  surface.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();openLightbox(id,label)}});
+  host.appendChild(surface);
+}
 function bindImageFrame(frame,id){
   const image=highResolutionImages[id];if(!image)return;
-  let doc;try{doc=frame.contentDocument}catch(error){return}
-  if(!doc)return;
-  const img=doc.querySelector("img");if(!img||img.dataset.reportLightboxBound==="1")return;
+  const carouselState=carouselStateForFrame(frame);
+  if(frame.hasAttribute("sandbox")){bindImageInteractionSurface(frame,id,carouselState);return}
+  let doc;try{doc=frame.contentDocument}catch(error){doc=null}
+  if(!doc){bindImageInteractionSurface(frame,id,carouselState);return}
+  const img=doc.querySelector("img");if(!img)return;
+  if(carouselState&&img.dataset.reportCarouselSwipeBound!=="1"){
+    img.dataset.reportCarouselSwipeBound="1";img.style.touchAction="pan-y";
+    img.addEventListener("pointerdown",event=>beginCarouselDrag(carouselState,event,img));
+    img.addEventListener("pointermove",event=>moveCarouselDrag(carouselState,event));
+    img.addEventListener("pointerup",event=>endCarouselDrag(carouselState,event));
+    img.addEventListener("pointercancel",event=>endCarouselDrag(carouselState,event));
+  }
+  if(img.dataset.reportLightboxBound==="1")return;
   const caption=doc.querySelector("figcaption")?.textContent?.trim()||img.getAttribute("alt")||id;
   img.dataset.reportLightboxBound="1";
   img.style.cursor="zoom-in";
   img.setAttribute("role","button");
   img.setAttribute("tabindex","0");
   img.setAttribute("title","Click to inspect the embedded high-resolution image");
-  img.addEventListener("click",event=>{event.preventDefault();openLightbox(id,caption)});
+  img.addEventListener("click",event=>{event.preventDefault();if(!carouselStateForFrame(frame)?.suppressClick)openLightbox(id,caption)});
   img.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();openLightbox(id,caption)}});
 }
 function prepareImageFrame(frame,id){
   if(!highResolutionImages[id])return;
   frame.dataset.reportImageId=id;
   frame.setAttribute("title","Click the image to inspect high-resolution details");
+  if(frame.hasAttribute("sandbox"))bindImageInteractionSurface(frame,id,carouselStateForFrame(frame));
   if(frame.dataset.reportLightboxLoadBound!=="1"){
     frame.dataset.reportLightboxLoadBound="1";
     frame.addEventListener("load",()=>bindImageFrame(frame,frame.dataset.reportImageId));
@@ -2752,7 +3145,8 @@ function prepareImageFrame(frame,id){
   setTimeout(()=>bindImageFrame(frame,id),150);
 }
 function configureImageFrames(){
-  for(const id of imageIds){const candidates=[];const enhanced=document.getElementById(id)?.querySelector("iframe");const fallback=document.querySelector(`.portable-block[data-artifact-block-id="${id}"] iframe`);if(enhanced)candidates.push(enhanced);if(fallback)candidates.push(fallback);for(const frame of candidates){frame.setAttribute("scrolling","no");frame.style.overflow="hidden";prepareImageFrame(frame,id);upgradeImageFrame(frame,id);prepareImageFrame(frame,id)}}
+  configureCarousels();
+  for(const id of imageIds){const candidates=[];const enhanced=document.getElementById(id)?.querySelector("iframe");const fallback=document.querySelector(`.portable-block[data-artifact-block-id="${id}"] iframe`);if(enhanced)candidates.push(enhanced);if(fallback)candidates.push(fallback);for(const frame of candidates){frame.setAttribute("scrolling","no");frame.style.overflow="hidden";prepareImageFrame(frame,id);upgradeImageFrame(frame,id);prepareImageFrame(frame,id);fitStandaloneImageFrame(frame)}}
   queueUpdate();
 }
 mobileToggle?.addEventListener("click",()=>{const open=document.body.classList.toggle("report-toc-open");mobileToggle.setAttribute("aria-expanded",String(open))});
@@ -2787,12 +3181,12 @@ lightboxViewport?.addEventListener("pointercancel",event=>{
   lightboxDragging=false;lightboxBackgroundPress=false;lightboxPointerMoved=false;lightboxPointerId=null;lightboxViewport.classList.remove("is-dragging")
 });
 document.addEventListener("keydown",event=>{if(!lightbox||lightbox.hidden)return;if(event.key==="Escape"){event.preventDefault();closeLightbox()}else if(event.key==="+"||event.key==="="){event.preventDefault();zoomLightbox(1.25)}else if(event.key==="-"||event.key==="_"){event.preventDefault();zoomLightbox(.8)}else if(event.key==="0"){event.preventDefault();resetLightbox("fit")}else if(event.key==="1"){event.preventDefault();resetLightbox("actual")}});
-window.addEventListener("scroll",queueUpdate,{passive:true});window.addEventListener("resize",()=>{closeDrawer();configureImageFrames()},{passive:true});window.addEventListener("hashchange",queueUpdate);
-const reader=document.getElementById("data-analytics-portable-reader");if(reader)new MutationObserver(configureImageFrames).observe(reader,{childList:true,subtree:true});
+window.addEventListener("scroll",queueUpdate,{passive:true});window.addEventListener("resize",()=>{closeDrawer();configureImageFrames();fitAllCarousels(true)},{passive:true});window.addEventListener("hashchange",queueUpdate);
+window.visualViewport?.addEventListener("resize",()=>fitAllCarousels(true),{passive:true});
 configureImageFrames();setTimeout(configureImageFrames,250);setTimeout(configureImageFrames,1000);
 })();
 </script>
-""".replace("__ENTRIES__", entries_json).replace("__IMAGE_IDS__", image_ids_json)
+""".replace("__ENTRIES__", entries_json).replace("__IMAGE_IDS__", image_ids_json).replace("__CAROUSELS__", carousels_json)
 
 
 def enhance_packaged_html(
@@ -2803,6 +3197,7 @@ def enhance_packaged_html(
     artifact = read_json(artifact_json)
     entries = report_navigation_entries(artifact)
     image_frames = report_image_frames(artifact)
+    carousel_groups = report_carousel_groups(artifact)
     if not image_frames:
         raise RuntimeError("No dimensioned embedded image blocks were found for no-scroll rendering")
     high_resolution_images = validate_high_resolution_image_payload(high_resolution_images, image_frames)
@@ -2825,7 +3220,11 @@ def enhance_packaged_html(
     payload_script = high_resolution_payload_script(high_resolution_images)
     document = document.replace(
         "</body>",
-        navigation + lightbox_markup() + payload_script + navigation_script(entries, image_frames) + "\n</body>",
+        navigation
+        + lightbox_markup()
+        + payload_script
+        + navigation_script(entries, image_frames, carousel_groups)
+        + "\n</body>",
         1,
     )
     temporary = output_html.with_name(f".{output_html.name}.enhanced.{os.getpid()}")
@@ -2836,6 +3235,16 @@ def enhance_packaged_html(
         "navigation_entries": len(entries),
         "navigation_groups": sum(entry["level"] == 2 for entry in entries),
         "navigation_children": sum(entry["level"] == 3 for entry in entries),
+        "carousel_groups": len(carousel_groups),
+        "carousel_slides": sum(
+            len(group["slides"]) for group in carousel_groups
+        ),
+        "carousel_group_sizes": {
+            group["id"]: len(group["slides"]) for group in carousel_groups
+        },
+        "carousel_image_height_cap_pixels": CAROUSEL_IMAGE_HEIGHT_CAP,
+        "carousel_viewport_fit": True,
+        "standalone_image_viewport_fit": True,
         "no_scroll_image_frames": len(image_frames),
         "high_resolution_image_frames": len(high_resolution_entries),
         "high_resolution_image_bytes": sum(

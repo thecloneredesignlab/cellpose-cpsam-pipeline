@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+runtime_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${runtime_root}/util/hpc_container_apptainer_runtime.sh"
+hpc_apptainer_exec "node" "$@"

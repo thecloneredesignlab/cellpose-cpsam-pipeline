@@ -12,9 +12,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from PIL import Image
 
-def _load_sibling(name: str, filename: str) -> Any:
-    path = Path(__file__).with_name(filename)
+
+def _load_path(name: str, path: Path) -> Any:
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load report support: {path}")
@@ -24,10 +25,19 @@ def _load_sibling(name: str, filename: str) -> Any:
     return module
 
 
-COMMON = _load_sibling("_late_dead_calibration_common", "classification_report_common.py")
-D0_REPORT = _load_sibling(
-    "_late_dead_calibration_d0_report",
-    "dead_classification_current_run_report.py",
+COMMON = _load_path(
+    "_late_dead_calibration_common",
+    Path(__file__).with_name("classification_report_common.py"),
+)
+FULL_REPORT = _load_path(
+    "_late_dead_calibration_full_report",
+    Path(__file__).with_name("generate_full_classification_report.py"),
+)
+CALIBRATION_QC_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "Parameter_calibration"
+    / "29_render_late_dead_rescue_qc.py"
 )
 
 
@@ -320,11 +330,19 @@ def calibration_datasets(root: Path) -> tuple[dict[str, list[dict[str, Any]]], d
 
 
 def report_figures(root: Path, d0_root: Path) -> dict[str, Any]:
+    try:
+        import pandas as pd
+    except ImportError as error:
+        raise RuntimeError(
+            "Calibration QC rendering requires pandas in the CellPose environment"
+        ) from error
+    calibration_qc = _load_path(
+        "_late_dead_calibration_qc_renderer",
+        CALIBRATION_QC_PATH,
+    )
+
     report = calibration_layout(root)["report"]
     figures: dict[str, Any] = {
-        "d0_e2": D0_REPORT.qc_figure(d0_root, "E2_1_00d00h00m"),
-        "d0_f5": D0_REPORT.qc_figure(d0_root, "F5_1_00d00h00m"),
-        "d0_h9": D0_REPORT.qc_figure(d0_root, "H9_4_00d00h00m"),
         "trajectory_overview": COMMON.read_image(
             report / "charts" / "e9_f9_timecourses.png"
         ),
@@ -332,34 +350,153 @@ def report_figures(root: Path, d0_root: Path) -> dict[str, Any]:
             report / "charts" / "e9_day5_feature_map.png"
         ),
     }
+    d0_cases = (
+        ("d0_e2", "E2_1_00d00h00m"),
+        ("d0_f5", "F5_1_00d00h00m"),
+        ("d0_h9", "H9_4_00d00h00m"),
+    )
+    for figure_key, key in d0_cases:
+        well = key.split("_", 1)[0]
+        record_path = d0_root / "field_manifest" / "records" / well / f"{key}.json"
+        final_prediction_matches = sorted(
+            (d0_root / "classification_original" / "predictions").glob(
+                f"*{key}*_per_cell_predictions.csv"
+            )
+        )
+        previous_prediction_matches = sorted(
+            (
+                d0_root
+                / "historical_reference"
+                / "strong_direct_all_d0"
+                / "predictions"
+            ).glob(f"*{key}*_per_cell_predictions.csv")
+        )
+        if len(final_prediction_matches) != 1:
+            raise RuntimeError(
+                f"Expected one authoritative d0 prediction table for {key}, "
+                f"found {len(final_prediction_matches)}"
+            )
+        if len(previous_prediction_matches) != 1:
+            raise RuntimeError(
+                f"Expected one frozen previous d0 prediction table for {key}, "
+                f"found {len(previous_prediction_matches)}"
+            )
+        panels = FULL_REPORT.classification_comparison_panels(
+            COMMON.read_json(record_path),
+            previous_prediction_matches[0],
+            final_prediction_matches[0],
+        )
+        if len(panels) != 4:
+            raise RuntimeError(f"Expected four d0 panels for {key}, found {len(panels)}")
+        figures[figure_key] = COMMON.labeled_grid(
+            panels,
+            title=f"{key} · frozen d0 authoritative QC",
+            columns=2,
+            panel_width=1400,
+            title_font_size=FULL_REPORT.QC_COMPOSITE_TITLE_FONT_SIZE,
+            label_font_size=FULL_REPORT.QC_COMPOSITE_LABEL_FONT_SIZE,
+        )
+
     qc_cases = (
         (
             "d5_e9_development",
             "E9 development: site 1 at Day 5",
-            report
-            / "qc"
-            / "E9"
-            / "original__E9_1_05d00h00m__late_death_qc.png",
+            "E9_1_05d00h00m",
         ),
         (
             "d5_e9_holdout",
             "E9 holdout: site 2 at Day 5",
-            report
-            / "qc"
-            / "E9"
-            / "original__E9_2_05d00h00m__late_death_qc.png",
+            "E9_2_05d00h00m",
         ),
         (
             "d5_f9_replicate",
             "F9 replicate diagnostic: site 1 at Day 5",
-            report
-            / "qc"
-            / "F9"
-            / "original__F9_1_05d00h00m__late_death_qc.png",
+            "F9_1_05d00h00m",
         ),
     )
-    for key, _label, path in qc_cases:
-        figures[key] = COMMON.read_image(path)
+    target_keys = {key for _figure_key, _label, key in qc_cases}
+    usecols = [
+        "branch",
+        "cohort",
+        "key",
+        "well",
+        "site",
+        "elapsed_hours",
+        "combined_raw_path",
+        "dead_raw_path",
+        "cell_mask_path",
+        "combined_mask_id",
+        "final_state",
+        "countable",
+        "border_touching",
+        "current_dead_call",
+        "late_death_rescue_call",
+        "final_dead_call",
+        "late_death_uncertain",
+        "strong_live_evidence",
+        "late_dead_object_evidence",
+        "field_global_late_death",
+    ]
+    selected_chunks: list[pd.DataFrame] = []
+    for chunk in pd.read_csv(
+        calibration_layout(root)["optimization"] / "late_death_predictions.csv.gz",
+        usecols=usecols,
+        chunksize=200_000,
+    ):
+        selected = chunk.loc[
+            chunk["branch"].astype(str).eq("original")
+            & chunk["key"].astype(str).isin(target_keys)
+        ].copy()
+        if not selected.empty:
+            selected_chunks.append(selected)
+    if not selected_chunks:
+        raise RuntimeError("No Day-5 calibration rows matched the report QC keys")
+    selected_predictions = pd.concat(selected_chunks, ignore_index=True)
+    for column in (
+        "countable",
+        "border_touching",
+        "current_dead_call",
+        "late_death_rescue_call",
+        "final_dead_call",
+        "late_death_uncertain",
+        "strong_live_evidence",
+        "late_dead_object_evidence",
+        "field_global_late_death",
+    ):
+        selected_predictions[column] = calibration_qc.bool_series(
+            selected_predictions[column]
+        )
+    found_keys = set(selected_predictions["key"].astype(str))
+    if found_keys != target_keys:
+        raise RuntimeError(
+            f"Day-5 report QC key mismatch: expected={sorted(target_keys)} "
+            f"found={sorted(found_keys)}"
+        )
+    for figure_key, label, key in qc_cases:
+        rows = selected_predictions.loc[
+            selected_predictions["key"].astype(str).eq(key)
+        ].copy()
+        raw_panels, _statistics = calibration_qc.render_field_panel_images(
+            rows,
+            include_nuclei=False,
+            include_evidence=False,
+        )
+        panels = [
+            (Image.fromarray(image, mode="RGB"), title)
+            for image, title in raw_panels
+        ]
+        if len(panels) != 4:
+            raise RuntimeError(
+                f"Expected four Day-5 panels for {key}, found {len(panels)}"
+            )
+        figures[figure_key] = COMMON.labeled_grid(
+            panels,
+            title=label,
+            columns=2,
+            panel_width=1400,
+            title_font_size=FULL_REPORT.QC_COMPOSITE_TITLE_FONT_SIZE,
+            label_font_size=FULL_REPORT.QC_COMPOSITE_LABEL_FONT_SIZE,
+        )
     return figures
 
 
@@ -423,6 +560,19 @@ def report_sources(root: Path, d0_root: Path) -> list[dict[str, Any]]:
             "annotations/final_annotation_summary.csv",
             "Read frozen d0 cell states and Death-object relations.",
         ),
+        COMMON.logical_source(
+            "d0_previous",
+            "Frozen previous d0 strong-direct classification",
+            d0,
+            (
+                "historical_reference/strong_direct_all_d0/predictions/"
+                "*_per_cell_predictions.csv"
+            ),
+            (
+                "Render the previous d0 classification before the final "
+                "nucleus-aware dual-layer method."
+            ),
+        ),
     ]
 
 
@@ -433,12 +583,18 @@ def image_block(
     heading: str,
     text: str,
     caption: str,
+    carousel_group: str | None = None,
+    carousel_index: int | None = None,
+    carousel_label: str | None = None,
 ) -> None:
+    if (carousel_group is None) != (carousel_index is None):
+        raise ValueError("Carousel group and index must be provided together")
+    heading_level = "####" if carousel_group is not None else "###"
     blocks.append(
         {
             "id": f"{key}_text",
             "type": "markdown",
-            "body": f"### {heading}\n\n{text}",
+            "body": f"{heading_level} {heading}\n\n{text}",
         }
     )
     blocks.append(
@@ -447,6 +603,16 @@ def image_block(
             "type": "html",
             "body": COMMON.image_body(image_data[key], heading, caption),
             "layout": "full",
+            **(
+                {
+                    "carouselGroup": carousel_group,
+                    "carouselIndex": carousel_index,
+                    "carouselLabel": carousel_label or heading,
+                    "carouselTextId": f"{key}_text",
+                }
+                if carousel_group is not None
+                else {}
+            ),
         }
     )
 
@@ -947,6 +1113,24 @@ def report_manifest(
         {"id": "anchor_block", "type": "chart", "chartId": "anchor_chart"},
     ]
 
+    blocks.extend(
+        (
+            {
+                "id": "visual_qc",
+                "type": "markdown",
+                "body": (
+                    "## Visual QC and calibration examples\n\n"
+                    "Use the arrows, progress dots, keyboard, or horizontal swipe to compare "
+                    "related figures without separating each figure title from its image."
+                ),
+            },
+            {
+                "id": "calibration_overview_carousel",
+                "type": "markdown",
+                "body": "### Calibration overview\n\nThe two overview figures summarize the trajectory problem and the multi-signal solution.",
+            },
+        )
+    )
     image_block(
         blocks,
         image_data,
@@ -954,6 +1138,9 @@ def report_manifest(
         "Figure 1. E9 and F9 trajectories define the late-death problem",
         "The saved time courses show where the original blue-centered classifier diverges from the late-stage phenotype.",
         "E9 and F9 time-course evidence used during the calibration.",
+        carousel_group="calibration_overview",
+        carousel_index=0,
+        carousel_label="Trajectory overview",
     )
     image_block(
         blocks,
@@ -962,38 +1149,75 @@ def report_manifest(
         "Figure 2. Day-5 objects require multiple independent signals",
         "The feature map shows why red loss, cytoplasm depletion, nuclear ratios, shape, and temporal evidence are combined.",
         "Day-5 feature map for the late-death object decision.",
+        carousel_group="calibration_overview",
+        carousel_index=1,
+        carousel_label="Multi-signal feature map",
+    )
+    blocks.append(
+        {
+            "id": "d0_qc_carousel",
+            "type": "markdown",
+            "body": (
+                "### Frozen d0 QC cases\n\n"
+                "Each case uses the same four-panel sequence as the Day-5 QC: "
+                "Combined raw, Dead raw, previous classification, and final classification."
+            ),
+        }
     )
     image_block(
         blocks,
         image_data,
         "d0_e2",
         "Figure 3. E2 demonstrates the frozen d0 live-cell protection",
-        "The d0 object-aware result separates a live Combined cell from nearby Death-object evidence.",
-        "E2 d0 final cell-state and Death-object views from the frozen audit.",
+        "The previous and final overlays show how the d0 object-aware result protects a live Combined cell from nearby Death-object evidence.",
+        "E2 d0 raw channels and previous-versus-final classification.",
+        carousel_group="calibration_d0_cases",
+        carousel_index=0,
+        carousel_label="E2 live-cell protection",
     )
     image_block(
         blocks,
         image_data,
         "d0_f5",
         "Figure 4. F5 demonstrates multi-nucleus live/death overlap",
-        "Multiple nuclei support overlapping biological units rather than forcing one cell-level label.",
-        "F5 d0 overlap and nucleus-supported attribution views.",
+        "The previous and final overlays show how the nucleus-aware method avoids forcing overlapping biological units into one cell-level label.",
+        "F5 d0 raw channels and previous-versus-final classification.",
+        carousel_group="calibration_d0_cases",
+        carousel_index=1,
+        carousel_label="F5 multi-nucleus overlap",
     )
     image_block(
         blocks,
         image_data,
         "d0_h9",
         "Figure 5. H9 retains a one-nucleus live cell with death signal",
-        "A one-nucleus Combined cell remains live while the overlapping Death object is retained separately.",
-        "H9 d0 live-with-death-signal attribution views.",
+        "The previous and final overlays show that the one-nucleus Combined cell remains live rather than inheriting the overlapping Death signal.",
+        "H9 d0 raw channels and previous-versus-final classification.",
+        carousel_group="calibration_d0_cases",
+        carousel_index=2,
+        carousel_label="H9 live with Death signal",
+    )
+    blocks.append(
+        {
+            "id": "d5_qc_carousel",
+            "type": "markdown",
+            "body": (
+                "### Day-5 QC cases\n\n"
+                "Development, holdout, and replicate examples use the same four-panel "
+                "sequence: Combined raw, Dead raw, previous classification, and final classification."
+            ),
+        }
     )
     image_block(
         blocks,
         image_data,
         "d5_e9_development",
         "Figure 6. E9 site 1 is the Day-5 development anchor",
-        "The final rescue recovers the visually collapsed field while retaining the saved object-level evidence.",
-        "E9 site 1 Day-5 late-death QC.",
+        "The final rescue recovers the visually collapsed field relative to the previous classification.",
+        "E9 site 1 Day-5 raw channels and previous-versus-final classification.",
+        carousel_group="calibration_d5_cases",
+        carousel_index=0,
+        carousel_label="E9 development",
     )
     image_block(
         blocks,
@@ -1001,7 +1225,10 @@ def report_manifest(
         "d5_e9_holdout",
         "Figure 7. E9 site 2 confirms the method on held-out data",
         "The same frozen configuration is applied to a site that was not used as the development anchor.",
-        "E9 site 2 Day-5 holdout QC.",
+        "E9 site 2 Day-5 raw channels and previous-versus-final classification.",
+        carousel_group="calibration_d5_cases",
+        carousel_index=1,
+        carousel_label="E9 holdout",
     )
     image_block(
         blocks,
@@ -1009,7 +1236,10 @@ def report_manifest(
         "d5_f9_replicate",
         "Figure 8. F9 provides an independent Day-5 replicate diagnostic",
         "Recovery in F9 tests whether the selected configuration extends beyond the E9 sentinel.",
-        "F9 site 1 Day-5 replicate QC.",
+        "F9 site 1 Day-5 raw channels and previous-versus-final classification.",
+        carousel_group="calibration_d5_cases",
+        carousel_index=2,
+        carousel_label="F9 replicate",
     )
     blocks.extend(
         (
@@ -1123,6 +1353,19 @@ def main() -> int:
         "generated_at": timestamp,
         "dataset_rows": {key: len(value) for key, value in datasets.items()},
         "embedded_figures": sorted(figures),
+        "qc_grid_columns": 2,
+        "qc_grid_rows": 2,
+        "d0_qc_panels_per_case": 4,
+        "d5_qc_panels_per_case": 4,
+        "qc_composite_font_scale": FULL_REPORT.QC_COMPOSITE_FONT_SCALE,
+        "late_death_evidence_panel_embedded": False,
+        "classification_boundary_width": (
+            FULL_REPORT.CLASSIFICATION_BOUNDARY_WIDTH
+        ),
+        "classification_colors": {
+            state: [int(value) for value in color]
+            for state, color in FULL_REPORT.STATE_COLORS.items()
+        },
         "selection_seed": metadata["dataset_summary"]["selection_seed"],
         "completed_shards": metadata["dataset_summary"]["completed_shards"],
         "failed_shards": metadata["dataset_summary"]["failed_shards"],

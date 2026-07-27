@@ -1,13 +1,19 @@
 #!/bin/bash
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/util/hpc_container_apptainer_runtime.sh"
+hpc_container_prepare
 
 BASE="${BASE:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/20260619_SUM159_Doxorubicin_Cyclophosphamide}"
 PROJECT_DIR="${PROJECT_DIR:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/cellpose-cpsam-pipeline-v3}"
+HPC_PROJECT_ROOT="${PROJECT_DIR}"
+export HPC_PROJECT_ROOT
 CALIBRATION_ROOT="${CALIBRATION_ROOT:-$BASE/results/Tests_and_Parameters_calibration/death_classification_consensus_optimization_20260725_213646}"
 OUTPUT_DIR="${OUTPUT_DIR:-$CALIBRATION_ROOT/report_final}"
-PYTHON_BIN="${PYTHON_BIN:-/home/4482173/.conda/envs/cellpose_cpsam/bin/python}"
-NODE_ROOT="${NODE_ROOT:-/home/4482173/.local/opt/node-v24.18.0-linux-x64}"
-REPORT_PLUGIN_ROOT="${REPORT_PLUGIN_ROOT:-/home/4482173/.local/share/data-analytics/0.2.8}"
+hpc_container_ignore_host_runtime "${PYTHON_BIN:-}"
+PYTHON_BIN=python
+hpc_container_ignore_host_runtime "${NODE_ROOT:-}"
+unset NODE_ROOT
+REPORT_PLUGIN_ROOT="${REPORT_PLUGIN_ROOT:?Set REPORT_PLUGIN_ROOT to the deployed Data Analytics plugin directory}"
 FORCE_REPORT="${FORCE_REPORT:-0}"
 
 for required in \
@@ -27,12 +33,12 @@ for required in \
     exit 2
   }
 done
-[[ -x "$PYTHON_BIN" ]] || {
-  echo "CellPose Python environment is unavailable: $PYTHON_BIN" >&2
+command -v "$PYTHON_BIN" >/dev/null 2>&1 || {
+  echo "Container Python runtime is unavailable: $PYTHON_BIN" >&2
   exit 2
 }
-[[ -x "$NODE_ROOT/bin/node" && -x "$NODE_ROOT/bin/npm" ]] || {
-  echo "Node.js report runtime is unavailable: $NODE_ROOT" >&2
+command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 || {
+  echo "Container Node.js report runtime is unavailable" >&2
   exit 2
 }
 [[ -f "$REPORT_PLUGIN_ROOT/package.json" ]] || {
@@ -40,7 +46,8 @@ done
   exit 2
 }
 
-export PATH="$NODE_ROOT/bin:$PATH"
+HPC_CONTAINER_BINDS="${HPC_CONTAINER_BINDS:+${HPC_CONTAINER_BINDS},}${REPORT_PLUGIN_ROOT}"
+export HPC_CONTAINER_BINDS REPORT_PLUGIN_ROOT
 export PYTHONNOUSERSITE=1
 unset PYTHONPATH PYTHONHOME
 export OMP_NUM_THREADS=1
@@ -57,7 +64,8 @@ echo "project_dir=$PROJECT_DIR"
 echo "calibration_root=$CALIBRATION_ROOT"
 echo "output_dir=$OUTPUT_DIR"
 echo "python_bin=$PYTHON_BIN"
-echo "node_root=$NODE_ROOT"
+echo "node_bin=$(command -v node)"
+echo "npm_bin=$(command -v npm)"
 echo "report_plugin_root=$REPORT_PLUGIN_ROOT"
 
 REPORT_ARGS=(

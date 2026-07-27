@@ -36,6 +36,9 @@ if MAIN_REPORT._IMAGE_IMPORT_ERROR is not None:
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 
+REPORT_IMAGE_RENDER_SCALE = 6
+
+
 def require_file(path: Path) -> Path:
     path = path.expanduser().resolve()
     if not path.is_file():
@@ -136,6 +139,10 @@ def font(size: int, bold: bool = False) -> ImageFont.ImageFont:
             + ("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf")
         ),
         Path(
+            "/usr/share/fonts/dejavu/"
+            + ("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf")
+        ),
+        Path(
             "/System/Library/Fonts/Supplemental/"
             + ("Arial Bold.ttf" if bold else "Arial.ttf")
         ),
@@ -151,11 +158,66 @@ def read_image(path: Path) -> Image.Image:
         return source.convert("RGB")
 
 
+def _wrap_label(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    label_font: ImageFont.ImageFont,
+    max_width: int,
+) -> list[str]:
+    words = text.split()
+    if not words:
+        return [""]
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        if draw.textbbox((0, 0), candidate, font=label_font)[2] <= max_width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
+def _draw_fitted_line(
+    canvas: Image.Image,
+    text: str,
+    text_font: ImageFont.ImageFont,
+    *,
+    x: int,
+    y: int,
+    max_width: int,
+    fill: tuple[int, int, int],
+) -> None:
+    measurement = ImageDraw.Draw(Image.new("L", (1, 1)))
+    left, top, right, bottom = measurement.textbbox((0, 0), text, font=text_font)
+    width = max(1, right - left)
+    height = max(1, bottom - top)
+    mask = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(mask).text(
+        (-left, -top),
+        text,
+        fill=255,
+        font=text_font,
+    )
+    target_width = min(width, max_width)
+    if target_width != width:
+        mask = mask.resize((target_width, height), Image.Resampling.LANCZOS)
+    canvas.paste(
+        fill,
+        (x, y, x + target_width, y + height),
+        mask,
+    )
+
+
 def labeled_grid(
     panels: Iterable[tuple[Image.Image, str]],
     title: str,
     columns: int = 2,
     panel_width: int = 1500,
+    title_font_size: int = 52,
+    label_font_size: int = 44,
 ) -> Image.Image:
     prepared: list[tuple[Image.Image, str]] = []
     for image, label in panels:
@@ -168,8 +230,19 @@ def labeled_grid(
     columns = max(1, min(columns, len(prepared)))
     rows = math.ceil(len(prepared) / columns)
     gap = 22
-    title_height = 82
-    label_height = 58
+    label_font = font(label_font_size, True)
+    measurement = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    wrapped_labels = [
+        _wrap_label(measurement, label, label_font, panel_width - 40)
+        for _image, label in prepared
+    ]
+    line_spacing = max(6, label_font_size // 8)
+    line_height = label_font_size + line_spacing
+    title_height = max(96, title_font_size + 48)
+    label_height = max(
+        78,
+        max(len(lines) for lines in wrapped_labels) * line_height + 34,
+    )
     panel_body_height = max(image.height for image, _ in prepared)
     cell_height = label_height + panel_body_height
     canvas = Image.new(
@@ -181,8 +254,19 @@ def labeled_grid(
         (18, 20, 24),
     )
     draw = ImageDraw.Draw(canvas)
-    draw.text((24, 20), title, fill=(245, 247, 250), font=font(34, True))
-    for index, (image, label) in enumerate(prepared):
+    title_font = font(title_font_size, True)
+    _draw_fitted_line(
+        canvas,
+        title,
+        title_font,
+        x=28,
+        y=max(16, (title_height - title_font_size) // 2 - 2),
+        max_width=canvas.width - 56,
+        fill=(245, 247, 250),
+    )
+    for index, ((image, _label), label_lines) in enumerate(
+        zip(prepared, wrapped_labels, strict=True)
+    ):
         column = index % columns
         row = index // columns
         x = column * (panel_width + gap)
@@ -191,36 +275,88 @@ def labeled_grid(
             (x, y, x + panel_width, y + label_height),
             fill=(35, 39, 47),
         )
-        draw.text((x + 18, y + 14), label, fill=(245, 247, 250), font=font(24, True))
+        label_block_height = len(label_lines) * line_height - line_spacing
+        label_y = y + max(10, (label_height - label_block_height) // 2 - 2)
+        for line_index, line in enumerate(label_lines):
+            _draw_fitted_line(
+                canvas,
+                line,
+                label_font,
+                x=x + 20,
+                y=label_y + line_index * line_height,
+                max_width=panel_width - 40,
+                fill=(245, 247, 250),
+            )
         canvas.paste(image, (x, y + label_height))
     return canvas
 
 
+def build_scaled_high_resolution_payload(
+    figures: dict[str, Image.Image],
+    image_data: dict[str, tuple[str, int, int]],
+    render_scale: int = REPORT_IMAGE_RENDER_SCALE,
+) -> dict[str, Any]:
+    if render_scale <= 1:
+        raise ValueError("render_scale must be greater than one")
+    images: dict[str, dict[str, Any]] = {}
+    quality = (
+        MAIN_REPORT.HIGH_RES_WEBP_QUALITY
+        if MAIN_REPORT.pil_features.check("webp")
+        else MAIN_REPORT.HIGH_RES_JPEG_QUALITY
+    )
+    for key, figure in figures.items():
+        _uri, canonical_width, canonical_height = image_data[key]
+        target_size = (
+            int(canonical_width) * render_scale,
+            int(canonical_height) * render_scale,
+        )
+        high_resolution = figure.resize(target_size, Image.Resampling.LANCZOS)
+        data_uri, encoded_bytes, digest = MAIN_REPORT.encode_sheet(
+            high_resolution,
+            quality,
+            high_resolution=True,
+        )
+        images[f"{key}_image"] = {
+            "data_uri": data_uri,
+            "width": high_resolution.width,
+            "height": high_resolution.height,
+            "encoded_bytes": encoded_bytes,
+            "sha256": digest,
+        }
+    return {
+        "version": 1,
+        "render_scale": render_scale,
+        "print_ppi": MAIN_REPORT.HIGH_RES_PRINT_PPI,
+        "quality": quality,
+        "encoding": (
+            "webp"
+            if MAIN_REPORT.pil_features.check("webp")
+            else "jpeg-4:4:4"
+        ),
+        "images": images,
+    }
+
+
 def encode_figures(
     figures: dict[str, Image.Image],
-    canonical_max_width: int = 1250,
+    canonical_max_width: int = 700,
     canonical_quality: int = 78,
 ) -> tuple[dict[str, tuple[str, int, int]], dict[str, Any]]:
     attempts = (
         (canonical_max_width, canonical_quality),
-        (1150, 72),
-        (1050, 66),
-        (950, 60),
-        (850, 54),
-        (740, 48),
-        (640, 44),
+        (650, 74),
+        (600, 70),
+        (550, 66),
+        (500, 62),
+        (450, 56),
+        (400, 50),
     )
     image_data: dict[str, tuple[str, int, int]] = {}
     for max_width, quality in attempts:
         candidate: dict[str, tuple[str, int, int]] = {}
         encoded_total = 0
         for key, figure in figures.items():
-            # The established lightbox contract requires every original image
-            # to be at least 1.8x its embedded canonical frame. Use a small
-            # margin for integer resize rounding and for source figures that
-            # are narrower than the global canonical target.
-            ratio_safe_width = max(1, math.floor(figure.width / 1.82))
-            target_width = min(max_width, ratio_safe_width)
+            target_width = min(max_width, max(1, figure.width))
             scale = min(1.0, target_width / max(1, figure.width))
             canonical = figure.resize(
                 (
@@ -243,7 +379,7 @@ def encode_figures(
             break
     if not image_data:
         raise RuntimeError("Unable to bound canonical report images below 2.3 MB")
-    high_resolution = MAIN_REPORT.build_high_resolution_image_payload(figures)
+    high_resolution = build_scaled_high_resolution_payload(figures, image_data)
     return image_data, high_resolution
 
 

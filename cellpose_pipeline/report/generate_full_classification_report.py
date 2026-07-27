@@ -8,8 +8,11 @@ import csv
 import importlib.util
 import json
 import math
+import shutil
 import statistics
+import subprocess
 import sys
+import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -40,6 +43,7 @@ DEFAULT_PLATE_MAP = (
     / "resources"
     / "SUM159_AC_Experiment1_PlateMap.csv"
 )
+DEFAULT_WORKFLOW_PDF = REPO_ROOT / "docs" / "death_classification_workflow.pdf"
 BRANCH_DIRS = {
     "original": "classification_fusion",
     "nucleated_only": "classification_fusion_nucleated_only",
@@ -49,30 +53,167 @@ BRANCH_ANALYSIS_DIRS = {
     "original": "fusion",
     "nucleated_only": "fusion-nucleated-only",
 }
-STATE_COLORS = {
-    "live": np.array([45, 205, 110], dtype=np.float32),
-    "dead": np.array([235, 70, 72], dtype=np.float32),
-    "artifact": np.array([145, 150, 160], dtype=np.float32),
-    "uncertain": np.array([255, 220, 55], dtype=np.float32),
-    "transitional": np.array([232, 139, 57], dtype=np.float32),
-}
-FIXED_QC_KEYS = (
-    "E2_1_00d00h00m",
-    "E9_1_05d00h00m",
-    "E9_2_05d00h00m",
-    "F9_1_05d00h00m",
+WELL_COUNT_PLOT_DIRECTORY = Path(
+    "analysis/well_count_timecourses/fusion-consensus"
 )
+WELL_COUNT_PLOT_STEM = "well_live_dead_counts_over_time"
+DOSE_CONDITION_PANELS = (
+    (
+        "doxorubicin_alone",
+        "Doxorubicin alone",
+        "doxorubicin_alone_2N_vs_4N_{filename}.png",
+    ),
+    (
+        "doxorubicin_plus_cyclophosphamide",
+        "Doxorubicin + cyclophosphamide",
+        "doxorubicin_plus_cyclophosphamide_2N_vs_4N_{filename}.png",
+    ),
+)
+DOSE_FIGURE_SPECS = (
+    {
+        "id": "auc",
+        "subdirectory": "auc",
+        "filename": "hill",
+        "title": "AUC-normalized Hill responses",
+        "text": (
+            "Each replicate is normalized to its matched vehicle within the same "
+            "treatment background."
+        ),
+        "caption": (
+            "AUC-normalized 2N-versus-4N dose response for the indicated "
+            "classification branch and treatment background."
+        ),
+        "table_block_id": "hill_table_block",
+        "table_id": "hill_table",
+    },
+    {
+        "id": "gr",
+        "subdirectory": "gr",
+        "filename": "gr",
+        "title": "Day-4 and Day-5 growth-rate inhibition",
+        "text": (
+            "The paired Delta GR result compares 4N with 2N while preserving "
+            "replicate pairing."
+        ),
+        "caption": (
+            "GR curves and paired ploidy differences for the indicated "
+            "classification branch and treatment background."
+        ),
+        "table_block_id": "gr_table_block",
+        "table_id": "gr_table",
+    },
+    {
+        "id": "death",
+        "subdirectory": "death",
+        "filename": "excess_lethal_fraction",
+        "title": "Day-4 and Day-5 excess lethal fraction",
+        "text": (
+            "Excess lethal fraction adjusts each treated well to matched control "
+            "viability in the same replicate and treatment background."
+        ),
+        "caption": (
+            "Excess-lethal-fraction curves and paired ploidy differences for the "
+            "indicated classification branch and treatment background."
+        ),
+        "table_block_id": "death_table_block",
+        "table_id": "death_table",
+    },
+)
+STATE_COLORS = {
+    "live": np.array([35, 205, 95], dtype=np.float32),
+    "dead": np.array([176, 74, 214], dtype=np.float32),
+    "artifact": np.array([145, 150, 160], dtype=np.float32),
+    "uncertain": np.array([255, 214, 10], dtype=np.float32),
+    "transitional": np.array([255, 214, 10], dtype=np.float32),
+}
+CLASSIFICATION_BOUNDARY_WIDTH = 2
+QC_COMPOSITE_FONT_SCALE = 2
+QC_COMPOSITE_TITLE_FONT_SIZE = 72 * QC_COMPOSITE_FONT_SCALE
+QC_COMPOSITE_LABEL_FONT_SIZE = 68 * QC_COMPOSITE_FONT_SCALE
+QC_PLOIDY_ORDER = ("2N", "4N")
+QC_TIMEPOINTS = (
+    {"id": "day_0", "label": "Day 0", "day": 0, "hours": 0.0},
+    {"id": "day_3", "label": "Day 3", "day": 3, "hours": 72.0},
+    {"id": "day_5", "label": "Day 5", "day": 5, "hours": 120.0},
+)
+QC_CONDITION_GROUPS = (
+    {
+        "id": "no_drug",
+        "label": "No drug",
+        "short_label": "No drug",
+        "cyclophosphamide": False,
+        "dose_band": "zero",
+        "target_dose_nm": 0.0,
+    },
+    {
+        "id": "cyclophosphamide_only",
+        "label": "Cyclophosphamide only",
+        "short_label": "Cyclophosphamide only",
+        "cyclophosphamide": True,
+        "dose_band": "zero",
+        "target_dose_nm": 0.0,
+    },
+    {
+        "id": "low_doxorubicin",
+        "label": "Low-dose doxorubicin",
+        "short_label": "Low Dox",
+        "cyclophosphamide": False,
+        "dose_band": "low",
+        "target_dose_nm": 12.5,
+    },
+    {
+        "id": "low_doxorubicin_cyclophosphamide",
+        "label": "Low-dose doxorubicin + cyclophosphamide",
+        "short_label": "Low Dox + cyclophosphamide",
+        "cyclophosphamide": True,
+        "dose_band": "low",
+        "target_dose_nm": 12.5,
+    },
+    {
+        "id": "high_doxorubicin",
+        "label": "High-dose doxorubicin",
+        "short_label": "High Dox",
+        "cyclophosphamide": False,
+        "dose_band": "high",
+        "target_dose_nm": 400.0,
+    },
+    {
+        "id": "high_doxorubicin_cyclophosphamide",
+        "label": "High-dose doxorubicin + cyclophosphamide",
+        "short_label": "High Dox + cyclophosphamide",
+        "cyclophosphamide": True,
+        "dose_band": "high",
+        "target_dose_nm": 400.0,
+    },
+)
+LOW_DOSE_MAX_NM = 25.0
+HIGH_DOSE_MIN_NM = 200.0
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--classification-root", type=Path, required=True)
     parser.add_argument(
+        "--previous-classification-root",
+        type=Path,
+        required=True,
+        help=(
+            "Completed earlier classification result used only to render the "
+            "Previous classification QC panel."
+        ),
+    )
+    parser.add_argument(
         "--calibration-root",
         type=Path,
         help="Approved d0+d5 calibration root used only for configuration provenance validation.",
     )
     parser.add_argument("--plate-map", type=Path, default=DEFAULT_PLATE_MAP)
+    parser.add_argument(
+        "--workflow-pdf",
+        type=Path,
+        default=DEFAULT_WORKFLOW_PDF,
+        help="Single-page workflow PDF embedded near the beginning of the report.",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -100,8 +241,52 @@ def read_header(path: Path) -> list[str]:
         return next(csv.reader(handle), [])
 
 
+def render_workflow_pdf(path: Path, dpi: int = 300) -> Image.Image:
+    """Render the first page of the workflow PDF for the HTML image viewer."""
+    pdf_path = COMMON.require_file(path)
+    pdftoppm = shutil.which("pdftoppm")
+    if pdftoppm is None:
+        raise RuntimeError(
+            "pdftoppm is required to render the workflow PDF but was not found"
+        )
+    with tempfile.TemporaryDirectory(prefix="cpsam_workflow_pdf_") as directory:
+        output_stem = Path(directory) / "workflow"
+        command = (
+            pdftoppm,
+            "-f",
+            "1",
+            "-l",
+            "1",
+            "-singlefile",
+            "-png",
+            "-r",
+            str(dpi),
+            str(pdf_path),
+            str(output_stem),
+        )
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise RuntimeError(
+                f"Unable to render workflow PDF {pdf_path}: {detail}"
+            )
+        rendered = output_stem.with_suffix(".png")
+        if not rendered.is_file() or rendered.stat().st_size == 0:
+            raise RuntimeError(
+                f"Workflow PDF renderer did not create a usable image: {rendered}"
+            )
+        with Image.open(rendered) as image:
+            return image.convert("RGB").copy()
+
+
 def validate_inputs(
     root: Path,
+    previous_root: Path,
     calibration_root: Path | None,
     expected_fields: int,
     expected_timepoints: int,
@@ -151,6 +336,50 @@ def validate_inputs(
     if len({row["key"] for row in consensus_rows}) != expected_fields:
         raise RuntimeError("Duplicate consensus summary keys detected")
     summaries = {"consensus": consensus_rows, **summaries}
+    previous_summary = COMMON.read_csv(
+        previous_root
+        / BRANCH_DIRS["original"]
+        / "summaries"
+        / "cell_count_summary.csv"
+    )
+    if len(previous_summary) != expected_fields:
+        raise RuntimeError(
+            f"Expected {expected_fields} previous classification summaries, "
+            f"found {len(previous_summary)}"
+        )
+    if len({row["key"] for row in previous_summary}) != expected_fields:
+        raise RuntimeError("Duplicate previous classification summary keys detected")
+
+    field_states = COMMON.read_csv(
+        root
+        / "workflow_status"
+        / "late_death_trajectory"
+        / "prepared_refinement"
+        / "field_states.csv"
+    )
+    field_state_counts = Counter(row["branch"] for row in field_states)
+    if field_state_counts != Counter(
+        {"original": expected_fields, "nucleated_only": expected_fields}
+    ):
+        raise RuntimeError(
+            "Unexpected prepared field-state branch counts: "
+            f"{dict(field_state_counts)}"
+        )
+    required_field_state_columns = {
+        "branch",
+        "key",
+        "well",
+        "site",
+        "elapsed_hours",
+        "cyclophosphamide",
+        "doxorubicin_nm",
+    }
+    missing_field_state_columns = required_field_state_columns - set(field_states[0])
+    if missing_field_state_columns:
+        raise RuntimeError(
+            "Prepared field-state table is missing QC-selection columns: "
+            f"{sorted(missing_field_state_columns)}"
+        )
 
     dose_root = root / "analysis" / "dose_response"
     dose_files = sorted(path for path in dose_root.rglob("*") if path.is_file())
@@ -168,6 +397,13 @@ def validate_inputs(
     for analysis_branch in BRANCH_ANALYSIS_DIRS.values():
         for relative in required_dose_files:
             COMMON.require_file(dose_root / analysis_branch / relative)
+
+    well_count_plot_pdf = COMMON.require_file(
+        root / WELL_COUNT_PLOT_DIRECTORY / f"{WELL_COUNT_PLOT_STEM}.pdf"
+    )
+    well_count_plot_png = COMMON.require_file(
+        root / WELL_COUNT_PLOT_DIRECTORY / f"{WELL_COUNT_PLOT_STEM}.png"
+    )
 
     production = COMMON.read_json(
         root / "late_death_refinement" / "production_configuration.json"
@@ -195,6 +431,10 @@ def validate_inputs(
         "production_go_no_go": production_go_no_go,
         "approved_source": approved_source,
         "dose_files": dose_files,
+        "field_states": field_states,
+        "well_count_plot_pdf": well_count_plot_pdf,
+        "well_count_plot_png": well_count_plot_png,
+        "previous_classification_root": previous_root,
     }
 
 
@@ -204,6 +444,294 @@ def load_plate_map(path: Path) -> dict[str, dict[str, str]]:
     if len(mapping) != 80:
         raise RuntimeError(f"Expected 80 plate-map wells, found {len(mapping)}")
     return mapping
+
+
+def qc_condition_group(
+    doxorubicin_nm: float,
+    cyclophosphamide: bool,
+) -> dict[str, Any] | None:
+    if doxorubicin_nm == 0:
+        dose_band = "zero"
+    elif 0 < doxorubicin_nm <= LOW_DOSE_MAX_NM:
+        dose_band = "low"
+    elif doxorubicin_nm >= HIGH_DOSE_MIN_NM:
+        dose_band = "high"
+    else:
+        return None
+    for group in QC_CONDITION_GROUPS:
+        if (
+            group["dose_band"] == dose_band
+            and group["cyclophosphamide"] == cyclophosphamide
+        ):
+            return group
+    return None
+
+
+def qc_candidate_score(
+    *,
+    doxorubicin_nm: float,
+    target_dose_nm: float,
+) -> float:
+    if doxorubicin_nm > 0 and target_dose_nm > 0:
+        return abs(math.log2(doxorubicin_nm / target_dose_nm))
+    return 0.0
+
+
+def qc_timepoint(elapsed_hours: float) -> dict[str, Any] | None:
+    return next(
+        (
+            timepoint
+            for timepoint in QC_TIMEPOINTS
+            if math.isclose(
+                elapsed_hours,
+                float(timepoint["hours"]),
+                rel_tol=0,
+                abs_tol=1e-6,
+            )
+        ),
+        None,
+    )
+
+
+def select_qc_samples(
+    validated: dict[str, Any],
+    plate_map: dict[str, dict[str, str]],
+) -> list[dict[str, Any]]:
+    summary_by_key = {
+        row["key"]: row for row in validated["summaries"]["consensus"]
+    }
+    candidates: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in validated["field_states"]:
+        if row["branch"] != "original":
+            continue
+        elapsed_hours = COMMON.as_float(row["elapsed_hours"])
+        timepoint = qc_timepoint(elapsed_hours)
+        if timepoint is None:
+            continue
+        well = row["well"]
+        if well not in plate_map:
+            raise RuntimeError(f"Prepared field state references unknown well: {well}")
+        plate = plate_map[well]
+        ploidy = plate["ploidy"].strip().upper()
+        if ploidy not in QC_PLOIDY_ORDER:
+            continue
+        doxorubicin_nm = COMMON.as_float(plate["doxorubicin_nm"])
+        cyclophosphamide = COMMON.truthy(plate["cyclophosphamide"])
+        if (
+            not math.isclose(
+                doxorubicin_nm,
+                COMMON.as_float(row["doxorubicin_nm"]),
+                rel_tol=0,
+                abs_tol=1e-9,
+            )
+            or cyclophosphamide != COMMON.truthy(row["cyclophosphamide"])
+        ):
+            raise RuntimeError(f"Plate-map and field-state treatment mismatch: {row['key']}")
+        condition = qc_condition_group(doxorubicin_nm, cyclophosphamide)
+        if condition is None:
+            continue
+        key = row["key"]
+        summary = summary_by_key.get(key)
+        if summary is None:
+            raise RuntimeError(f"Missing consensus summary for QC candidate: {key}")
+        score = qc_candidate_score(
+            doxorubicin_nm=doxorubicin_nm,
+            target_dose_nm=float(condition["target_dose_nm"]),
+        )
+        candidates[(ploidy, condition["id"], str(timepoint["id"]))].append(
+            {
+                "ploidy": ploidy,
+                "ploidy_order": QC_PLOIDY_ORDER.index(ploidy) + 1,
+                "condition_id": condition["id"],
+                "condition": condition["label"],
+                "condition_short": condition["short_label"],
+                "condition_order": next(
+                    index
+                    for index, item in enumerate(QC_CONDITION_GROUPS, 1)
+                    if item["id"] == condition["id"]
+                ),
+                "time_id": timepoint["id"],
+                "time_label": timepoint["label"],
+                "time_order": next(
+                    index
+                    for index, item in enumerate(QC_TIMEPOINTS, 1)
+                    if item["id"] == timepoint["id"]
+                ),
+                "key": key,
+                "well": well,
+                "site": COMMON.as_int(row["site"]),
+                "elapsed_hours": elapsed_hours,
+                "day": int(timepoint["day"]),
+                "doxorubicin_nm": doxorubicin_nm,
+                "cyclophosphamide": cyclophosphamide,
+                "replicate": COMMON.as_int(plate["replicate"]),
+                "total_cells": COMMON.as_int(summary["total_cell_count"]),
+                "dead_fraction": COMMON.as_float(summary["dead_fraction"]),
+                "rescued": COMMON.as_int(summary["late_death_rescue_count"]),
+                "uncertain": COMMON.as_int(summary["late_death_uncertain_count"]),
+                "_score": score,
+            }
+        )
+
+    selected: list[dict[str, Any]] = []
+    for ploidy in QC_PLOIDY_ORDER:
+        for condition in QC_CONDITION_GROUPS:
+            available_by_time = {
+                str(timepoint["id"]): candidates[
+                    (ploidy, condition["id"], str(timepoint["id"]))
+                ]
+                for timepoint in QC_TIMEPOINTS
+            }
+            missing = [
+                str(timepoint["label"])
+                for timepoint in QC_TIMEPOINTS
+                if not available_by_time[str(timepoint["id"])]
+            ]
+            if missing:
+                raise RuntimeError(
+                    "No QC candidate for "
+                    f"ploidy={ploidy}, condition={condition['label']}, "
+                    f"time={', '.join(missing)}"
+                )
+
+            complete_series = set.intersection(
+                *(
+                    {
+                        (candidate["well"], candidate["site"])
+                        for candidate in available_by_time[str(timepoint["id"])]
+                    }
+                    for timepoint in QC_TIMEPOINTS
+                )
+            )
+            selected_series = (
+                min(
+                    complete_series,
+                    key=lambda series: min(
+                        (
+                            candidate["_score"],
+                            candidate["replicate"],
+                            candidate["well"],
+                            candidate["site"],
+                        )
+                        for candidate in available_by_time[
+                            str(QC_TIMEPOINTS[0]["id"])
+                        ]
+                        if (candidate["well"], candidate["site"]) == series
+                    ),
+                )
+                if complete_series
+                else None
+            )
+
+            for timepoint in QC_TIMEPOINTS:
+                available = available_by_time[str(timepoint["id"])]
+                if selected_series is not None:
+                    available = [
+                        candidate
+                        for candidate in available
+                        if (candidate["well"], candidate["site"]) == selected_series
+                    ]
+                choice = min(
+                    available,
+                    key=lambda row: (
+                        row["_score"],
+                        row["replicate"],
+                        row["well"],
+                        row["site"],
+                        row["key"],
+                    ),
+                )
+                choice = {
+                    key: value for key, value in choice.items() if key != "_score"
+                }
+                choice["selection_index"] = len(selected) + 1
+                selected.append(choice)
+
+    expected = (
+        len(QC_PLOIDY_ORDER)
+        * len(QC_CONDITION_GROUPS)
+        * len(QC_TIMEPOINTS)
+    )
+    if len(selected) != expected:
+        raise RuntimeError(f"Unexpected QC sample count: {len(selected)}")
+    keys = [row["key"] for row in selected]
+    if len(keys) != len(set(keys)):
+        raise RuntimeError("QC selection contains duplicate field keys")
+    return selected
+
+
+def d0_uncertainty_cases(validated: dict[str, Any]) -> list[dict[str, Any]]:
+    cases: list[dict[str, Any]] = []
+    for row in validated["refinement"]:
+        if (
+            row["branch"] != "original"
+            or "_00d00h00m" not in row["key"]
+            or COMMON.as_int(row["uncertain"]) <= 0
+        ):
+            continue
+        annotations = COMMON.read_csv(Path(row["annotation_path"]))
+        for annotation in annotations:
+            if not COMMON.truthy(annotation.get("late_death_uncertain", "")):
+                continue
+            cases.append(
+                {
+                    "key": row["key"],
+                    "branch": row["branch"],
+                    "combined_mask_id": COMMON.as_int(
+                        annotation["combined_mask_id"]
+                    ),
+                    "reason": (
+                        "Dual-view final-call disagreement"
+                        if COMMON.truthy(
+                            annotation.get(
+                                "late_death_branch_final_call_discordant",
+                                "",
+                            )
+                        )
+                        else "Operational evidence conflict"
+                    ),
+                }
+            )
+    return sorted(
+        cases,
+        key=lambda row: (row["key"], row["combined_mask_id"]),
+    )
+
+
+def write_qc_selection_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        raise ValueError("QC selection must not be empty")
+    fields = (
+        "selection_index",
+        "ploidy",
+        "ploidy_order",
+        "condition_id",
+        "condition",
+        "condition_short",
+        "condition_order",
+        "time_id",
+        "time_label",
+        "time_order",
+        "key",
+        "well",
+        "site",
+        "elapsed_hours",
+        "day",
+        "doxorubicin_nm",
+        "cyclophosphamide",
+        "replicate",
+        "total_cells",
+        "dead_fraction",
+        "rescued",
+        "uncertain",
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    with temporary.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="raise")
+        writer.writeheader()
+        writer.writerows(rows)
+    temporary.replace(path)
 
 
 def aggregate_datasets(
@@ -504,6 +1032,28 @@ def normalize_rgb(array: np.ndarray) -> np.ndarray:
     return (result * 255).astype(np.uint8)
 
 
+def normalize_grayscale(array: np.ndarray) -> np.ndarray:
+    array = np.squeeze(np.asarray(array))
+    if array.ndim == 3 and array.shape[-1] in (3, 4):
+        array = array[..., :3].max(axis=-1)
+    elif array.ndim == 3 and array.shape[0] in (3, 4):
+        array = array[:3].max(axis=0)
+    if array.ndim != 2:
+        raise ValueError(f"Unsupported single-channel image shape: {array.shape}")
+    plane = array.astype(np.float32)
+    finite = plane[np.isfinite(plane)]
+    if finite.size == 0:
+        scaled = np.zeros(plane.shape, dtype=np.uint8)
+    else:
+        low, high = np.percentile(finite, (1.0, 99.5))
+        if high <= low:
+            high = low + 1.0
+        scaled = (
+            np.clip((plane - low) / (high - low), 0, 1) * 255
+        ).astype(np.uint8)
+    return np.repeat(scaled[..., None], 3, axis=2)
+
+
 def label_boundary(labels: np.ndarray) -> np.ndarray:
     labels = np.squeeze(labels)
     boundary = np.zeros(labels.shape, dtype=bool)
@@ -512,6 +1062,40 @@ def label_boundary(labels: np.ndarray) -> np.ndarray:
     boundary[:, 1:] |= labels[:, 1:] != labels[:, :-1]
     boundary[:, :-1] |= labels[:, :-1] != labels[:, 1:]
     return boundary & (labels > 0)
+
+
+def thicken_boundary(
+    boundary: np.ndarray,
+    width: int = CLASSIFICATION_BOUNDARY_WIDTH,
+) -> np.ndarray:
+    if width < 1:
+        raise ValueError("Boundary width must be positive")
+    thick = np.asarray(boundary, dtype=bool)
+    for _ in range(width - 1):
+        padded = np.pad(thick, 1, mode="constant", constant_values=False)
+        thick = (
+            padded[1:-1, 1:-1]
+            | padded[:-2, 1:-1]
+            | padded[2:, 1:-1]
+            | padded[1:-1, :-2]
+            | padded[1:-1, 2:]
+            | padded[:-2, :-2]
+            | padded[:-2, 2:]
+            | padded[2:, :-2]
+            | padded[2:, 2:]
+        )
+    return thick
+
+
+def segmentation_overlay(
+    raw_rgb: np.ndarray,
+    masks: list[tuple[np.ndarray, np.ndarray]],
+) -> Image.Image:
+    output = raw_rgb.astype(np.float32)
+    for labels, color in masks:
+        boundary = label_boundary(labels)
+        output[boundary] = output[boundary] * 0.12 + color * 0.88
+    return Image.fromarray(np.clip(output, 0, 255).astype(np.uint8), mode="RGB")
 
 
 def state_overlay(
@@ -524,7 +1108,7 @@ def state_overlay(
     output = raw_rgb.astype(np.float32)
     maximum = int(labels.max(initial=0))
     colors = np.zeros((maximum + 1, 3), dtype=np.float32)
-    rescued = np.zeros(maximum + 1, dtype=bool)
+    has_color = np.zeros(maximum + 1, dtype=bool)
     for row in predictions:
         mask_id = COMMON.as_int(row.get("mask_id", 0))
         if mask_id <= 0 or mask_id > maximum:
@@ -534,16 +1118,39 @@ def state_overlay(
             state,
             np.array([245, 247, 250], dtype=np.float32),
         )
-        rescued[mask_id] = COMMON.truthy(row.get("late_death_rescue_call", ""))
-    rescue_pixels = rescued[labels]
-    if rescue_pixels.any():
-        output[rescue_pixels] = (
-            output[rescue_pixels] * 0.72
-            + np.array([235, 70, 72], dtype=np.float32) * 0.28
-        )
-    boundary = label_boundary(labels)
+        has_color[mask_id] = True
+    boundary = thicken_boundary(label_boundary(labels))
+    boundary &= has_color[labels]
     output[boundary] = output[boundary] * 0.15 + colors[labels[boundary]] * 0.85
     return Image.fromarray(np.clip(output, 0, 255).astype(np.uint8), mode="RGB")
+
+
+def focus_mask_boundary(image: Image.Image, labels: np.ndarray, mask_id: int) -> Image.Image:
+    labels = np.squeeze(labels).astype(np.int64, copy=False)
+    focus = labels == mask_id
+    if not focus.any():
+        raise RuntimeError(f"Focus mask {mask_id} is absent from the supplied labels")
+    boundary = label_boundary(focus.astype(np.int8))
+    output = np.asarray(image).copy()
+    output[boundary] = np.array([255, 255, 255], dtype=np.uint8)
+    return Image.fromarray(output, mode="RGB")
+
+
+def crop_around_mask(
+    image: Image.Image,
+    labels: np.ndarray,
+    mask_id: int,
+    padding: int = 96,
+) -> Image.Image:
+    labels = np.squeeze(labels)
+    y, x = np.where(labels == mask_id)
+    if len(x) == 0:
+        raise RuntimeError(f"Cannot crop absent mask {mask_id}")
+    left = max(0, int(x.min()) - padding)
+    right = min(labels.shape[1], int(x.max()) + padding + 1)
+    top = max(0, int(y.min()) - padding)
+    bottom = min(labels.shape[0], int(y.max()) + padding + 1)
+    return image.crop((left, top, right, bottom))
 
 
 def find_record(root: Path, key: str) -> Path:
@@ -581,119 +1188,310 @@ def find_prediction(root: Path, branch: str, key: str) -> Path:
     return matches[0]
 
 
-def comparison_figure(root: Path, key: str) -> Image.Image:
+def classification_comparison_panels(
+    record: dict[str, Any],
+    previous_prediction_path: Path,
+    final_prediction_path: Path,
+) -> list[tuple[Image.Image, str]]:
+    profiles = record["profiles"]
+    combined = profiles["Combined"]
+    dead = profiles["Dead"]
+    combined_raw = normalize_rgb(tifffile.imread(combined["raw"]))
+    dead_raw = normalize_grayscale(tifffile.imread(dead["raw"]))
+    combined_original = tifffile.imread(combined["original_mask"])
+    previous_predictions = COMMON.read_csv(previous_prediction_path)
+    final_predictions = COMMON.read_csv(final_prediction_path)
+    return [
+        (Image.fromarray(combined_raw, mode="RGB"), "Combined RGB · raw"),
+        (Image.fromarray(dead_raw, mode="RGB"), "Dead · raw"),
+        (
+            state_overlay(
+                combined_raw,
+                combined_original,
+                previous_predictions,
+                "state",
+            ),
+            "Previous classification",
+        ),
+        (
+            state_overlay(
+                combined_raw,
+                combined_original,
+                final_predictions,
+                "state",
+            ),
+            "Final classification",
+        ),
+    ]
+
+
+def authoritative_qc_panels(
+    record: dict[str, Any],
+    final_prediction_path: Path,
+    previous_prediction_path: Path,
+) -> list[tuple[Image.Image, str]]:
+    profiles = record["profiles"]
+    combined = profiles["Combined"]
+    brightfield = profiles["Brightfield"]
+    nuclei = profiles["Nuclei"]
+    dead = profiles["Dead"]
+
+    combined_raw = normalize_rgb(tifffile.imread(combined["raw"]))
+    brightfield_raw = normalize_grayscale(tifffile.imread(brightfield["raw"]))
+    nuclei_raw = normalize_grayscale(tifffile.imread(nuclei["raw"]))
+    dead_raw = normalize_grayscale(tifffile.imread(dead["raw"]))
+
+    combined_original = tifffile.imread(combined["original_mask"])
+    brightfield_original = tifffile.imread(brightfield["original_mask"])
+    nuclei_extent = tifffile.imread(nuclei["extent_mask"])
+    nuclei_core = tifffile.imread(nuclei["core_mask"])
+    dead_labels = tifffile.imread(dead["mask"])
+    final_predictions = COMMON.read_csv(final_prediction_path)
+    previous_predictions = COMMON.read_csv(previous_prediction_path)
+
+    orange = np.array([255, 159, 67], dtype=np.float32)
+    cyan = np.array([59, 201, 219], dtype=np.float32)
+    magenta = np.array([221, 87, 190], dtype=np.float32)
+    blue = np.array([73, 114, 255], dtype=np.float32)
+    return [
+        (Image.fromarray(combined_raw, mode="RGB"), "Combined RGB · raw"),
+        (Image.fromarray(brightfield_raw, mode="RGB"), "Brightfield · raw"),
+        (Image.fromarray(nuclei_raw, mode="RGB"), "Nuclei · raw"),
+        (Image.fromarray(dead_raw, mode="RGB"), "Dead · raw"),
+        (
+            segmentation_overlay(
+                combined_raw,
+                [(combined_original, orange)],
+            ),
+            "Combined segmentation",
+        ),
+        (
+            segmentation_overlay(
+                brightfield_raw,
+                [(brightfield_original, orange)],
+            ),
+            "Brightfield segmentation",
+        ),
+        (
+            segmentation_overlay(
+                nuclei_raw,
+                [(nuclei_extent, cyan), (nuclei_core, magenta)],
+            ),
+            "Nuclei extent (cyan) + core (magenta)",
+        ),
+        (
+            segmentation_overlay(dead_raw, [(dead_labels, blue)]),
+            "Dead segmentation",
+        ),
+        (
+            state_overlay(
+                combined_raw,
+                combined_original,
+                final_predictions,
+                "state",
+            ),
+            "Final classification · authoritative",
+        ),
+        (
+            state_overlay(
+                combined_raw,
+                combined_original,
+                previous_predictions,
+                "state",
+            ),
+            "Previous classification · 20260721",
+        ),
+    ]
+
+
+def sample_qc_figure(
+    root: Path,
+    previous_root: Path,
+    selection: dict[str, Any],
+) -> Image.Image:
+    key = selection["key"]
     record = COMMON.read_json(find_record(root, key))
-    combined = record["profiles"]["Combined"]
-    raw_rgb = normalize_rgb(tifffile.imread(combined["raw"]))
-    panels: list[tuple[Image.Image, str]] = []
-    for stage_field, stage_label in (
-        ("pre_late_death_state", "Before late-death rescue"),
-        ("state", "Final production result"),
-    ):
-        for branch in ("original", "nucleated_only"):
-            mask_field = "original_mask" if branch == "original" else "nucleated_mask"
-            labels = tifffile.imread(combined[mask_field])
-            predictions = COMMON.read_csv(find_prediction(root, branch, key))
-            panels.append(
-                (
-                    state_overlay(raw_rgb, labels, predictions, stage_field),
-                    f"{COMMON.display_branch(branch)} · {stage_label}",
-                )
-            )
-    # Row 1 is before and row 2 is final; each branch stays in one vertical column.
+    panels = authoritative_qc_panels(
+        record,
+        find_prediction(root, "original", key),
+        find_prediction(previous_root, "original", key),
+    )
+    if len(panels) != 10:
+        raise RuntimeError(f"Expected ten authoritative QC panels, found {len(panels)}")
+    title = (
+        f"{key} · {selection['ploidy']} · {selection['condition']} · "
+        f"{selection['time_label']} ({selection['elapsed_hours']:g} h) · "
+        f"{selection['doxorubicin_nm']:g} nM Dox"
+    )
     return COMMON.labeled_grid(
         panels,
-        title=f"{key}: pre-refinement and final cell states",
-        columns=2,
-        panel_width=1408,
+        title=title,
+        columns=4,
+        panel_width=1400,
+        title_font_size=QC_COMPOSITE_TITLE_FONT_SIZE,
+        label_font_size=QC_COMPOSITE_LABEL_FONT_SIZE,
     )
 
 
-def selected_qc_keys(
-    validated: dict[str, Any],
-) -> list[str]:
-    rescued_by_key: Counter[str] = Counter()
-    for row in validated["refinement"]:
-        rescued_by_key[row["key"]] += COMMON.as_int(row["rescued"])
-    extras = [
-        key
-        for key, rescued in rescued_by_key.most_common()
-        if rescued > 0 and key not in FIXED_QC_KEYS
-    ][:2]
-    keys = list(FIXED_QC_KEYS) + extras
-    if len(keys) < 6:
-        raise RuntimeError("Unable to select six deterministic full-cohort QC fields")
-    return keys
-
-
-def dose_figure(
-    root: Path,
-    subdirectory: str,
-    filename: str,
-    title: str,
-) -> Image.Image:
-    panels: list[tuple[Image.Image, str]] = []
-    for branch, analysis_dir in BRANCH_ANALYSIS_DIRS.items():
-        for condition, condition_file in (
-            ("Doxorubicin alone", f"doxorubicin_alone_2N_vs_4N_{filename}.png"),
-            (
-                "Doxorubicin + cyclophosphamide",
-                f"doxorubicin_plus_cyclophosphamide_2N_vs_4N_{filename}.png",
+def d0_uncertainty_figure(root: Path, case: dict[str, Any]) -> Image.Image:
+    key = case["key"]
+    mask_id = case["combined_mask_id"]
+    record = COMMON.read_json(find_record(root, key))
+    profiles = record["profiles"]
+    combined = profiles["Combined"]
+    combined_raw = normalize_rgb(tifffile.imread(combined["raw"]))
+    dead_raw = normalize_grayscale(tifffile.imread(profiles["Dead"]["raw"]))
+    nuclei_raw = normalize_grayscale(tifffile.imread(profiles["Nuclei"]["raw"]))
+    original_labels = tifffile.imread(combined["original_mask"])
+    nucleated_labels = tifffile.imread(combined["nucleated_mask"])
+    original_predictions = COMMON.read_csv(find_prediction(root, "original", key))
+    nucleated_predictions = COMMON.read_csv(
+        find_prediction(root, "nucleated_only", key)
+    )
+    original_final = focus_mask_boundary(
+        state_overlay(
+            combined_raw,
+            original_labels,
+            original_predictions,
+            "state",
+        ),
+        original_labels,
+        mask_id,
+    )
+    nucleated_final = state_overlay(
+        combined_raw,
+        nucleated_labels,
+        nucleated_predictions,
+        "state",
+    )
+    panels = [
+        (
+            crop_around_mask(
+                Image.fromarray(combined_raw, mode="RGB"),
+                original_labels,
+                mask_id,
             ),
-        ):
-            panels.append(
-                (
-                    COMMON.read_image(
-                        root
-                        / "analysis"
-                        / "dose_response"
-                        / analysis_dir
-                        / subdirectory
-                        / condition_file
-                    ),
-                    f"{COMMON.display_branch(branch)} · {condition}",
+            "Combined RGB · focused object",
+        ),
+        (
+            crop_around_mask(
+                Image.fromarray(dead_raw, mode="RGB"),
+                original_labels,
+                mask_id,
+            ),
+            "Dead raw · same spatial crop",
+        ),
+        (
+            crop_around_mask(
+                Image.fromarray(nuclei_raw, mode="RGB"),
+                original_labels,
+                mask_id,
+            ),
+            "Nuclei raw · same spatial crop",
+        ),
+        (
+            crop_around_mask(original_final, original_labels, mask_id),
+            f"Original final · uncertain mask {mask_id}",
+        ),
+        (
+            crop_around_mask(nucleated_final, original_labels, mask_id),
+            "Nucleated-only final · matched region",
+        ),
+    ]
+    return COMMON.labeled_grid(
+        panels,
+        title=f"{key}: d0 dual-view uncertainty focus",
+        columns=3,
+        panel_width=720,
+        title_font_size=QC_COMPOSITE_TITLE_FONT_SIZE,
+        label_font_size=QC_COMPOSITE_LABEL_FONT_SIZE,
+    )
+
+
+def dose_panel_records() -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for metric in DOSE_FIGURE_SPECS:
+        for branch, analysis_dir in BRANCH_ANALYSIS_DIRS.items():
+            for condition_id, condition, filename_template in DOSE_CONDITION_PANELS:
+                records.append(
+                    {
+                        "metric_id": str(metric["id"]),
+                        "metric_title": str(metric["title"]),
+                        "subdirectory": str(metric["subdirectory"]),
+                        "filename": filename_template.format(
+                            filename=metric["filename"]
+                        ),
+                        "branch": branch,
+                        "analysis_dir": analysis_dir,
+                        "condition_id": condition_id,
+                        "condition": condition,
+                        "key": (
+                            f"dose_{metric['id']}_{branch}_{condition_id}"
+                        ),
+                    }
                 )
-            )
-    return COMMON.labeled_grid(panels, title=title, columns=2, panel_width=1250)
+    return records
 
 
 def report_figures(
     root: Path,
-    validated: dict[str, Any],
-) -> tuple[dict[str, Image.Image], list[str]]:
-    qc_keys = selected_qc_keys(validated)
-    figures = {
-        f"qc_{index}": comparison_figure(root, key)
-        for index, key in enumerate(qc_keys, 1)
-    }
+    previous_root: Path,
+    workflow_pdf: Path,
+    qc_samples: list[dict[str, Any]],
+    uncertainty_cases: list[dict[str, Any]],
+) -> dict[str, Image.Image]:
+    figures = {"classification_workflow": render_workflow_pdf(workflow_pdf)}
     figures.update(
         {
-            "dose_auc": dose_figure(
+            f"qc_sample_{sample['selection_index']:02d}": sample_qc_figure(
                 root,
-                "auc",
-                "hill",
-                "AUC-normalized dose responses",
-            ),
-            "dose_gr": dose_figure(
-                root,
-                "gr",
-                "gr",
-                "Day-4 and Day-5 growth-rate inhibition",
-            ),
-            "dose_death": dose_figure(
-                root,
-                "death",
-                "excess_lethal_fraction",
-                "Day-4 and Day-5 excess lethal fraction",
+                previous_root,
+                sample,
+            )
+            for sample in qc_samples
+        }
+    )
+    figures.update(
+        {
+            f"d0_uncertainty_{index:02d}": d0_uncertainty_figure(root, case)
+            for index, case in enumerate(uncertainty_cases, 1)
+        }
+    )
+    figures.update(
+        {
+            "well_live_dead_counts_over_time": COMMON.read_image(
+                root
+                / WELL_COUNT_PLOT_DIRECTORY
+                / f"{WELL_COUNT_PLOT_STEM}.png"
             ),
         }
     )
-    return figures, qc_keys
+    for panel in dose_panel_records():
+        figures[panel["key"]] = COMMON.read_image(
+            root
+            / "analysis"
+            / "dose_response"
+            / panel["analysis_dir"]
+            / panel["subdirectory"]
+            / panel["filename"]
+        )
+    return figures
 
 
-def sources(root: Path, calibration_root: Path | None) -> list[dict[str, Any]]:
+def sources(
+    root: Path,
+    previous_root: Path,
+    calibration_root: Path | None,
+) -> list[dict[str, Any]]:
     label = root.name
     result = [
+        COMMON.logical_source(
+            "workflow",
+            "Death-classification workflow",
+            REPO_ROOT.name,
+            "docs/death_classification_workflow.pdf",
+            "Render the single-page workflow diagram embedded near the beginning of the report.",
+        ),
         COMMON.logical_source(
             "submission",
             "Classification-only submission record",
@@ -730,6 +1528,16 @@ def sources(root: Path, calibration_root: Path | None) -> list[dict[str, Any]]:
             "Read strict-completeness well-by-time live and dead counts.",
         ),
         COMMON.logical_source(
+            "well_count_plot",
+            "Authoritative well live/dead time-course plot",
+            label,
+            (
+                "analysis/well_count_timecourses/fusion-consensus/"
+                "well_live_dead_counts_over_time.pdf"
+            ),
+            "Render the saved full-cohort well-level live and dead trajectories.",
+        ),
+        COMMON.logical_source(
             "dose",
             "Authoritative full-cohort dose-response analyses",
             label,
@@ -738,10 +1546,31 @@ def sources(root: Path, calibration_root: Path | None) -> list[dict[str, Any]]:
         ),
         COMMON.logical_source(
             "qc",
-            "Final full-cohort classification QC",
+            "Raw channels, frozen masks, and final classification tables",
             label,
-            "classification_fusion/qc/label_overlays/*.png",
-            "Read deterministic pre-refinement and final QC comparisons.",
+            "workflow_status/postsegmentation_manifest/records/*/*.json",
+            "Render deterministic multi-channel QC directly from saved raw images, frozen masks, and final predictions.",
+        ),
+        COMMON.logical_source(
+            "previous_qc",
+            "Previous full-cohort classification tables",
+            previous_root.name,
+            "classification_fusion/predictions/*_per_cell_predictions.csv",
+            "Render the Previous classification QC panel from classification_20260721_102004.",
+        ),
+        COMMON.logical_source(
+            "field_states",
+            "Prepared field time course and late-death states",
+            label,
+            "workflow_status/late_death_trajectory/prepared_refinement/field_states.csv",
+            "Select exact Day 0, Day 3, and Day 5 fields from the authoritative original branch.",
+        ),
+        COMMON.logical_source(
+            "qc_selection",
+            "Deterministic ploidy-by-treatment-by-time QC sample selection",
+            label,
+            "analysis/reports/qc_sample_selection.csv",
+            "Read the selected fields, ploidy and treatment strata, exact time points, and final cell-state summaries.",
         ),
     ]
     if calibration_root is not None:
@@ -773,19 +1602,37 @@ def image_block(
     heading: str,
     text: str,
     caption: str,
+    source_id: str = "qc",
+    carousel_group: str | None = None,
+    carousel_index: int | None = None,
+    carousel_label: str | None = None,
 ) -> None:
+    if (carousel_group is None) != (carousel_index is None):
+        raise ValueError("Carousel group and index must be provided together")
+    heading_level = "####" if carousel_group is not None else "###"
     blocks.extend(
         (
             {
                 "id": f"{key}_text",
                 "type": "markdown",
-                "body": f"### {heading}\n\n{text}",
+                "body": f"{heading_level} {heading}\n\n{text}",
+                "sourceId": source_id,
             },
             {
                 "id": f"{key}_image",
                 "type": "html",
                 "body": COMMON.image_body(image_data[key], heading, caption),
                 "layout": "full",
+                **(
+                    {
+                        "carouselGroup": carousel_group,
+                        "carouselIndex": carousel_index,
+                        "carouselLabel": carousel_label or heading,
+                        "carouselTextId": f"{key}_text",
+                    }
+                    if carousel_group is not None
+                    else {}
+                ),
             },
         )
     )
@@ -793,7 +1640,8 @@ def image_block(
 
 def report_manifest(
     image_data: dict[str, tuple[str, int, int]],
-    qc_keys: list[str],
+    qc_samples: list[dict[str, Any]],
+    uncertainty_cases: list[dict[str, Any]],
 ) -> dict[str, Any]:
     charts = [
         {
@@ -956,6 +1804,74 @@ def report_manifest(
         },
     ]
     tables = [
+        {
+            "id": "qc_selection_table",
+            "title": "Ploidy-by-treatment-by-time QC sample selection",
+            "subtitle": (
+                "Deterministic Day 0, Day 3, and Day 5 longitudinal representatives; "
+                "intermediate 50–100 nM Dox fields remain in the cohort analysis "
+                "but are not part of the low/high gallery."
+            ),
+            "dataset": "qc_selection",
+            "sourceId": "qc_selection",
+            "defaultSort": {"field": "selection_index", "direction": "asc"},
+            "columns": [
+                {
+                    "field": "selection_index",
+                    "label": "Order",
+                    "format": "number",
+                },
+                {"field": "ploidy", "label": "Ploidy", "type": "text"},
+                {"field": "condition", "label": "Treatment", "type": "text"},
+                {"field": "time_label", "label": "Time stage", "type": "text"},
+                {"field": "key", "label": "Field key", "type": "text"},
+                {"field": "well", "label": "Well", "type": "text"},
+                {"field": "site", "label": "Site", "format": "number"},
+                {"field": "replicate", "label": "Replicate", "format": "number"},
+                {
+                    "field": "elapsed_hours",
+                    "label": "Elapsed hours",
+                    "format": "number",
+                },
+                {
+                    "field": "doxorubicin_nm",
+                    "label": "Dox (nM)",
+                    "format": "number",
+                },
+                {
+                    "field": "dead_fraction",
+                    "label": "Final dead fraction",
+                    "format": "percent",
+                },
+                {"field": "rescued", "label": "Rescued", "format": "number"},
+                {
+                    "field": "uncertain",
+                    "label": "Uncertain",
+                    "format": "number",
+                },
+            ],
+        },
+        {
+            "id": "d0_uncertainty_table",
+            "title": "d0 objects retained as operational uncertainty",
+            "subtitle": (
+                "Object-level dual-view conflicts only; no d0 object was rescued "
+                "by the late-death rule."
+            ),
+            "dataset": "d0_uncertainty_cases",
+            "sourceId": "refinement",
+            "defaultSort": {"field": "key", "direction": "asc"},
+            "columns": [
+                {"field": "key", "label": "Field key", "type": "text"},
+                {
+                    "field": "combined_mask_id",
+                    "label": "Combined mask ID",
+                    "format": "number",
+                },
+                {"field": "branch", "label": "Branch", "type": "text"},
+                {"field": "reason", "label": "Reason", "type": "text"},
+            ],
+        },
         {
             "id": "convergence_table",
             "title": "Operational full-cohort validation gates",
@@ -1166,157 +2082,315 @@ def report_manifest(
             "type": "markdown",
             "body": (
                 "# SUM159 Full-Cohort Dead-Classification Report\n\n"
-                "This classification-only run reuses the frozen v3 segmentation masks. "
-                "The original and nucleated-only mask views are treated as independent "
-                "diagnostic evidence, while the original-cell-mask summary remains the "
-                "authoritative counting unit. A post-classification consensus stage combines "
-                "continuous density- and time-matched live references, cell-conditioned Dead "
-                "signal, nuclear-to-cytoplasmic ratio, red-mass loss, object shape, recoverable "
-                "field-collapse states, and multi-frame spatial continuity. Strong live evidence "
-                "vetoes an initiating rescue. A supported call is propagated only across a "
-                "mutual-nearest dual-view pair, and any remaining final-call or tracking conflict "
-                "is retained as uncertainty rather than forced into dead."
-            ),
-        },
-        {
-            "id": "cards",
-            "type": "metric-strip",
-            "cardIds": ["scope_card", "rescue_card", "analysis_card"],
-        },
-        {
-            "id": "scope",
-            "type": "markdown",
-            "body": (
-                "## Scope, outputs, and denominators\n\n"
-                "Both the original-cell-mask and nucleated-only branches contain 27,200 fields "
-                "covering 80 wells, four sites, and 85 time points. The consensus output uses "
-                "the original branch as the authoritative cell denominator and carries the "
-                "nucleated-only measurements as diagnostics. Cell-state percentages use "
-                "live plus dead cells unless stated otherwise; artifacts are excluded. Confirmed "
-                "Death objects may be associated with a dead cell or retained as supplemental "
-                "objects, so the object-aware death total is not identical to dead-cell count."
-            ),
-        },
-        {
-            "id": "process",
-            "type": "markdown",
-            "body": (
-                "## Classification proceeds from per-field object attribution to late trajectory rescue\n\n"
-                "The first stage combines RGB state, Dead-channel evidence, Brightfield support, "
-                "nucleus support, object overlap, and nucleus multiplicity. The late stage begins "
-                "only after both per-field classification branches are merged. It calibrates "
-                "object features against continuous d0 density percentiles and untreated "
-                "time-matched live references; then it checks count, area, cytoplasm, red mass, "
-                "cell-conditioned Dead signal, nuclear-to-cytoplasmic ratio, mask coverage, "
-                "multi-site concordance, and multi-frame persistence. A field-collapse state can "
-                "recover after sustained normalization, preventing a transient collapse from "
-                "remaining active forever. Automatic rescue requires compatible dual-view or "
-                "strong unmatched evidence and is blocked by strong live evidence. Dual-view "
-                "stability is evaluated on mutual-matched objects rather than raw branch-level "
-                "fractions, because the two frozen segmentation branches intentionally contain "
-                "different cell populations."
-            ),
-        },
-        {
-            "id": "convergence_result",
-            "type": "markdown",
-            "body": (
-                "## GO or NO-GO is based on operational proxies, not manual ground truth\n\n"
-                "The receipt checks the frozen-segmentation contract, calibration convergence, "
-                "full-cohort completeness, d0 invariance, and dual-view stability. Because no "
-                "manual object-level annotations exist, these gates do not measure biological "
-                "sensitivity or specificity and cannot substantiate a numerical accuracy claim."
-            ),
-        },
-        {
-            "id": "convergence_table_block",
-            "type": "table",
-            "tableId": "convergence_table",
-        },
-        {
-            "id": "stage_result",
-            "type": "markdown",
-            "body": (
-                "## Late-death rescue changes the full-cohort composition without rewriting d0\n\n"
-                "The chart compares saved pre-refinement counts with the final production result. "
-                "The d0 no-change invariant is verified in the production receipt, while later "
-                "treated fields can accumulate probable-death rescues or explicit uncertainty."
-            ),
-        },
-        {"id": "stage_block", "type": "chart", "chartId": "stage_chart"},
-        {"id": "branch_table_block", "type": "table", "tableId": "branch_table"},
-        {
-            "id": "time_result",
-            "type": "markdown",
-            "body": (
-                "## Rescue and field-collapse calls emerge after the late-time gate\n\n"
-                "Rescue rates and global field-collapse calls are summarized by experimental day. "
-                "They remain absent at d0 and require persistent trajectory evidence. Unlike the "
-                "previous absorbing state, the current field gate can deactivate after three "
-                "sustained normalized frames."
-            ),
-        },
-        {"id": "rescue_day_block", "type": "chart", "chartId": "rescue_day_chart"},
-        {"id": "global_day_block", "type": "chart", "chartId": "global_day_chart"},
-        {
-            "id": "condition_result",
-            "type": "markdown",
-            "body": (
-                "## Ploidy and treatment strata retain separate production summaries\n\n"
-                "The condition view reports how frequently the late-stage rule contributes within "
-                "each plate group. It is descriptive and should be interpreted alongside the "
-                "well-level trajectories and dose-response analyses."
-            ),
-        },
-        {"id": "condition_block", "type": "chart", "chartId": "condition_chart"},
-        {
-            "id": "relation_result",
-            "type": "markdown",
-            "body": (
-                "## Final object relations preserve overlapping and supplemental death evidence\n\n"
-                "The object relation ledger distinguishes same-cell death from multi-nucleus "
-                "overlap, live-with-death-signal, dead-only regions, unresolved overlap, and "
-                "merged objects. This prevents one biological region from being forced into a "
-                "single mutually incompatible cell/object label."
-            ),
-        },
-        {"id": "relation_block", "type": "chart", "chartId": "relation_chart"},
-        {
-            "id": "top_rescue_text",
-            "type": "markdown",
-            "body": (
-                "## The highest-rescue fields remain directly auditable\n\n"
-                "The table identifies the largest field-level changes in each branch and records "
-                "whether the persistent global collapse gate was active."
-            ),
-        },
-        {"id": "top_rescue_block", "type": "table", "tableId": "top_rescue_table"},
-        {
-            "id": "qc_intro",
-            "type": "markdown",
-            "body": (
-                "## Representative QC places the pre-refinement and final states in the same columns\n\n"
-                "For each field, the original branch occupies the left column and the nucleated-only "
-                "branch occupies the right column. The top row is the classification before the "
-                "late stage and the bottom row is the final result, enabling direct vertical comparison."
+                "This QC-first report shows the saved raw channels, frozen segmentation "
+                "boundaries, and final dual-view classification before cohort statistics. "
+                "Thirty-six deterministic fields span 2N and 4N cells, no-drug, "
+                "cyclophosphamide-only, low-dose Dox, and high-dose Dox conditions at "
+                "Day 0, Day 3, and Day 5. The "
+                "classification run is computationally complete, but its strict production "
+                "receipt is NO-GO because two d0 original-branch objects remain uncertain after "
+                "the original and nucleated-only final calls disagree. No segmentation was "
+                "changed or rerun."
             ),
         },
     ]
-    for index, key in enumerate(qc_keys, 1):
-        description = (
-            "E2 verifies the d0 no-change guardrail."
-            if key.startswith("E2_")
-            else "The final row shows the objects added by the frozen late-death rule."
+    blocks.append(
+        {
+            "id": "workflow_intro",
+            "type": "markdown",
+            "body": (
+                "## Workflow\n\n"
+                "The diagram traces immutable segmentation inputs through base "
+                "multichannel classification, late-death trajectory calibration, "
+                "three rescue evidence paths, final cell-state decisions, and the "
+                "authoritative field-level outputs used by this report."
+            ),
+            "sourceId": "workflow",
+        }
+    )
+    image_block(
+        blocks,
+        image_data,
+        "classification_workflow",
+        "Figure 1. Death-classification workflow",
+        (
+            "Read the workflow from left to right. Segmentation remains frozen; "
+            "classification and late-death refinement operate on saved masks, raw "
+            "channels, trajectory context, and cross-view evidence."
+        ),
+        (
+            "End-to-end production death-classification workflow. Click the image "
+            "to inspect the high-resolution diagram; zoom or drag inside the viewer "
+            "and click outside the image to return to the report."
+        ),
+        source_id="workflow",
+    )
+    blocks.extend(
+        [
+        {
+            "id": "qc_selection_intro",
+            "type": "markdown",
+            "body": (
+                "## QC is organized by ploidy, treatment, and time\n\n"
+                "The gallery first separates 2N and 4N cells, retains the existing treatment "
+                "groups, and then orders each group as Day 0, Day 3, and Day 5. Low "
+                "Dox is 3.125–25 nM and high Dox is 200–800 nM; 50–100 nM fields remain in all "
+                "cohort-level analyses but are intentionally outside this low/high visual "
+                "contrast. Whenever possible, the three time points use the same well and site "
+                "to provide a direct longitudinal comparison. Selection does not use density, "
+                "dead fraction, uncertainty, or any other classification outcome. Every figure uses "
+                "the same ten-panel, three-row-by-four-column layout and the same "
+                "display normalization. The final classification is followed by the "
+                "matched previous classification from classification_20260721_102004."
+            ),
+            "sourceId": "field_states",
+        },
+        {
+            "id": "qc_selection_table_block",
+            "type": "table",
+            "tableId": "qc_selection_table",
+        },
+        ]
+    )
+    figure_number = 2
+    for ploidy in QC_PLOIDY_ORDER:
+        blocks.append(
+            {
+                "id": f"qc_ploidy_{ploidy.lower()}",
+                "type": "markdown",
+                "body": (
+                    f"## {ploidy}: authoritative QC across treatment and time\n\n"
+                    "Each treatment block below is ordered Day 0, Day 3, then Day 5."
+                ),
+                "sourceId": "qc_selection",
+            }
         )
+        for condition in QC_CONDITION_GROUPS:
+            condition_samples = [
+                sample
+                for sample in qc_samples
+                if sample["ploidy"] == ploidy
+                and sample["condition_id"] == condition["id"]
+            ]
+            blocks.append(
+                {
+                    "id": f"qc_group_{ploidy.lower()}_{condition['id']}",
+                    "type": "markdown",
+                    "body": (
+                    f"### {ploidy} · {condition['label']}: Day 0 to Day 5\n\n"
+                    "Read each three-row-by-four-column composite from raw signals to frozen masks, "
+                    "the final authoritative classification, and the matched previous "
+                    "classification. Green boundaries are live, purple "
+                    "boundaries are dead, yellow boundaries are uncertain or transitional, and "
+                    "gray boundaries are artifacts. Classification boundaries are rendered at "
+                    "double width. Orange, cyan/magenta, and blue are reserved for the separate "
+                    "Combined/Brightfield, Nuclei, and Dead segmentation panels."
+                    ),
+                    "sourceId": "qc_selection",
+                }
+            )
+            for sample in condition_samples:
+                key = f"qc_sample_{sample['selection_index']:02d}"
+                treatment_detail = (
+                    f"{sample['ploidy']}; {sample['time_label']} "
+                    f"({sample['elapsed_hours']:g} h); "
+                    f"{sample['doxorubicin_nm']:g} nM Dox; "
+                    f"{'with' if sample['cyclophosphamide'] else 'without'} "
+                    f"cyclophosphamide; well {sample['well']}, site {sample['site']}, "
+                    f"replicate {sample['replicate']}. Final authoritative result: "
+                    f"{sample['total_cells']:,} countable cells, "
+                    f"{sample['dead_fraction']:.1%} dead, {sample['rescued']:,} rescued, "
+                    f"and {sample['uncertain']:,} uncertain."
+                )
+                image_block(
+                    blocks,
+                    image_data,
+                    key,
+                    (
+                        f"Figure {figure_number}. {sample['ploidy']} · "
+                        f"{sample['condition']} · {sample['time_label']} · "
+                        f"{sample['key']}"
+                    ),
+                    treatment_detail,
+                    (
+                        f"{sample['key']}: Combined RGB, Brightfield, Nuclei, and Dead "
+                        "raw images; frozen channel-specific segmentation overlays; and the final "
+                        "authoritative classification."
+                    ),
+                    source_id="qc_selection",
+                    carousel_group=f"full_{ploidy.lower()}_{condition['id']}",
+                    carousel_index=int(sample["time_order"]) - 1,
+                    carousel_label=sample["time_label"],
+                )
+                figure_number += 1
+
+    blocks.extend(
+        (
+            {
+                "id": "d0_uncertainty_intro",
+                "type": "markdown",
+                "body": (
+                    "## Two d0 objects remain unresolved between the frozen segmentation views\n\n"
+                    "The late-death rule rescued zero d0 objects. The strict d0 gate nevertheless "
+                    "failed because two original-branch objects were assigned uncertainty when "
+                    "their final call disagreed with the matched nucleated-only view. These are "
+                    "object-level operational conflicts, not evidence that an entire d0 image is "
+                    "uninterpretable. White outlines identify the original mask under review."
+                ),
+                "sourceId": "convergence",
+            },
+            {
+                "id": "d0_uncertainty_table_block",
+                "type": "table",
+                "tableId": "d0_uncertainty_table",
+            },
+        )
+    )
+    for index, case in enumerate(uncertainty_cases, 1):
+        key = f"d0_uncertainty_{index:02d}"
         image_block(
             blocks,
             image_data,
-            f"qc_{index}",
-            f"Figure {index}. {key} pre-refinement and final classification",
-            description,
-            f"{key}: original and nucleated-only branches before and after late-death refinement.",
+            key,
+            (
+                f"Figure {figure_number}. d0 uncertainty · {case['key']} · "
+                f"mask {case['combined_mask_id']}"
+            ),
+            (
+                f"{case['reason']}. The same spatial crop is shown in Combined RGB, "
+                "Dead, Nuclei, original final classification, and nucleated-only final "
+                "classification."
+            ),
+            (
+                f"{case['key']} mask {case['combined_mask_id']}: focused d0 "
+                "dual-view uncertainty audit."
+            ),
+            source_id="refinement",
+            carousel_group="full_d0_uncertainty",
+            carousel_index=index - 1,
+            carousel_label=f"Case {index}",
         )
-    dose_start = len(qc_keys) + 1
+        figure_number += 1
+        figure_number += 1
+
+    blocks.extend(
+        (
+            {
+                "id": "analysis_intro",
+                "type": "markdown",
+                "body": (
+                    "## Full-cohort analysis follows the image-level QC evidence\n\n"
+                    "The remaining sections quantify the complete 27,200-field-per-branch run. "
+                    "They summarize operational validation, pre-versus-final composition, "
+                    "late-death rescue over time and treatment background, final Death-object "
+                    "relations, and rebuilt dose-response outputs."
+                ),
+            },
+            {
+                "id": "cards",
+                "type": "metric-strip",
+                "cardIds": ["scope_card", "rescue_card", "analysis_card"],
+            },
+            {
+                "id": "convergence_result",
+                "type": "markdown",
+                "body": (
+                    "## Full-cohort execution is complete, but the d0 invariance gate is NO-GO\n\n"
+                    "The receipt checks the frozen-segmentation contract, calibration "
+                    "convergence, full-cohort completeness, d0 invariance, and dual-view "
+                    "stability. All computational stages completed; the only failed scientific "
+                    "gate is strict d0 invariance because of the two uncertainty calls shown "
+                    "above. These operational gates do not estimate biological sensitivity or "
+                    "specificity."
+                ),
+                "sourceId": "convergence",
+            },
+            {
+                "id": "convergence_table_block",
+                "type": "table",
+                "tableId": "convergence_table",
+            },
+            {
+                "id": "stage_result",
+                "type": "markdown",
+                "body": (
+                    "## Late-death refinement changes later classifications while rescuing no d0 object\n\n"
+                    "The chart compares saved pre-refinement counts with final production counts. "
+                    "Later fields can accumulate probable-death rescues or explicit uncertainty; "
+                    "at d0, rescue remains zero while two cross-view conflicts are retained as "
+                    "uncertain rather than forced into live or dead."
+                ),
+                "sourceId": "summaries",
+            },
+            {"id": "stage_block", "type": "chart", "chartId": "stage_chart"},
+            {"id": "branch_table_block", "type": "table", "tableId": "branch_table"},
+            {
+                "id": "time_result",
+                "type": "markdown",
+                "body": (
+                    "## Rescue and field-collapse calls emerge after the late-time gate\n\n"
+                    "Rescue rates and global field-collapse calls are summarized by experimental "
+                    "day. The current field state can deactivate after three sustained normalized "
+                    "frames, so a transient collapse does not remain active forever."
+                ),
+                "sourceId": "summaries",
+            },
+            {"id": "rescue_day_block", "type": "chart", "chartId": "rescue_day_chart"},
+            {"id": "global_day_block", "type": "chart", "chartId": "global_day_chart"},
+            {
+                "id": "condition_result",
+                "type": "markdown",
+                "body": (
+                    "## Ploidy and cyclophosphamide backgrounds retain separate summaries\n\n"
+                    "The condition view reports how often the late stage contributes within each "
+                    "plate group. It is descriptive and should be interpreted with the image QC, "
+                    "well trajectories, and dose-response analyses."
+                ),
+                "sourceId": "summaries",
+            },
+            {"id": "condition_block", "type": "chart", "chartId": "condition_chart"},
+            {
+                "id": "relation_result",
+                "type": "markdown",
+                "body": (
+                    "## Final object relations preserve overlapping and supplemental death evidence\n\n"
+                    "The relation ledger distinguishes same-cell death from multi-nucleus overlap, "
+                    "live-with-death-signal, dead-only regions, unresolved overlap, and merged "
+                    "objects instead of forcing one biological region into incompatible labels."
+                ),
+                "sourceId": "summaries",
+            },
+            {"id": "relation_block", "type": "chart", "chartId": "relation_chart"},
+            {
+                "id": "top_rescue_text",
+                "type": "markdown",
+                "body": (
+                    "## The largest late-death changes remain directly auditable\n\n"
+                    "The table identifies the highest-rescue fields in each branch and records "
+                    "whether the persistent global field-collapse gate was active."
+                ),
+                "sourceId": "refinement",
+            },
+            {"id": "top_rescue_block", "type": "table", "tableId": "top_rescue_table"},
+        )
+    )
+    dose_start = figure_number
+    image_block(
+        blocks,
+        image_data,
+        "well_live_dead_counts_over_time",
+        f"Figure {dose_start - 1}. Well-level live and dead counts over time",
+        (
+            "The authoritative fusion-consensus trajectories retain every well and "
+            "time point, allowing treatment, ploidy, and replicate behavior to be "
+            "reviewed before dose-response reduction."
+        ),
+        (
+            "Saved fusion-consensus well-level live and dead trajectories from "
+            "well_live_dead_counts_over_time.pdf."
+        ),
+        source_id="well_count_plot",
+    )
     blocks.extend(
         (
             {
@@ -1324,43 +2398,92 @@ def report_manifest(
                 "type": "markdown",
                 "body": (
                     "## Full-cohort dose response is rebuilt from the refined classifications\n\n"
-                "The dose-response stage consumes the strict-completeness well-by-time tables "
-                "generated after late-death refinement. It recreates AUC, exact Day-4, exact "
-                "Day-5, growth-rate inhibition, and excess-lethal-fraction analyses for the "
-                "authoritative consensus and both diagnostic classification branches."
+                    "The dose-response stage consumes the strict-completeness well-by-time tables "
+                    "generated after late-death refinement. It recreates AUC, exact Day-4, exact "
+                    "Day-5, growth-rate inhibition, and excess-lethal-fraction analyses for the "
+                    "authoritative consensus and both diagnostic classification branches."
                 ),
+                "sourceId": "dose",
             },
         )
     )
-    image_block(
-        blocks,
-        image_data,
-        "dose_auc",
-        f"Figure {dose_start}. AUC-normalized Hill responses",
-        "Each replicate is normalized to its matched vehicle within the same treatment background.",
-        "AUC-normalized 2N-versus-4N dose responses for both classification branches.",
-    )
-    blocks.append({"id": "hill_table_block", "type": "table", "tableId": "hill_table"})
-    image_block(
-        blocks,
-        image_data,
-        "dose_gr",
-        f"Figure {dose_start + 1}. Day-4 and Day-5 growth-rate inhibition",
-        "The paired Delta GR panels compare 4N with 2N while preserving replicate pairing.",
-        "GR curves and paired ploidy differences for both treatment backgrounds and branches.",
-    )
-    blocks.append({"id": "gr_table_block", "type": "table", "tableId": "gr_table"})
-    image_block(
-        blocks,
-        image_data,
-        "dose_death",
-        f"Figure {dose_start + 2}. Day-4 and Day-5 excess lethal fraction",
-        "Excess lethal fraction adjusts each treated well to the matched control viability in the same replicate and treatment background.",
-        "Excess-lethal-fraction curves and paired ploidy differences for both branches.",
-    )
+    dose_panels = dose_panel_records()
+    for metric_index, metric in enumerate(DOSE_FIGURE_SPECS):
+        figure_id = dose_start + metric_index
+        metric_panels = [
+            panel
+            for panel in dose_panels
+            if panel["metric_id"] == metric["id"]
+        ]
+        blocks.append(
+            {
+                "id": f"dose_{metric['id']}_group",
+                "type": "markdown",
+                "body": (
+                    f"### Figure {figure_id}. {metric['title']}\n\n"
+                    "Use the arrows, dots, keyboard, or horizontal swipe to review "
+                    "each classification branch and treatment background as an "
+                    "individual plot."
+                ),
+                "sourceId": "dose",
+            }
+        )
+        for panel_index, panel in enumerate(metric_panels):
+            branch_label = COMMON.display_branch(panel["branch"])
+            panel_label = f"{branch_label} · {panel['condition']}"
+            panel_letter = chr(ord("A") + panel_index)
+            image_block(
+                blocks,
+                image_data,
+                panel["key"],
+                (
+                    f"Figure {figure_id}{panel_letter}. {metric['title']} · "
+                    f"{panel_label}"
+                ),
+                f"{metric['text']} This slide shows {panel_label}.",
+                f"{metric['caption']} {panel_label}.",
+                source_id="dose",
+                carousel_group=f"full_dose_{metric['id']}",
+                carousel_index=panel_index,
+                carousel_label=panel_label,
+            )
+        blocks.append(
+            {
+                "id": metric["table_block_id"],
+                "type": "table",
+                "tableId": metric["table_id"],
+            }
+        )
     blocks.extend(
         (
-            {"id": "death_table_block", "type": "table", "tableId": "death_table"},
+            {
+                "id": "scope",
+                "type": "markdown",
+                "body": (
+                    "## Scope, outputs, and denominators\n\n"
+                    "Both frozen mask branches contain 27,200 fields covering 80 wells, four "
+                    "sites, and 85 time points. The consensus output uses the original branch as "
+                    "the authoritative cell denominator and carries nucleated-only measurements "
+                    "as diagnostics. Cell-state percentages use live plus dead cells unless "
+                    "stated otherwise; artifacts are excluded."
+                ),
+            },
+            {
+                "id": "process",
+                "type": "markdown",
+                "body": (
+                    "## The final method combines object attribution, field collapse, and dual-view trajectories\n\n"
+                    "Initial classification combines Combined RGB state, Dead-channel evidence, "
+                    "Brightfield support, nucleus support, object overlap, and nucleus "
+                    "multiplicity. The late stage calibrates cell-conditioned Dead signal, "
+                    "nuclear-to-cytoplasmic ratio, red-mass loss, cell and cytoplasm depletion, "
+                    "shape, mask coverage, site concordance, and multi-frame persistence against "
+                    "continuous d0 density and untreated time references. Strong live evidence "
+                    "vetoes an initiating rescue; supported calls require compatible dual-view "
+                    "evidence, while conflicts remain uncertain."
+                ),
+                "sourceId": "configuration",
+            },
             {
                 "id": "limitations",
                 "type": "markdown",
@@ -1405,37 +2528,63 @@ def report_manifest(
 def main() -> int:
     args = parse_args()
     root = COMMON.require_dir(args.classification_root)
+    previous_root = COMMON.require_dir(args.previous_classification_root)
     calibration_root = (
         COMMON.require_dir(args.calibration_root)
         if args.calibration_root is not None
         else None
     )
     plate_map_path = COMMON.require_file(args.plate_map)
+    workflow_pdf = COMMON.require_file(args.workflow_pdf)
     validated = validate_inputs(
         root,
+        previous_root,
         calibration_root,
         args.expected_fields_per_branch,
         args.expected_timepoints,
         args.expected_dose_response_files,
     )
     plate_map = load_plate_map(plate_map_path)
+    qc_samples = select_qc_samples(validated, plate_map)
+    uncertainty_cases = d0_uncertainty_cases(validated)
     datasets = aggregate_datasets(root, validated, plate_map)
-    figures, qc_keys = report_figures(root, validated)
+    datasets["qc_selection"] = qc_samples
+    datasets["d0_uncertainty_cases"] = uncertainty_cases
+    figures = report_figures(
+        root,
+        previous_root,
+        workflow_pdf,
+        qc_samples,
+        uncertainty_cases,
+    )
     if args.debug_figure_dir is not None:
         debug = args.debug_figure_dir.expanduser().resolve()
         debug.mkdir(parents=True, exist_ok=True)
         for key, figure in figures.items():
             figure.save(debug / f"{key}.png")
     image_data, high_resolution = COMMON.encode_figures(figures)
-    report_sources = sources(root, calibration_root)
+    output_dir = (
+        args.output_dir.expanduser().resolve()
+        if args.output_dir is not None
+        else root / "analysis" / "reports"
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    qc_selection_path = output_dir / "qc_sample_selection.csv"
+    if qc_selection_path.exists() and not args.force:
+        raise FileExistsError(
+            f"Refusing to overwrite without --force: {qc_selection_path}"
+        )
+    write_qc_selection_csv(qc_selection_path, qc_samples)
+    report_sources = sources(root, previous_root, calibration_root)
     timestamp = COMMON.generated_at()
-    manifest = report_manifest(image_data, qc_keys)
+    manifest = report_manifest(image_data, qc_samples, uncertainty_cases)
     title = "SUM159 Full-Cohort Dead-Classification Report"
     artifact = COMMON.artifact_payload(
         title=title,
         description=(
-            "Technical full-cohort report for object-aware classification, "
-            "late-death trajectory refinement, QC, and dose-response analyses."
+            "QC-first technical full-cohort report for raw-channel review, frozen "
+            "segmentation overlays, final object-aware classification, late-death "
+            "trajectory refinement, and downstream cohort analyses."
         ),
         manifest=manifest,
         datasets=datasets,
@@ -1443,27 +2592,44 @@ def main() -> int:
         origin="artifact://sum159-dead-classification/full-cohort",
         timestamp=timestamp,
     )
-    output_dir = (
-        args.output_dir.expanduser().resolve()
-        if args.output_dir is not None
-        else root / "analysis" / "reports"
-    )
-    output_dir.mkdir(parents=True, exist_ok=True)
     submission = COMMON.parse_key_value_file(root / "SUBMISSION_SUMMARY.txt")
     receipt = {
         "report_mode": "full_cohort_classification",
         "classification_root": str(root),
+        "previous_classification_root": str(previous_root),
         "calibration_root": str(calibration_root) if calibration_root else None,
         "approved_configuration_source": str(validated["approved_source"]),
         "generated_at": timestamp,
         "project_git_sha": submission.get("project_git_sha", ""),
         "dataset_rows": {key: len(value) for key, value in datasets.items()},
         "embedded_figures": sorted(figures),
-        "qc_keys": qc_keys,
+        "qc_keys": [row["key"] for row in qc_samples],
+        "qc_sample_count": len(qc_samples),
+        "qc_condition_count": len(QC_CONDITION_GROUPS),
+        "qc_ploidy_levels": list(QC_PLOIDY_ORDER),
+        "qc_time_levels_hours": [
+            float(timepoint["hours"]) for timepoint in QC_TIMEPOINTS
+        ],
+        "qc_panels_per_sample": 10,
+        "qc_grid_columns": 4,
+        "qc_grid_rows": 3,
+        "qc_composite_font_scale": QC_COMPOSITE_FONT_SCALE,
+        "workflow_pdf": str(workflow_pdf),
+        "workflow_figure_embedded": True,
+        "classification_boundary_width": CLASSIFICATION_BOUNDARY_WIDTH,
+        "classification_colors": {
+            state: [int(value) for value in color]
+            for state, color in STATE_COLORS.items()
+        },
+        "qc_selection_csv": str(qc_selection_path),
+        "d0_uncertainty_cases": uncertainty_cases,
         "fields_per_branch": args.expected_fields_per_branch,
         "refinement_rows": len(validated["refinement"]),
         "refinement_failures": 0,
         "dose_response_files": len(validated["dose_files"]),
+        "dose_response_embedded_panel_count": len(dose_panel_records()),
+        "well_count_plot_pdf": str(validated["well_count_plot_pdf"]),
+        "well_count_plot_embedded": True,
         "configuration_sha256": validated["production"].get(
             "configuration_sha256", ""
         ),

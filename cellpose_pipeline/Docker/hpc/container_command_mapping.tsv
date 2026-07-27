@@ -1,0 +1,5 @@
+host_command	container_command
+python	python
+node	node
+npm	npm
+pdftoppm	pdftoppm

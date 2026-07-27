@@ -22,6 +22,13 @@ from PIL import Image, ImageDraw, ImageFont
 from skimage.segmentation import find_boundaries
 
 
+LIVE_COLOR = (35, 205, 95)
+DEAD_COLOR = (176, 74, 214)
+UNCERTAIN_COLOR = (255, 214, 10)
+ARTIFACT_COLOR = (145, 150, 160)
+CLASSIFICATION_BOUNDARY_WIDTH = 2
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--optimization-root", type=Path, required=True)
@@ -87,12 +94,43 @@ def tint(
     if not selected:
         return output
     mask = np.isin(labels, np.fromiter(selected, dtype=np.int32))
-    output[find_boundaries(mask, mode=mode)] = np.asarray(color, dtype=np.uint8)
+    boundary = find_boundaries(mask, mode=mode)
+    for _ in range(CLASSIFICATION_BOUNDARY_WIDTH - 1):
+        padded = np.pad(boundary, 1, mode="constant", constant_values=False)
+        boundary = (
+            padded[1:-1, 1:-1]
+            | padded[:-2, 1:-1]
+            | padded[2:, 1:-1]
+            | padded[1:-1, :-2]
+            | padded[1:-1, 2:]
+            | padded[:-2, :-2]
+            | padded[:-2, 2:]
+            | padded[2:, :-2]
+            | padded[2:, 2:]
+        )
+    output[boundary] = np.asarray(color, dtype=np.uint8)
     return output
 
 
 def label_ids(rows: pd.DataFrame, selector: pd.Series) -> set[int]:
     return set(rows.loc[selector, "combined_mask_id"].astype(int).tolist())
+
+
+def font(size: int, bold: bool = False) -> ImageFont.ImageFont:
+    candidates = (
+        Path(
+            "/usr/share/fonts/truetype/dejavu/"
+            + ("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf")
+        ),
+        Path(
+            "/System/Library/Fonts/Supplemental/"
+            + ("Arial Bold.ttf" if bold else "Arial.ttf")
+        ),
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return ImageFont.truetype(str(candidate), size=size)
+    return ImageFont.load_default()
 
 
 def panel(image: np.ndarray, title: str, width: int = 620) -> Image.Image:
@@ -102,19 +140,20 @@ def panel(image: np.ndarray, title: str, width: int = 620) -> Image.Image:
         (width, max(1, int(round(source.height * scale)))),
         Image.Resampling.BILINEAR,
     )
-    canvas = Image.new("RGB", (width, resized.height + 36), "white")
-    canvas.paste(resized, (0, 36))
+    header_height = 64
+    canvas = Image.new("RGB", (width, resized.height + header_height), "white")
+    canvas.paste(resized, (0, header_height))
     ImageDraw.Draw(canvas).text(
-        (8, 10),
+        (12, 15),
         title,
         fill="black",
-        font=ImageFont.load_default(),
+        font=font(27, True),
     )
     return canvas
 
 
 def compose(panels: list[Image.Image], footer: list[str]) -> Image.Image:
-    columns = 2
+    columns = 3
     rows = math.ceil(len(panels) / columns)
     panel_width = max(item.width for item in panels)
     panel_height = max(item.height for item in panels)
@@ -136,12 +175,15 @@ def compose(panels: list[Image.Image], footer: list[str]) -> Image.Image:
     return canvas
 
 
-def render_field(rows: pd.DataFrame, out_path: Path) -> dict[str, Any]:
+def render_field_panel_images(
+    rows: pd.DataFrame,
+    include_nuclei: bool = True,
+    include_evidence: bool = True,
+) -> tuple[list[tuple[np.ndarray, str]], dict[str, Any]]:
     first = rows.iloc[0]
     combined = normalize_rgb(tifffile.imread(str(first["combined_raw_path"])))
     dead_channel = normalize_scalar(tifffile.imread(str(first["dead_raw_path"])))
     cells = read_labels(str(first["cell_mask_path"]))
-    nuclei = read_labels(str(first["nucleus_core_mask_path"]))
     live_ids = label_ids(
         rows,
         rows["final_state"].astype(str).eq("live"),
@@ -153,47 +195,89 @@ def render_field(rows: pd.DataFrame, out_path: Path) -> dict[str, Any]:
         rows,
         rows["final_state"].astype(str).eq("live") & ~rows["final_dead_call"],
     )
+    artifact_ids = label_ids(
+        rows,
+        rows["final_state"].astype(str).eq("artifact"),
+    )
     uncertain_ids = label_ids(rows, rows["late_death_uncertain"])
     strong_live_ids = label_ids(rows, rows["strong_live_evidence"])
     evidence_ids = label_ids(rows, rows["late_dead_object_evidence"])
 
-    baseline = tint(combined, cells, live_ids, (0, 255, 0))
-    baseline = tint(baseline, cells, baseline_dead_ids, (255, 0, 0))
-    final = tint(combined, cells, residual_live_ids, (0, 255, 0))
-    final = tint(final, cells, final_dead_ids, (255, 0, 0))
-    final = tint(final, cells, rescued_ids, (255, 0, 255))
-    final = tint(final, cells, uncertain_ids, (255, 220, 0))
-    evidence = tint(combined, cells, evidence_ids, (255, 0, 255))
-    evidence = tint(evidence, cells, strong_live_ids, (0, 255, 255))
-    nuclei_overlay = combined.copy()
-    nuclei_overlay[find_boundaries(nuclei > 0, mode="outer")] = np.asarray(
-        (0, 255, 255),
-        dtype=np.uint8,
-    )
-    nuclei_overlay = tint(nuclei_overlay, cells, final_dead_ids, (255, 0, 0))
-
+    baseline = tint(combined, cells, live_ids, LIVE_COLOR)
+    baseline = tint(baseline, cells, baseline_dead_ids, DEAD_COLOR)
+    baseline = tint(baseline, cells, artifact_ids, ARTIFACT_COLOR)
+    final = tint(combined, cells, residual_live_ids, LIVE_COLOR)
+    final = tint(final, cells, final_dead_ids, DEAD_COLOR)
+    final = tint(final, cells, rescued_ids, DEAD_COLOR)
+    final = tint(final, cells, uncertain_ids, UNCERTAIN_COLOR)
+    final = tint(final, cells, artifact_ids, ARTIFACT_COLOR)
+    evidence = tint(combined, cells, evidence_ids, DEAD_COLOR)
+    evidence = tint(evidence, cells, strong_live_ids, LIVE_COLOR)
     panels = [
-        panel(combined, "A. Combined raw"),
-        panel(dead_channel, "B. Dead channel (display normalized)"),
-        panel(baseline, "C. Current classification: red=dead, green=live"),
-        panel(
+        (combined, "Combined RGB · raw"),
+        (dead_channel, "Dead channel · raw"),
+        (
+            baseline,
+            "Previous classification",
+        ),
+        (
             final,
-            "D. Refined: red=dead, magenta=rescued, green=residual live, yellow=uncertain",
-        ),
-        panel(
-            evidence,
-            "E. Object evidence: magenta=late-death, cyan=strong-live",
-        ),
-        panel(
-            nuclei_overlay,
-            "F. Nuclei (cyan) with final dead-cell boundaries (red)",
+            "Final classification",
         ),
     ]
+    if include_evidence:
+        panels.append(
+            (
+                evidence,
+                "Late-death object evidence",
+            )
+        )
+    if include_nuclei:
+        nuclei = read_labels(str(first["nucleus_core_mask_path"]))
+        nuclei_overlay = combined.copy()
+        nuclei_overlay[
+            find_boundaries(nuclei > 0, mode="outer")
+        ] = np.asarray(
+            (0, 255, 255),
+            dtype=np.uint8,
+        )
+        nuclei_overlay = tint(
+            nuclei_overlay,
+            cells,
+            final_dead_ids,
+            DEAD_COLOR,
+        )
+        panels.append(
+            (
+                nuclei_overlay,
+                "Nuclei with final dead boundaries",
+            )
+        )
     countable = rows["countable"] & ~rows["border_touching"]
     baseline_dead = int(rows.loc[countable, "current_dead_call"].sum())
     final_dead = int(rows.loc[countable, "final_dead_call"].sum())
     denominator = int(countable.sum())
     global_state = bool(rows["field_global_late_death"].iloc[0])
+    statistics = {
+        "first": first,
+        "countable_objects": denominator,
+        "baseline_dead": baseline_dead,
+        "final_dead": final_dead,
+        "global_late_death": global_state,
+        "rescued": len(rescued_ids),
+        "residual_live": len(residual_live_ids),
+        "uncertain": len(uncertain_ids),
+    }
+    return panels, statistics
+
+
+def render_field(rows: pd.DataFrame, out_path: Path) -> dict[str, Any]:
+    panel_images, statistics = render_field_panel_images(rows, include_nuclei=True)
+    first = statistics["first"]
+    denominator = int(statistics["countable_objects"])
+    baseline_dead = int(statistics["baseline_dead"])
+    final_dead = int(statistics["final_dead"])
+    global_state = bool(statistics["global_late_death"])
     footer = [
         (
             f"key={first['key']} | baseline_dead={baseline_dead}/{denominator} "
@@ -201,11 +285,12 @@ def render_field(rows: pd.DataFrame, out_path: Path) -> dict[str, Any]:
             f"({final_dead / max(denominator, 1):.1%})"
         ),
         (
-            f"global_late_death={global_state} | rescued={len(rescued_ids)} | "
-            f"residual_live={len(residual_live_ids)} | uncertain={len(uncertain_ids)}"
+            f"global_late_death={global_state} | rescued={statistics['rescued']} | "
+            f"residual_live={statistics['residual_live']} | uncertain={statistics['uncertain']}"
         ),
         "Operational proxy QC; the percentages are not manually annotated biological accuracy.",
     ]
+    panels = [panel(image, title) for image, title in panel_images]
     out_path.parent.mkdir(parents=True, exist_ok=True)
     compose(panels, footer).save(out_path, optimize=True)
     return {
@@ -219,9 +304,9 @@ def render_field(rows: pd.DataFrame, out_path: Path) -> dict[str, Any]:
         "countable_objects": denominator,
         "baseline_dead": baseline_dead,
         "final_dead": final_dead,
-        "rescued": len(rescued_ids),
-        "residual_live": len(residual_live_ids),
-        "uncertain": len(uncertain_ids),
+        "rescued": int(statistics["rescued"]),
+        "residual_live": int(statistics["residual_live"]),
+        "uncertain": int(statistics["uncertain"]),
         "qc_path": str(out_path),
     }
 
