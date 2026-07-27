@@ -6,20 +6,20 @@ set -euo pipefail
 
 BASE=/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/20260619_SUM159_Doxorubicin_Cyclophosphamide
 PROJECT="${PROJECT:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/cellpose-cpsam-pipeline-v3}"
-CLASSIFICATION_ROOT="${CLASSIFICATION_ROOT:-$BASE/results/classification_20260723_101944}"
+CLASSIFICATION_ROOT="${CLASSIFICATION_ROOT:-$BASE/results/classification_20260726_121258}"
 D0_AUDIT_ROOT="${D0_AUDIT_ROOT:-$BASE/results/dead_d0_classification_audit}"
 PLATE_MAP="${PLATE_MAP:-$PROJECT/cellpose_pipeline/scripts/analysisi/resources/SUM159_AC_Experiment1_PlateMap.csv}"
 CALIBRATION_PARENT="${CALIBRATION_PARENT:-$BASE/results/Tests_and_Parameters_calibration}"
 RUN_STAMP="${RUN_STAMP:-$(date +%Y%m%d_%H%M%S)}"
-OUT_ROOT="${OUT_ROOT:-$CALIBRATION_PARENT/death_classification_consensus_optimization_$RUN_STAMP}"
+OUT_ROOT="${OUT_ROOT:-$CALIBRATION_PARENT/death_classification_all_time_consensus_optimization_$RUN_STAMP}"
 CALIBRATION_CODE_ROOT="${CALIBRATION_CODE_ROOT:-$PROJECT/cellpose_pipeline/scripts/Parameter_calibration}"
 PRODUCTION_CODE_ROOT="${PRODUCTION_CODE_ROOT:-$PROJECT/cellpose_pipeline/scripts}"
 PYTHON_BIN="${PYTHON_BIN:-/home/4482173/.conda/envs/cellpose_cpsam/bin/python}"
 TRAJECTORY_WELLS="${TRAJECTORY_WELLS:-A9,B9,C2,D2,E2,F2,E9,F9,G9,H9}"
 PARALLEL_WORKERS="${PARALLEL_WORKERS:-48}"
 SEED="${SEED:-260725}"
-TARGET_E9_DEAD_FRACTION="${TARGET_E9_DEAD_FRACTION:-0.95}"
-TARGET_E9_HOLDOUT_DEAD_FRACTION="${TARGET_E9_HOLDOUT_DEAD_FRACTION:-0.90}"
+TARGET_E9_DEAD_FRACTION="${TARGET_E9_DEAD_FRACTION:-0.99}"
+TARGET_E9_HOLDOUT_DEAD_FRACTION="${TARGET_E9_HOLDOUT_DEAD_FRACTION:-0.99}"
 MAX_CONTROL_FPR="${MAX_CONTROL_FPR:-0.005}"
 
 if [[ "$(hostname -s)" != "hpctpa3pc0009" ]]; then
@@ -112,7 +112,8 @@ echo "seed=$SEED"
 echo "metric_semantics=operational_proxies_without_manual_ground_truth"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
-echo "step=01_build_multiframe_dual_view_dataset"
+echo "application_scope=all_time_all_treatments"
+echo "step=01_build_all_time_multiframe_dual_view_dataset"
 "$PYTHON_BIN" -I "$CALIBRATION_SNAPSHOT/27_build_late_dead_calibration_dataset.py" \
   --classification-root "$CLASSIFICATION_ROOT" \
   --d0-audit-root "$D0_AUDIT_ROOT" \
@@ -125,7 +126,7 @@ echo "step=01_build_multiframe_dual_view_dataset"
   --workers "$PARALLEL_WORKERS" \
   --seed "$SEED"
 
-echo "step=02_optimize_and_evaluate_convergence_gates"
+echo "step=02_optimize_all_time_model_and_evaluate_convergence_gates"
 "$PYTHON_BIN" -I "$CALIBRATION_SNAPSHOT/28_optimize_late_dead_rescue.py" \
   --dataset-root "$OUT_ROOT" \
   --out-dir "$OUT_ROOT/optimization" \

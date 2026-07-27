@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a path-backed trajectory dataset for late-death refinement.
+"""Build a path-backed trajectory dataset for all-time death refinement.
 
 No upstream segmentation is rerun.  Frozen d0 fields provide the safety
 reference, while complete well/site time courses provide field-collapse and
@@ -908,7 +908,7 @@ def extract_one(task: dict[str, Any]) -> dict[str, Any]:
         )
         untreated_live_anchor = (
             (not bool(task["treated"]))
-            & (24.0 <= float(task["elapsed_hours"]) <= 96.0)
+            & (float(task["elapsed_hours"]) > 0.0)
             & (current["final_state"].astype(str) == "live")
             & (current["prev_final_state"].astype(str) == "live")
             & (current["next_final_state"].astype(str) == "live")
@@ -1039,6 +1039,8 @@ def build_field_trajectory_metrics(
         ).cummax()
         fields[f"{source}_running_peak"] = running_peak
         fields[output] = (values / running_peak.replace(0, np.nan)).clip(0, 5)
+    # Retained as descriptive metadata for historical reports only. It is not
+    # consumed by the all-time refinement eligibility logic.
     fields["field_late"] = pd.to_numeric(
         fields["elapsed_hours"], errors="coerce"
     ).ge(72.0)
@@ -1176,7 +1178,10 @@ def main() -> int:
         "untreated_live_anchor_definition": {
             "matching": "mutual_nearest_centroid_to_previous_and_next",
             "maximum_centroid_distance_px": args.stable_live_distance_px,
-            "scope": "untreated fields from 24 through 96 hours",
+            "scope": (
+                "all untreated nonzero time points with valid previous and next "
+                "neighbors"
+            ),
             "states": "high-confidence live at previous, current, and next time points",
             "dead_mask_required_absent": True,
         },

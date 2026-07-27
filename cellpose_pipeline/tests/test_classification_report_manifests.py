@@ -500,7 +500,7 @@ class ClassificationReportManifestTests(unittest.TestCase):
                 [label for _image, label in full[-2:]],
                 [
                     "Final classification · authoritative",
-                    "Previous classification · 20260721",
+                    "Comparison classification",
                 ],
             )
 

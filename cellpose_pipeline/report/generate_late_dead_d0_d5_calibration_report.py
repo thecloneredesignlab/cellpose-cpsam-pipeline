@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the self-contained SUM159 d0+d5 late-death calibration report."""
+"""Build the self-contained SUM159 d0+d5 all-time death calibration report."""
 
 from __future__ import annotations
 
@@ -154,6 +154,7 @@ def calibration_datasets(root: Path) -> tuple[dict[str, list[dict[str, Any]]], d
             "failed_shards": COMMON.as_int(dataset_summary["failed_shards"]),
             "selection_seed": COMMON.as_int(dataset_summary["selection_seed"]),
             "changed_d0_objects": COMMON.as_int(anchor["changed_d0_object_count"]),
+            "d0_rescue_rate": COMMON.as_float(anchor["d0_rescue_rate"]),
             "passed_validation_gates": sum(
                 bool(values["pass"]) for values in go_no_go["gates"].values()
             ),
@@ -191,7 +192,10 @@ def calibration_datasets(root: Path) -> tuple[dict[str, list[dict[str, Any]]], d
         {
             "trial": row["trial"],
             "untreated_activation": COMMON.as_float(
-                row["untreated_late_field_activation_rate"]
+                row.get(
+                    "untreated_all_time_field_activation_rate",
+                    row.get("untreated_late_field_activation_rate", 0.0),
+                )
             ),
             "treated_activation": COMMON.as_float(
                 row["treated_non_e9_field_activation_rate"]
@@ -207,6 +211,12 @@ def calibration_datasets(root: Path) -> tuple[dict[str, list[dict[str, Any]]], d
             "trial": row["trial"],
             "development_e9_dead_fraction": COMMON.as_float(
                 row["development_e9_dead_fraction"]
+            ),
+            "holdout_e9_min_dead_fraction": COMMON.as_float(
+                row.get("holdout_e9_min_dead_fraction", 0.0)
+            ),
+            "f9_median_dead_fraction": COMMON.as_float(
+                row.get("f9_median_dead_fraction", 0.0)
             ),
             "untreated_live_fpr": COMMON.as_float(
                 row["untreated_live_anchor_counterfactual_fpr"]
@@ -252,7 +262,7 @@ def calibration_datasets(root: Path) -> tuple[dict[str, list[dict[str, Any]]], d
             (
                 {
                     "cohort": label,
-                    "stage": "Before late-death rescue",
+                    "stage": "Before all-time refinement",
                     "dead_fraction": median(baseline),
                     "fields": len(selected),
                 },
@@ -290,9 +300,9 @@ def calibration_datasets(root: Path) -> tuple[dict[str, list[dict[str, Any]]], d
             )
     parameters.append(
         {
-            "layer": "Time gate",
-            "parameter": "minimum elapsed hours",
-            "value": best["late_min_hours"],
+            "layer": "Application",
+            "parameter": "scope",
+            "value": best["application_scope"],
         }
     )
 
@@ -527,7 +537,7 @@ def report_sources(root: Path, d0_root: Path) -> list[dict[str, Any]]:
         ),
         COMMON.logical_source(
             "configuration",
-            "Approved late-death configuration",
+            "Approved all-time death-refinement configuration",
             calibration,
             "optimization/best_configuration.json",
             "Read the approved decision layers and frozen parameters.",
@@ -688,7 +698,7 @@ def report_manifest(
         },
         {
             "id": "d5_comparison_chart",
-            "title": "Day-5 dead fractions before and after late-death rescue",
+            "title": "Day-5 dead fractions before and after all-time refinement",
             "subtitle": "Median across the saved development, holdout, and replicate fields.",
             "type": "bar",
             "dataset": "d5_comparison",
@@ -756,7 +766,7 @@ def report_manifest(
                 "x": {
                     "field": "untreated_activation",
                     "type": "quantitative",
-                    "label": "Untreated late-field activation",
+                    "label": "Untreated all-time field activation",
                     "format": "percent",
                 },
                 "y": {
@@ -827,7 +837,7 @@ def report_manifest(
         {
             "id": "parameter_table",
             "title": "Approved production parameters",
-            "subtitle": "Frozen field, object, and time-gate configuration.",
+            "subtitle": "Frozen field, object, and all-time application configuration.",
             "dataset": "selected_parameters",
             "sourceId": "configuration",
             "defaultSort": {"field": "layer", "direction": "asc"},
@@ -851,7 +861,17 @@ def report_manifest(
                 {"field": "trial", "label": "Trial", "type": "text"},
                 {
                     "field": "development_e9_dead_fraction",
-                    "label": "E9 Day-5 dead fraction",
+                    "label": "E9 site 1 Day-5",
+                    "format": "percent",
+                },
+                {
+                    "field": "holdout_e9_min_dead_fraction",
+                    "label": "E9 holdout minimum",
+                    "format": "percent",
+                },
+                {
+                    "field": "f9_median_dead_fraction",
+                    "label": "F9 median",
                     "format": "percent",
                 },
                 {
@@ -871,7 +891,7 @@ def report_manifest(
                 },
                 {
                     "field": "development_pass",
-                    "label": "Development gate",
+                    "label": "All anchor gates",
                     "type": "text",
                 },
                 {
@@ -930,7 +950,7 @@ def report_manifest(
         },
         {
             "id": "guardrail_card",
-            "description": "The late-stage method is prohibited from changing d0.",
+            "description": "d0 changes must remain below the operational safety ceiling.",
             "dataset": "overview",
             "sourceId": "configuration",
             "metrics": [
@@ -938,6 +958,11 @@ def report_manifest(
                     "label": "Changed d0 objects",
                     "field": "changed_d0_objects",
                     "format": "number",
+                },
+                {
+                    "label": "d0 rescue rate",
+                    "field": "d0_rescue_rate",
+                    "format": "percent",
                 },
                 {
                     "label": "Validation gates passed",
@@ -954,7 +979,8 @@ def report_manifest(
             "type": "markdown",
             "body": (
                 "# SUM159 d0 + Day-5 Dead-Classification Calibration Report\n\n"
-                "The calibration combines a frozen d0 classifier with a late-time consensus rescue. "
+                "The calibration evaluates one consensus refinement across every time point and "
+                "treatment while retaining the frozen d0 audit as its safety reference. "
                 "The first calibration stage separated Combined-cell state from independently "
                 "segmented Death objects, preventing nearby weak blue signal from automatically "
                 "rewriting a visually live cell. The second stage addressed a different failure: "
@@ -962,10 +988,13 @@ def report_manifest(
                 "decay and the cell shrinks. The revised stage uses continuous density- and "
                 "time-matched references, cell-conditioned Dead signal, two frozen segmentation "
                 "views, multi-frame spatial continuity, and a recoverable field-collapse state. "
-                "Strong live evidence vetoes an initiating rescue; a high-confidence rescue is "
-                "then propagated only across a mutual-nearest dual-view pair. Final pair "
-                "disagreements become uncertainty, and the late-stage model is explicitly "
-                "forbidden from changing the frozen d0 result."
+                "Strong live evidence vetoes a single-view initiating rescue. In a field that "
+                "both branches classify as collapsed, complementary evidence across a "
+                "mutual-nearest pair can resolve a view-specific geometry conflict when one view "
+                "has object-level death support and the pair jointly carries at least three "
+                "death signals. Calls are propagated symmetrically; remaining pair disagreements "
+                "become uncertainty. d0 changes are permitted only below the prespecified 0.5% "
+                "operational safety ceiling."
             ),
         },
         {
@@ -991,8 +1020,9 @@ def report_manifest(
             "body": (
                 "## Convergence is defined by predeclared operational proxy gates\n\n"
                 "The optimizer must preserve d0, retain supported-death anchors, maintain "
-                "high-confidence multi-frame temporal support, limit matched-pair dual-view "
-                "disagreement, and remain stable "
+                "high-confidence multi-frame temporal support, satisfy E9 holdout and F9 "
+                "replicate anchors, avoid a discontinuity at the former 72-hour boundary, limit "
+                "matched-pair dual-view disagreement, and remain stable "
                 "under small feature-percentile perturbations. No gate is interpreted as a "
                 "biological sensitivity or specificity estimate."
             ),
@@ -1020,8 +1050,8 @@ def report_manifest(
             "type": "markdown",
             "body": (
                 "### Frozen d0 state and object composition\n\n"
-                "The following charts report the complete frozen d0 cohort used as the safety "
-                "constraint for the later optimization."
+                "The following charts report the complete frozen d0 audit cohort used as the "
+                "safety reference for all-time optimization."
             ),
         },
         {"id": "d0_state_block", "type": "chart", "chartId": "d0_state_chart"},
@@ -1030,7 +1060,7 @@ def report_manifest(
             "id": "late_failure",
             "type": "markdown",
             "body": (
-                "## Blue-signal decay caused a separate late-death false-negative mode\n\n"
+                "## Blue-signal decay caused a post-treatment death false-negative mode\n\n"
                 "The d0 classifier was designed around early untreated conditions. In later "
                 "drug-treated images, a dead cell can remain attached and shrunken after the "
                 "blue death signal fades. Red mass and cytoplasm also decline, so blue intensity "
@@ -1042,15 +1072,17 @@ def report_manifest(
             "id": "method",
             "type": "markdown",
             "body": (
-                "## Field collapse gates object-level multi-signal rescue\n\n"
+                "## Field collapse gates object-level multi-signal rescue at every time point\n\n"
                 "A field is first screened for persistent, multi-site collapse in object count, "
                 "mask area, cytoplasm, red mass, and mask coverage relative to continuously "
                 "density- and time-matched references. The field state can recover after sustained "
-                "normalization. Only inside a dual-view accepted late treated field can an object "
-                "be rescued. The object decision combines nucleus-to-cytoplasm ratios, area and "
+                "normalization. The same rule is evaluated for d0, early, middle, and late images "
+                "without a treatment or elapsed-time eligibility gate. Inside a dual-view accepted "
+                "collapsed field, the object decision combines nucleus-to-cytoplasm ratios, area and "
                 "cytoplasm depletion, red-mass loss, shape, cell-conditioned Dead signal, "
-                "multi-frame temporal evidence, and explicit healthy signals. Existing confirmed "
-                "deaths are preserved and d0 is never modified."
+                "multi-frame temporal evidence, explicit healthy signals, matched-partner transfer, "
+                "and complementary cross-view signal counts. Existing confirmed deaths are "
+                "preserved; d0 changes remain constrained by the safety ceiling."
             ),
         },
         {
@@ -1069,10 +1101,10 @@ def report_manifest(
             "type": "markdown",
             "body": (
                 "## Object-level tuning rejects unnecessary calls outside the sentinel wells\n\n"
-                "Among configurations that recover E9, the selected object thresholds must also "
-                "pass the ±0.05 feature-percentile stability gate and the untreated-live "
-                "counterfactual false-positive guardrail before unnecessary calls outside "
-                "E9/F9 are minimized."
+                "Each candidate must meet E9 site-1, E9 holdout-minimum, and F9-median "
+                "Day-5 anchors, then pass the ±0.05 feature-percentile stability gate and "
+                "the untreated-live counterfactual false-positive guardrail before "
+                "unnecessary calls outside E9/F9 are minimized."
             ),
         },
         {"id": "object_trial_block", "type": "table", "tableId": "object_trial_table"},
@@ -1081,8 +1113,8 @@ def report_manifest(
             "type": "markdown",
             "body": (
                 "## The approved configuration is frozen for production\n\n"
-                "The parameter table records the exact field, object, and elapsed-time gates "
-                "promoted into the production classification path."
+                "The parameter table records the exact field, object, branch-complementarity, "
+                "and all-time application settings promoted into the production path."
             ),
         },
         {"id": "parameter_block", "type": "table", "tableId": "parameter_table"},
@@ -1135,8 +1167,8 @@ def report_manifest(
         blocks,
         image_data,
         "trajectory_overview",
-        "Figure 1. E9 and F9 trajectories define the late-death problem",
-        "The saved time courses show where the original blue-centered classifier diverges from the late-stage phenotype.",
+        "Figure 1. E9 and F9 trajectories define the post-treatment decay problem",
+        "The saved time courses show where the original blue-centered classifier diverges from the shrunken post-treatment phenotype.",
         "E9 and F9 time-course evidence used during the calibration.",
         carousel_group="calibration_overview",
         carousel_index=0,
@@ -1148,7 +1180,7 @@ def report_manifest(
         "feature_map",
         "Figure 2. Day-5 objects require multiple independent signals",
         "The feature map shows why red loss, cytoplasm depletion, nuclear ratios, shape, and temporal evidence are combined.",
-        "Day-5 feature map for the late-death object decision.",
+        "Day-5 feature map for the all-time object decision.",
         carousel_group="calibration_overview",
         carousel_index=1,
         carousel_label="Multi-signal feature map",
@@ -1272,9 +1304,9 @@ def report_manifest(
                 "type": "markdown",
                 "body": (
                     "## Recommended production use\n\n"
-                    "Use the approved configuration only after the d0 object-aware classification "
-                    "and only for fields at or beyond the frozen late-time gate. Preserve the d0 "
-                    "no-change invariant, the untreated-live proxy, the saved configuration hash, "
+                    "Use the approved configuration after the object-aware base classification for "
+                    "every field, regardless of time or treatment. Preserve the d0 safety ceiling, "
+                    "the untreated-live proxy, the saved configuration hash, "
                     "and complete QC inventories as regression checks for every future production run."
                 ),
             },
@@ -1336,8 +1368,9 @@ def main() -> int:
     artifact = COMMON.artifact_payload(
         title=title,
         description=(
-            "Technical report for the frozen d0 object-aware classifier and the "
-            "Day-5 late-death trajectory refinement calibrated before full-cohort production."
+            "Technical report for the d0 safety reference and Day-5 operational "
+            "anchors used to calibrate the all-time trajectory refinement before "
+            "full-cohort production."
         ),
         manifest=manifest,
         datasets=datasets,
@@ -1378,6 +1411,7 @@ def main() -> int:
         "changed_d0_object_count": metadata["anchor_metrics"][
             "changed_d0_object_count"
         ],
+        "d0_rescue_rate": metadata["anchor_metrics"]["d0_rescue_rate"],
         "operational_decision": metadata["go_no_go"]["decision"],
         "biological_accuracy_claimed": False,
         "production_integration": metadata["best_configuration"][

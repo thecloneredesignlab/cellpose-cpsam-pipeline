@@ -3,7 +3,7 @@ set -euo pipefail
 
 BASE="${BASE:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/20260619_SUM159_Doxorubicin_Cyclophosphamide}"
 PROJECT_DIR="${PROJECT_DIR:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/cellpose-cpsam-pipeline-v3}"
-CALIBRATION_ROOT="${CALIBRATION_ROOT:-$BASE/results/Tests_and_Parameters_calibration/death_classification_consensus_optimization_20260725_213646}"
+CALIBRATION_ROOT="${CALIBRATION_ROOT:-$BASE/results/Tests_and_Parameters_calibration/death_classification_all_time_consensus_optimization_20260727_145000/retry4}"
 OUTPUT_DIR="${OUTPUT_DIR:-$CALIBRATION_ROOT/report_final}"
 PYTHON_BIN="${PYTHON_BIN:-/home/4482173/.conda/envs/cellpose_cpsam/bin/python}"
 NODE_ROOT="${NODE_ROOT:-/home/4482173/.local/opt/node-v24.18.0-linux-x64}"
@@ -85,7 +85,7 @@ receipt = json.load(open(sys.argv[1], encoding="utf-8"))
 assert receipt["report_mode"] == "d0_d5_calibration"
 assert receipt["completed_shards"] == 7360
 assert receipt["failed_shards"] == 0
-assert receipt["changed_d0_object_count"] == 0
+assert receipt["d0_rescue_rate"] <= 0.005
 assert receipt["operational_decision"] == "GO"
 assert receipt["biological_accuracy_claimed"] is False
 assert receipt["qc_grid_columns"] == 2

@@ -4,7 +4,7 @@ set -euo pipefail
 BASE="${BASE:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/20260619_SUM159_Doxorubicin_Cyclophosphamide}"
 PROJECT_DIR="${PROJECT_DIR:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/cellpose-cpsam-pipeline-v3}"
 RESULT_ROOT="${RESULT_ROOT:?RESULT_ROOT is required}"
-PREVIOUS_CLASSIFICATION_ROOT="${PREVIOUS_CLASSIFICATION_ROOT:-$BASE/results/classification_20260721_102004}"
+PREVIOUS_CLASSIFICATION_ROOT="${PREVIOUS_CLASSIFICATION_ROOT:-$BASE/results/classification_20260726_121258}"
 CALIBRATION_ROOT="${CALIBRATION_ROOT:-$BASE/results/Tests_and_Parameters_calibration/death_classification_consensus_optimization_20260725_213646}"
 PLATE_MAP="${PLATE_MAP:-$PROJECT_DIR/cellpose_pipeline/scripts/analysisi/resources/SUM159_AC_Experiment1_PlateMap.csv}"
 WORKFLOW_PDF="${WORKFLOW_PDF:-$PROJECT_DIR/docs/death_classification_workflow.pdf}"
@@ -112,7 +112,7 @@ assert receipt["qc_sample_count"] == 36
 assert receipt["qc_condition_count"] == 6
 assert receipt["qc_ploidy_levels"] == ["2N", "4N"]
 assert receipt["qc_time_levels_hours"] == [0.0, 72.0, 120.0]
-assert receipt["previous_classification_root"].endswith("/classification_20260721_102004")
+assert receipt["previous_classification_root"].endswith("/classification_20260726_121258")
 assert receipt["qc_panels_per_sample"] == 10
 assert receipt["qc_grid_columns"] == 4
 assert receipt["qc_grid_rows"] == 3

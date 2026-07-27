@@ -45,6 +45,33 @@ except ModuleNotFoundError:
 
 
 class LateDeathTrajectoryRefinementTests(unittest.TestCase):
+    def test_parameter_grid_contains_approved_complementary_configuration(self) -> None:
+        self.assertIn(
+            MODEL.APPROVED_OBJECT_CONFIGURATION,
+            MODEL.object_parameter_grid(),
+        )
+
+    def test_former_boundary_continuity_uses_declared_count_noise_tolerance(self) -> None:
+        rows = []
+        for site, boundary_change in ((1, 0.104), (2, 0.100)):
+            fractions = (0.10, 0.20, 0.20 + boundary_change, 0.40)
+            for elapsed_hours, fraction in zip((48.0, 70.0, 72.0, 96.0), fractions):
+                rows.append(
+                    {
+                        "branch": "original",
+                        "well": "E9",
+                        "site": site,
+                        "elapsed_hours": elapsed_hours,
+                        "final_dead_fraction": fraction,
+                    }
+                )
+        metrics = MODEL.former_boundary_continuity_metrics(
+            pd.DataFrame(rows),
+            absolute_tolerance=0.005,
+        )
+        self.assertTrue(metrics["pass"])
+        self.assertEqual(metrics["absolute_tolerance"], 0.005)
+
     @unittest.skipUnless(
         DATASET_BUILDER is not None,
         "The local lightweight test environment does not include scikit-image.",
@@ -98,7 +125,7 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
             rows.append(row)
         for anchor in MODEL.DENSITY_ANCHORS:
             for _output, (raw, _direction) in MODEL.RAW_FEATURES.items():
-                arrays[("original", anchor, "d0", raw)] = np.linspace(
+                arrays[("original", anchor, 0.0, raw)] = np.linspace(
                     anchor * 10.0,
                     100.0 + anchor * 10.0,
                     101,
@@ -114,7 +141,7 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
                 used_weight = 0.0
                 for anchor, weight in MODEL.density_anchor_weights(density):
                     expected += weight * MODEL.empirical_percentile(
-                        arrays[("original", anchor, "d0", raw)],
+                        arrays[("original", anchor, 0.0, raw)],
                         np.asarray([rows[row_index][raw]], dtype=float),
                         direction,
                         reference_sorted=True,
@@ -125,6 +152,36 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
                     expected / used_weight,
                     places=12,
                 )
+
+    def test_continuous_time_anchor_interpolation_has_no_bin_step(self) -> None:
+        rows = []
+        arrays = {}
+        for elapsed in (71.9, 72.0, 72.1):
+            row = {
+                "branch": "original",
+                "elapsed_hours": elapsed,
+                "density_percentile": 0.5,
+            }
+            row.update(
+                {
+                    raw: 50.0
+                    for raw, _direction in MODEL.RAW_FEATURES.values()
+                }
+            )
+            rows.append(row)
+        for raw, _direction in MODEL.RAW_FEATURES.values():
+            arrays[("original", 0.5, 60.0, raw)] = np.linspace(0.0, 100.0, 101)
+            arrays[("original", 0.5, 72.0, raw)] = np.linspace(10.0, 110.0, 101)
+            arrays[("original", 0.5, 84.0, raw)] = np.linspace(20.0, 120.0, 101)
+        calibrated = MODEL.apply_empirical_feature_calibration(
+            pd.DataFrame(rows),
+            arrays,
+            error_context="time-continuity-test",
+        )
+        for output in MODEL.MODEL_FEATURES:
+            values = calibrated[output].to_numpy(float)
+            self.assertLess(abs(values[1] - values[0]), 0.01)
+            self.assertLess(abs(values[2] - values[1]), 0.01)
 
     def test_field_state_can_recover_after_sustained_normalization(self) -> None:
         rows = []
@@ -208,6 +265,10 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
         rows = []
         for branch in ("original", "nucleated_only"):
             row = dict(base, branch=branch, combined_mask_id=1)
+            if branch == "nucleated_only":
+                row["proxy_type"] = "unlabeled"
+                row["temporal_track_confident"] = False
+                row["temporal_support_frames"] = 0
             row.update({feature: 0.10 for feature in MODEL.MODEL_FEATURES})
             rows.append(row)
         fields = pd.DataFrame(
@@ -231,6 +292,21 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
         )
         self.assertTrue(vetoed["strong_live_evidence"].astype(bool).all())
         self.assertFalse(vetoed["late_death_rescue_call"].astype(bool).any())
+
+        dual_temporal = pd.DataFrame(rows)
+        dual_temporal["proxy_type"] = "temporal_dead_remnant"
+        dual_temporal["temporal_track_confident"] = True
+        dual_temporal["temporal_support_frames"] = 3
+        dual_temporal_calls = MODEL.classification_calls(
+            dual_temporal,
+            fields,
+            REFINEMENT.OBJECT_CONFIGURATION,
+            REFINEMENT.LATE_MIN_HOURS,
+            apply_treatment_scope=True,
+        )
+        self.assertTrue(
+            dual_temporal_calls["temporal_carryforward_call"].astype(bool).all()
+        )
 
         death_supported = pd.DataFrame(rows)
         for feature in MODEL.MODEL_FEATURES:
@@ -321,6 +397,7 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
             "branch_object_evidence_agree",
             "temporal_carryforward_call",
             "global_late_death_rescue_call",
+            "branch_confirmed_rescue_call",
             "late_death_rescue_call",
             "final_dead_call",
             "late_death_uncertain",
@@ -388,11 +465,125 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
         )
         self.assertTrue(calls["branch_final_dead_call_agree"].astype(bool).all())
 
+    def test_branch_confirmed_rescue_applies_at_early_untreated_time(self) -> None:
+        rows = []
+        for branch, state, x_offset in (
+            ("original", "live", 0.0),
+            ("nucleated_only", "dead", 0.5),
+        ):
+            row = {
+                "cohort": "trajectory",
+                "branch": branch,
+                "key": "A9_1_01d00h00m",
+                "well": "A9",
+                "site": 1,
+                "elapsed_hours": 24.0,
+                "treated": False,
+                "combined_mask_id": 1,
+                "centroid_y": 50.0,
+                "centroid_x": 50.0 + x_offset,
+                "countable": True,
+                "border_touching": False,
+                "final_state": state,
+                "proxy_type": "unlabeled",
+                "temporal_track_confident": False,
+                "temporal_support_frames": 0,
+                "temporal_match_confidence": 0.0,
+            }
+            row.update({feature: 0.95 for feature in MODEL.MODEL_FEATURES})
+            rows.append(row)
+        fields = pd.DataFrame(
+            {
+                "branch": ["original", "nucleated_only"],
+                "key": ["A9_1_01d00h00m", "A9_1_01d00h00m"],
+                "field_global_late_death": [False, False],
+                "field_collapse_signal_count": [0, 0],
+                "field_site_concordance": [0.0, 0.0],
+                "field_branch_raw_discordant": [False, False],
+                "field_branch_raw_global": [False, False],
+                "field_branch_consensus_late_death": [False, False],
+            }
+        )
+        calls = MODEL.classification_calls(
+            pd.DataFrame(rows),
+            fields,
+            REFINEMENT.OBJECT_CONFIGURATION,
+            REFINEMENT.LATE_MIN_HOURS,
+            apply_treatment_scope=True,
+        )
+        self.assertTrue(calls["final_dead_call"].astype(bool).all())
+        original = calls.loc[calls["branch"].eq("original")].iloc[0]
+        self.assertTrue(bool(original["branch_confirmed_rescue_call"]))
+        self.assertFalse(bool(original["late_death_uncertain"]))
+
+    def test_complementary_branch_evidence_resolves_collapsed_field_pair(self) -> None:
+        rows = []
+        for branch, x_offset in (
+            ("original", 0.0),
+            ("nucleated_only", 0.5),
+        ):
+            row = {
+                "cohort": "trajectory",
+                "branch": branch,
+                "key": "A9_1_01d00h00m",
+                "well": "A9",
+                "site": 1,
+                "elapsed_hours": 24.0,
+                "treated": False,
+                "combined_mask_id": 1,
+                "centroid_y": 50.0,
+                "centroid_x": 50.0 + x_offset,
+                "countable": True,
+                "border_touching": False,
+                "final_state": "live",
+                "proxy_type": "unlabeled",
+                "temporal_track_confident": False,
+                "temporal_support_frames": 0,
+                "temporal_match_confidence": 0.0,
+            }
+            row.update({feature: 0.10 for feature in MODEL.MODEL_FEATURES})
+            if branch == "original":
+                for feature in (
+                    "core_nc_percentile",
+                    "area_depletion_percentile",
+                    "red_mass_depletion_percentile",
+                ):
+                    row[feature] = 0.95
+            rows.append(row)
+        fields = pd.DataFrame(
+            {
+                "branch": ["original", "nucleated_only"],
+                "key": ["A9_1_01d00h00m", "A9_1_01d00h00m"],
+                "field_global_late_death": [True, True],
+                "field_collapse_signal_count": [5, 5],
+                "field_site_concordance": [1.0, 1.0],
+                "field_branch_raw_discordant": [False, False],
+                "field_branch_raw_global": [True, True],
+                "field_branch_consensus_late_death": [True, True],
+                "field_branch_consensus_death_collapse": [True, True],
+            }
+        )
+        calls = MODEL.classification_calls(
+            pd.DataFrame(rows),
+            fields,
+            REFINEMENT.OBJECT_CONFIGURATION,
+            REFINEMENT.LATE_MIN_HOURS,
+            apply_treatment_scope=True,
+        )
+        self.assertTrue(
+            calls["field_consensus_complementary_rescue_call"]
+            .astype(bool)
+            .all()
+        )
+        self.assertTrue(calls["final_dead_call"].astype(bool).all())
+        self.assertTrue(calls["branch_final_dead_call_agree"].astype(bool).all())
+        self.assertFalse(calls["late_death_uncertain"].astype(bool).any())
+
     def test_persistent_field_collapse_and_object_evidence_rescue(self) -> None:
         rows = []
         for site in range(1, 5):
-            for elapsed_hours in (0.0, 72.0, 74.0, 76.0):
-                collapsed = elapsed_hours >= 72.0
+            for elapsed_hours in (0.0, 24.0, 26.0, 28.0):
+                collapsed = elapsed_hours >= 24.0
                 rows.append(
                     {
                         "branch": "original",
@@ -415,7 +606,7 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
             REFINEMENT.LATE_MIN_HOURS,
         )
         terminal = fields.loc[
-            fields["elapsed_hours"].eq(76.0),
+            fields["elapsed_hours"].eq(28.0),
             "field_global_late_death",
         ]
         self.assertTrue(terminal.astype(bool).all())
@@ -441,13 +632,13 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
         )
         self.assertFalse(
             calls.loc[
-                calls["elapsed_hours"].lt(76.0),
+                calls["elapsed_hours"].eq(0.0),
                 "late_death_rescue_call",
             ].astype(bool).any()
         )
         self.assertTrue(
             calls.loc[
-                calls["elapsed_hours"].eq(76.0),
+                calls["elapsed_hours"].ge(24.0),
                 "late_death_rescue_call",
             ].astype(bool).all()
         )
@@ -461,7 +652,12 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
             REFINEMENT.LATE_MIN_HOURS,
             apply_treatment_scope=True,
         )
-        self.assertFalse(untreated_calls["late_death_rescue_call"].astype(bool).any())
+        self.assertTrue(
+            untreated_calls.loc[
+                untreated_calls["elapsed_hours"].ge(24.0),
+                "late_death_rescue_call",
+            ].astype(bool).all()
+        )
 
     def test_restore_pre_refinement_state_is_idempotent(self) -> None:
         previously_refined = pd.DataFrame(
@@ -501,6 +697,7 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
     def test_production_rejects_calibration_configuration_drift(self) -> None:
         approved = {
             "production_integration": "approved",
+            "application_scope": MODEL.APPROVED_APPLICATION_SCOPE,
             "field_configuration": dict(REFINEMENT.FIELD_CONFIGURATION),
             "object_configuration": dict(REFINEMENT.OBJECT_CONFIGURATION),
             "late_min_hours": REFINEMENT.LATE_MIN_HOURS,
@@ -518,10 +715,10 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             paths = REFINEMENT.prepared_paths(Path(temporary))
             references = {
-                ("original", 0.1, "d0", "area"): np.asarray(
+                ("original", 0.1, 0.0, "area"): np.asarray(
                     [1.0, 2.0, 3.0]
                 ),
-                ("nucleated_only", 0.9, "late", "red_mass_proxy"): np.asarray(
+                ("nucleated_only", 0.9, 120.0, "red_mass_proxy"): np.asarray(
                     [4.0, 5.0]
                 ),
             }
@@ -708,7 +905,7 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
             self.assertTrue(receipt_path.is_file())
             self.assertEqual(receipt["decision"], "GO")
             self.assertFalse(receipt["biological_accuracy_claimed"])
-            self.assertTrue(receipt["gates"]["D0_INVARIANCE"]["pass"])
+            self.assertTrue(receipt["gates"]["D0_SAFETY"]["pass"])
             self.assertTrue(
                 receipt["gates"]["FULL_COHORT_COMPLETENESS"]["pass"]
             )

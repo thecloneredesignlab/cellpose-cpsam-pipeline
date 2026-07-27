@@ -421,7 +421,12 @@ def validate_inputs(
             calibration_root / "optimization" / "best_configuration.json"
         )
     approved = COMMON.read_json(approved_source)
-    for field in ("field_configuration", "object_configuration", "late_min_hours"):
+    for field in (
+        "field_configuration",
+        "object_configuration",
+        "late_min_hours",
+        "application_scope",
+    ):
         if production[field] != approved[field]:
             raise RuntimeError(
                 f"Production {field} does not match the approved calibration"
@@ -805,7 +810,7 @@ def aggregate_datasets(
         )
         for stage, live_field, dead_field in (
             (
-                "Before late-death rescue",
+                "Before all-time death refinement",
                 "pre_late_death_live_cell_count",
                 "pre_late_death_dead_cell_count",
             ),
@@ -1301,7 +1306,7 @@ def authoritative_qc_panels(
                 previous_predictions,
                 "state",
             ),
-            "Previous classification · 20260721",
+            "Comparison classification",
         ),
     ]
 
@@ -1510,7 +1515,7 @@ def sources(
         ),
         COMMON.logical_source(
             "refinement",
-            "Late-death refinement summary",
+            "All-time death-refinement summary",
             label,
             "late_death_refinement/refinement_summary.csv",
             "Read branch-field rescue counts and uncertainty annotations.",
@@ -1558,11 +1563,11 @@ def sources(
             "Previous full-cohort classification tables",
             previous_root.name,
             "classification_fusion/predictions/*_per_cell_predictions.csv",
-            "Render the Previous classification QC panel from classification_20260721_102004.",
+            f"Render the comparison QC panel from {previous_root.name}.",
         ),
         COMMON.logical_source(
             "field_states",
-            "Prepared field time course and late-death states",
+            "Prepared field time course and all-time collapse states",
             label,
             "workflow_status/late_death_trajectory/prepared_refinement/field_states.csv",
             "Select exact Day 0, Day 3, and Day 5 fields from the authoritative original branch.",
@@ -1579,7 +1584,7 @@ def sources(
         result.append(
             COMMON.logical_source(
                 "calibration",
-                "Approved no-ground-truth d0 and late-time calibration",
+                "Approved no-ground-truth all-time calibration",
                 calibration_root.name,
                 "optimization/best_configuration.json",
                 "Verify that the production configuration matches the approved calibration.",
@@ -1591,7 +1596,7 @@ def sources(
             "Operational GO or NO-GO receipt",
             label,
             "late_death_refinement/FULL_CLASSIFICATION_GO_NO_GO.json",
-            "Read completeness, d0 invariance, dual-view, and calibration gates.",
+            "Read completeness, d0 safety, all-time continuity, dual-view, and calibration gates.",
         )
     )
     return result
@@ -1644,11 +1649,19 @@ def report_manifest(
     image_data: dict[str, tuple[str, int, int]],
     qc_samples: list[dict[str, Any]],
     uncertainty_cases: list[dict[str, Any]],
+    validated: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    production_receipt = (
+        validated["production_go_no_go"]
+        if validated is not None
+        else {"decision": "NOT_EVALUATED"}
+    )
+    production_decision = str(production_receipt["decision"])
+    uncertainty_count = len(uncertainty_cases)
     charts = [
         {
             "id": "stage_chart",
-            "title": "Live and dead composition before and after late-death rescue",
+            "title": "Live and dead composition before and after all-time death refinement",
             "subtitle": "Artifacts are excluded from the live-plus-dead denominator.",
             "type": "bar",
             "dataset": "stage_composition",
@@ -1680,7 +1693,7 @@ def report_manifest(
         },
         {
             "id": "rescue_day_chart",
-            "title": "Late-death rescue rate over experimental time",
+            "title": "Death-rescue rate over experimental time",
             "subtitle": "Rescued cells divided by total countable cells at each day.",
             "type": "line",
             "dataset": "rescue_by_day",
@@ -1711,7 +1724,7 @@ def report_manifest(
         },
         {
             "id": "global_day_chart",
-            "title": "Field-level late-collapse calls over time",
+            "title": "Field-level collapse calls over time",
             "subtitle": "Share of branch-fields satisfying the persistent multi-site collapse gate.",
             "type": "line",
             "dataset": "global_fields_by_day",
@@ -1734,7 +1747,7 @@ def report_manifest(
                     {
                         "field": "global_late_fields",
                         "type": "quantitative",
-                        "label": "Global late fields",
+                        "label": "Global collapsed fields",
                         "format": "number",
                     }
                 ],
@@ -1742,7 +1755,7 @@ def report_manifest(
         },
         {
             "id": "condition_chart",
-            "title": "Late-death rescue rate by ploidy and treatment background",
+            "title": "Death-rescue rate by ploidy and treatment background",
             "subtitle": "Full time course; denominator is total countable cells in each group.",
             "type": "bar",
             "dataset": "rescue_by_condition",
@@ -1858,7 +1871,7 @@ def report_manifest(
             "title": "d0 objects retained as operational uncertainty",
             "subtitle": (
                 "Object-level dual-view conflicts only; no d0 object was rescued "
-                "by the late-death rule."
+                "by the all-time death-refinement rule."
             ),
             "dataset": "d0_uncertainty_cases",
             "sourceId": "refinement",
@@ -1937,7 +1950,7 @@ def report_manifest(
         },
         {
             "id": "top_rescue_table",
-            "title": "Fields with the largest late-death rescue counts",
+            "title": "Fields with the largest all-time death-rescue counts",
             "subtitle": "Eight highest-rescue fields per analysis branch.",
             "dataset": "top_rescued_fields",
             "sourceId": "refinement",
@@ -2040,7 +2053,7 @@ def report_manifest(
         },
         {
             "id": "rescue_card",
-            "description": "Objects reclassified by the late-stage production gate.",
+            "description": "Objects reclassified by the all-time production refinement.",
             "dataset": "overview",
             "sourceId": "refinement",
             "metrics": [
@@ -2088,11 +2101,9 @@ def report_manifest(
                 "boundaries, and final dual-view classification before cohort statistics. "
                 "Thirty-six deterministic fields span 2N and 4N cells, no-drug, "
                 "cyclophosphamide-only, low-dose Dox, and high-dose Dox conditions at "
-                "Day 0, Day 3, and Day 5. The "
-                "classification run is computationally complete, but its strict production "
-                "receipt is NO-GO because two d0 original-branch objects remain uncertain after "
-                "the original and nucleated-only final calls disagree. No segmentation was "
-                "changed or rerun."
+                "Day 0, Day 3, and Day 5. The production decision is "
+                f"{production_decision}; {uncertainty_count} d0 uncertainty case(s) "
+                "are retained for direct audit. No segmentation was changed or rerun."
             ),
         },
     ]
@@ -2103,8 +2114,8 @@ def report_manifest(
             "body": (
                 "## Workflow\n\n"
                 "The diagram traces immutable segmentation inputs through base "
-                "multichannel classification, late-death trajectory calibration, "
-                "three rescue evidence paths, final cell-state decisions, and the "
+                "multichannel classification, continuous all-time trajectory calibration, "
+                "four rescue evidence paths, final cell-state decisions, and the "
                 "authoritative field-level outputs used by this report."
             ),
             "sourceId": "workflow",
@@ -2117,7 +2128,7 @@ def report_manifest(
         "Figure 1. Death-classification workflow",
         (
             "Read the workflow from left to right. Segmentation remains frozen; "
-            "classification and late-death refinement operate on saved masks, raw "
+            "classification and all-time death refinement operate on saved masks, raw "
             "channels, trajectory context, and cross-view evidence."
         ),
         (
@@ -2143,7 +2154,7 @@ def report_manifest(
                 "dead fraction, uncertainty, or any other classification outcome. Every figure uses "
                 "the same ten-panel, three-row-by-four-column layout and the same "
                 "display normalization. The final classification is followed by the "
-                "matched previous classification from classification_20260721_102004."
+                "matched comparison classification."
             ),
             "sourceId": "field_states",
         },
@@ -2232,12 +2243,11 @@ def report_manifest(
                 "id": "d0_uncertainty_intro",
                 "type": "markdown",
                 "body": (
-                    "## Two d0 objects remain unresolved between the frozen segmentation views\n\n"
-                    "The late-death rule rescued zero d0 objects. The strict d0 gate nevertheless "
-                    "failed because two original-branch objects were assigned uncertainty when "
-                    "their final call disagreed with the matched nucleated-only view. These are "
-                    "object-level operational conflicts, not evidence that an entire d0 image is "
-                    "uninterpretable. White outlines identify the original mask under review."
+                    f"## D0 safety audit: {uncertainty_count} unresolved object(s)\n\n"
+                    "The same all-time decision rules are used at d0. Any retained cross-view "
+                    "conflicts are object-level operational uncertainty, not evidence that an "
+                    "entire d0 image is uninterpretable. White outlines identify each original "
+                    "mask under review."
                 ),
                 "sourceId": "convergence",
             },
@@ -2284,7 +2294,7 @@ def report_manifest(
                     "## Full-cohort analysis follows the image-level QC evidence\n\n"
                     "The remaining sections quantify the complete 27,200-field-per-branch run. "
                     "They summarize operational validation, pre-versus-final composition, "
-                    "late-death rescue over time and treatment background, final Death-object "
+                    "all-time death rescue over time and treatment background, final Death-object "
                     "relations, and rebuilt dose-response outputs."
                 ),
             },
@@ -2297,13 +2307,11 @@ def report_manifest(
                 "id": "convergence_result",
                 "type": "markdown",
                 "body": (
-                    "## Full-cohort execution is complete, but the d0 invariance gate is NO-GO\n\n"
+                    f"## Full-cohort operational decision: {production_decision}\n\n"
                     "The receipt checks the frozen-segmentation contract, calibration "
-                    "convergence, full-cohort completeness, d0 invariance, and dual-view "
-                    "stability. All computational stages completed; the only failed scientific "
-                    "gate is strict d0 invariance because of the two uncertainty calls shown "
-                    "above. These operational gates do not estimate biological sensitivity or "
-                    "specificity."
+                    "convergence, full-cohort completeness, d0 safety, removal of the former "
+                    "72-hour boundary step, and dual-view stability. These operational gates "
+                    "do not estimate biological sensitivity or specificity."
                 ),
                 "sourceId": "convergence",
             },
@@ -2316,11 +2324,11 @@ def report_manifest(
                 "id": "stage_result",
                 "type": "markdown",
                 "body": (
-                    "## Late-death refinement changes later classifications while rescuing no d0 object\n\n"
+                    "## The same death-refinement method is applied across the full time course\n\n"
                     "The chart compares saved pre-refinement counts with final production counts. "
-                    "Later fields can accumulate probable-death rescues or explicit uncertainty; "
-                    "at d0, rescue remains zero while two cross-view conflicts are retained as "
-                    "uncertain rather than forced into live or dead."
+                    "Time and treatment calibrate evidence but do not determine eligibility; "
+                    "d0, early, middle, and late images all pass through the same field, object, "
+                    "trajectory, branch-consensus, and uncertainty logic."
                 ),
                 "sourceId": "summaries",
             },
@@ -2330,10 +2338,11 @@ def report_manifest(
                 "id": "time_result",
                 "type": "markdown",
                 "body": (
-                    "## Rescue and field-collapse calls emerge after the late-time gate\n\n"
+                    "## Rescue and field-collapse calls are evaluated continuously over time\n\n"
                     "Rescue rates and global field-collapse calls are summarized by experimental "
-                    "day. The current field state can deactivate after three sustained normalized "
-                    "frames, so a transient collapse does not remain active forever."
+                    "day. There is no 72-hour eligibility gate. Entry is backfilled to the first "
+                    "frame of a confirmed persistent run, and the field state can deactivate after "
+                    "three sustained normalized frames."
                 ),
                 "sourceId": "summaries",
             },
@@ -2344,7 +2353,7 @@ def report_manifest(
                 "type": "markdown",
                 "body": (
                     "## Ploidy and cyclophosphamide backgrounds retain separate summaries\n\n"
-                    "The condition view reports how often the late stage contributes within each "
+                    "The condition view reports how often the refinement contributes within each "
                     "plate group. It is descriptive and should be interpreted with the image QC, "
                     "well trajectories, and dose-response analyses."
                 ),
@@ -2367,7 +2376,7 @@ def report_manifest(
                 "id": "top_rescue_text",
                 "type": "markdown",
                 "body": (
-                    "## The largest late-death changes remain directly auditable\n\n"
+                    "## The largest death-refinement changes remain directly auditable\n\n"
                     "The table identifies the highest-rescue fields in each branch and records "
                     "whether the persistent global field-collapse gate was active."
                 ),
@@ -2401,7 +2410,7 @@ def report_manifest(
                 "body": (
                     "## Full-cohort dose response is rebuilt from the refined classifications\n\n"
                     "The dose-response stage consumes the strict-completeness well-by-time tables "
-                    "generated after late-death refinement. It recreates AUC, exact Day-4, exact "
+                    "generated after all-time death refinement. It recreates AUC, exact Day-4, exact "
                     "Day-5, growth-rate inhibition, and excess-lethal-fraction analyses for the "
                     "authoritative consensus and both diagnostic classification branches."
                 ),
@@ -2477,12 +2486,15 @@ def report_manifest(
                     "## The final method combines object attribution, field collapse, and dual-view trajectories\n\n"
                     "Initial classification combines Combined RGB state, Dead-channel evidence, "
                     "Brightfield support, nucleus support, object overlap, and nucleus "
-                    "multiplicity. The late stage calibrates cell-conditioned Dead signal, "
+                    "multiplicity. The refinement calibrates cell-conditioned Dead signal, "
                     "nuclear-to-cytoplasmic ratio, red-mass loss, cell and cytoplasm depletion, "
                     "shape, mask coverage, site concordance, and multi-frame persistence against "
-                    "continuous d0 density and untreated time references. Strong live evidence "
-                    "vetoes an initiating rescue; supported calls require compatible dual-view "
-                    "evidence, while conflicts remain uncertain."
+                    "continuous density and 12-hour untreated time anchors. Strong live evidence "
+                    "vetoes a single-view initiating rescue. After both branches agree that a "
+                    "field is collapsed, a matched pair can instead be resolved by complementary "
+                    "cross-view evidence when one view has object-level death support and the "
+                    "pair jointly carries at least three death signals; the result is propagated "
+                    "symmetrically. Remaining conflicts stay uncertain."
                 ),
                 "sourceId": "configuration",
             },
@@ -2491,7 +2503,7 @@ def report_manifest(
                 "type": "markdown",
                 "body": (
                     "## Limitations and uncertainty\n\n"
-                    "No manual object-level ground truth is available. Late-death uncertainty "
+                    "No manual object-level ground truth is available. Death-refinement uncertainty "
                     "annotations identify objects near the operational boundary, but neither the "
                     "calibration anchors nor the full-cohort rescue fractions are biological "
                     "sensitivity or specificity estimates. Dose-response confidence bands use "
@@ -2579,13 +2591,18 @@ def main() -> int:
     write_qc_selection_csv(qc_selection_path, qc_samples)
     report_sources = sources(root, previous_root, calibration_root)
     timestamp = COMMON.generated_at()
-    manifest = report_manifest(image_data, qc_samples, uncertainty_cases)
+    manifest = report_manifest(
+        image_data,
+        qc_samples,
+        uncertainty_cases,
+        validated,
+    )
     title = "SUM159 Full-Cohort Dead-Classification Report"
     artifact = COMMON.artifact_payload(
         title=title,
         description=(
             "QC-first technical full-cohort report for raw-channel review, frozen "
-            "segmentation overlays, final object-aware classification, late-death "
+            "segmentation overlays, final object-aware classification, all-time "
             "trajectory refinement, and downstream cohort analyses."
         ),
         manifest=manifest,

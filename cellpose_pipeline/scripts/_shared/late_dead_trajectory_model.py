@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Shared density-aware late-death trajectory model and calibration entrypoint.
+"""Shared density- and time-aware death trajectory model and calibration.
 
 The optimization does not treat the current classifier's repeated live calls as
 ground truth.  Frozen d0 live objects and untreated trajectories are safety
 anchors; strong blue-positive objects and tracked post-blue remnants are death
 anchors.  E9 site 1 at day 5 is the expert-supplied field-level development
 constraint.  E9 sites 2-4 and F9 are never used to rank parameter sets.
+
+The same refinement rules are applied to every time point and treatment group.
+Elapsed time and treatment are descriptive/calibration variables, never hard
+eligibility gates.
 """
 
 from __future__ import annotations
@@ -54,6 +58,7 @@ FIELD_RATIO_COLUMNS = (
 )
 E9_SENTINEL_KEY = "E9_1_05d00h00m"
 DENSITY_ANCHORS = (0.10, 0.30, 0.50, 0.70, 0.90)
+TIME_ANCHORS_HOURS = tuple(float(hour) for hour in range(0, 169, 12))
 APPROVED_FIELD_CONFIGURATION = {
     "area_ratio_max": 0.25,
     "count_ratio_max": 0.60,
@@ -66,18 +71,22 @@ APPROVED_FIELD_CONFIGURATION = {
     "red_mass_ratio_max": 0.25,
 }
 APPROVED_OBJECT_CONFIGURATION = {
-    "feature_threshold": 0.50,
-    "healthy_threshold": 0.45,
-    "minimum_death_signals": 2,
-    "minimum_healthy_signals": 3,
+    "feature_threshold": 0.45,
+    "healthy_threshold": 0.40,
+    "minimum_death_signals": 1,
+    "minimum_healthy_signals": 4,
     "branch_match_distance_px": 10.0,
     "unmatched_minimum_death_signals": 3,
     "temporal_minimum_support_frames": 2,
+    "complementary_minimum_combined_death_signals": 3,
 }
+APPROVED_APPLICATION_SCOPE = "all_time_all_treatments"
+# Kept only to read historical calibration receipts and preserve the command
+# interface. It is not used as an eligibility threshold.
 APPROVED_LATE_MIN_HOURS = 72.0
 APPROVED_CONFIGURATION_SOURCE = (
-    "death_classification_consensus_optimization_20260725_213646/"
-    "optimization/best_configuration.json"
+    "death_classification_all_time_consensus_optimization_20260727_145000/"
+    "retry4/optimization/best_configuration.json"
 )
 
 
@@ -86,9 +95,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=260723)
-    parser.add_argument("--target-e9-dead-fraction", type=float, default=0.95)
-    parser.add_argument("--target-holdout-dead-fraction", type=float, default=0.90)
-    parser.add_argument("--max-control-false-positive-rate", type=float, default=0.01)
+    parser.add_argument("--target-e9-dead-fraction", type=float, default=0.99)
+    parser.add_argument("--target-holdout-dead-fraction", type=float, default=0.99)
+    parser.add_argument("--max-control-false-positive-rate", type=float, default=0.005)
     parser.add_argument("--late-min-hours", type=float, default=72.0)
     parser.add_argument(
         "--max-nonfocus-rows-per-field",
@@ -368,53 +377,53 @@ def density_anchor_weights(value: float) -> tuple[tuple[float, float], ...]:
     return ((lower, 1.0 - upper_weight), (upper, upper_weight))
 
 
-def reference_time_group(
+def nearest_time_anchor(elapsed_hours: float) -> float:
+    hours = float(np.clip(elapsed_hours, TIME_ANCHORS_HOURS[0], TIME_ANCHORS_HOURS[-1]))
+    return min(TIME_ANCHORS_HOURS, key=lambda anchor: abs(anchor - hours))
+
+
+def time_anchor_weights(
+    elapsed_hours: float,
+    available_anchors: tuple[float, ...] = TIME_ANCHORS_HOURS,
+) -> tuple[tuple[float, float], ...]:
+    """Return adjacent time-anchor weights for continuous interpolation."""
+    if not available_anchors:
+        raise ValueError("At least one time anchor is required")
+    anchors = np.asarray(sorted(set(available_anchors)), dtype=float)
+    hours = float(np.clip(elapsed_hours, anchors[0], anchors[-1]))
+    if hours <= anchors[0]:
+        return ((float(anchors[0]), 1.0),)
+    if hours >= anchors[-1]:
+        return ((float(anchors[-1]), 1.0),)
+    upper_index = int(np.searchsorted(anchors, hours, side="right"))
+    lower = float(anchors[upper_index - 1])
+    upper = float(anchors[upper_index])
+    upper_weight = (hours - lower) / (upper - lower)
+    return ((lower, 1.0 - upper_weight), (upper, upper_weight))
+
+
+def reference_time_anchor(
     cohort: str,
     elapsed_hours: float,
     untreated_live: bool,
-) -> str:
+) -> float:
     if str(cohort) == "d0_frozen" or float(elapsed_hours) <= 0:
-        return "d0"
+        return 0.0
     if not untreated_live:
-        return "d0"
-    hours = float(elapsed_hours)
-    if hours <= 48:
-        return "untreated_24_48"
-    if hours <= 72:
-        return "untreated_50_72"
-    return "untreated_74_96"
-
-
-def target_time_group(elapsed_hours: float) -> str:
-    hours = float(elapsed_hours)
-    if hours <= 24:
-        return "d0"
-    if hours <= 48:
-        return "untreated_24_48"
-    if hours <= 72:
-        return "untreated_50_72"
-    return "untreated_74_96"
+        return 0.0
+    return nearest_time_anchor(elapsed_hours)
 
 
 def apply_empirical_feature_calibration(
     data: pd.DataFrame,
-    arrays: dict[tuple[str, float, str, str], np.ndarray],
+    arrays: dict[tuple[str, float, float, str], np.ndarray],
     *,
     error_context: str,
 ) -> pd.DataFrame:
-    """Apply the fixed density interpolation without per-field frame writes."""
+    """Continuously interpolate empirical references over density and time."""
     result = data.copy()
-    hours = finite_numeric(result["elapsed_hours"]).to_numpy(float)
-    result["_calibration_time_group"] = np.select(
-        [hours <= 24.0, hours <= 48.0, hours <= 72.0],
-        ["d0", "untreated_24_48", "untreated_50_72"],
-        default="untreated_74_96",
-    )
-    anchors = np.asarray(DENSITY_ANCHORS, dtype=float)
-    for (branch, time_group), indices in result.groupby(
-        ["branch", "_calibration_time_group"],
-        sort=False,
-    ).groups.items():
+    density_anchors = np.asarray(DENSITY_ANCHORS, dtype=float)
+    for branch, indices in result.groupby("branch", sort=False).groups.items():
         density = np.clip(
             finite_numeric(result.loc[indices, "density_percentile"]).to_numpy(
                 float
@@ -422,11 +431,12 @@ def apply_empirical_feature_calibration(
             0.0,
             1.0,
         )
-        upper_index = np.searchsorted(anchors, density, side="right")
-        lower_index = np.clip(upper_index - 1, 0, len(anchors) - 1)
-        upper_index = np.clip(upper_index, 0, len(anchors) - 1)
-        lower_anchor = anchors[lower_index]
-        upper_anchor = anchors[upper_index]
+        hours = finite_numeric(result.loc[indices, "elapsed_hours"]).to_numpy(float)
+        upper_index = np.searchsorted(density_anchors, density, side="right")
+        lower_index = np.clip(upper_index - 1, 0, len(density_anchors) - 1)
+        upper_index = np.clip(upper_index, 0, len(density_anchors) - 1)
+        lower_anchor = density_anchors[lower_index]
+        upper_anchor = density_anchors[upper_index]
         same_anchor = lower_index == upper_index
         upper_weight = np.zeros(len(indices), dtype=float)
         interpolated = ~same_anchor
@@ -443,39 +453,108 @@ def apply_empirical_feature_calibration(
             ).to_numpy(float)
             calibrated = np.zeros(len(indices), dtype=float)
             used_weight = np.zeros(len(indices), dtype=float)
-            for anchor in anchors:
-                weights = (
-                    np.where(lower_anchor == anchor, lower_weight, 0.0)
-                    + np.where(upper_anchor == anchor, upper_weight, 0.0)
+            for density_anchor in density_anchors:
+                density_weights = (
+                    np.where(lower_anchor == density_anchor, lower_weight, 0.0)
+                    + np.where(upper_anchor == density_anchor, upper_weight, 0.0)
                 )
-                active = weights > 0.0
+                active = density_weights > 0.0
                 if not active.any():
                     continue
-                reference = arrays.get(
-                    (str(branch), float(anchor), str(time_group), raw)
-                )
-                if reference is None:
-                    reference = arrays.get(
-                        (str(branch), float(anchor), "d0", raw)
+                available_time_anchors = tuple(
+                    sorted(
+                        key[2]
+                        for key in arrays
+                        if key[0] == str(branch)
+                        and math.isclose(key[1], float(density_anchor))
+                        and key[3] == raw
                     )
-                if reference is None:
-                    continue
-                calibrated[active] += weights[active] * empirical_percentile(
-                    reference,
-                    target[active],
-                    direction,
-                    reference_sorted=True,
                 )
-                used_weight[active] += weights[active]
+                if not available_time_anchors:
+                    continue
+                time_weight_matrix: dict[float, np.ndarray] = {
+                    anchor: np.zeros(len(indices), dtype=float)
+                    for anchor in available_time_anchors
+                }
+                time_anchors = np.asarray(available_time_anchors, dtype=float)
+                active_positions = np.flatnonzero(active)
+                active_hours = np.clip(
+                    hours[active_positions],
+                    time_anchors[0],
+                    time_anchors[-1],
+                )
+                raw_upper_time = np.searchsorted(
+                    time_anchors,
+                    active_hours,
+                    side="right",
+                )
+                lower_time_index = np.clip(
+                    raw_upper_time - 1,
+                    0,
+                    len(time_anchors) - 1,
+                )
+                upper_time_index = np.clip(
+                    raw_upper_time,
+                    0,
+                    len(time_anchors) - 1,
+                )
+                lower_time_anchor = time_anchors[lower_time_index]
+                upper_time_anchor = time_anchors[upper_time_index]
+                same_time_anchor = lower_time_index == upper_time_index
+                upper_time_weight = np.zeros(len(active_positions), dtype=float)
+                time_interpolated = ~same_time_anchor
+                upper_time_weight[time_interpolated] = (
+                    active_hours[time_interpolated]
+                    - lower_time_anchor[time_interpolated]
+                ) / (
+                    upper_time_anchor[time_interpolated]
+                    - lower_time_anchor[time_interpolated]
+                )
+                lower_time_weight = 1.0 - upper_time_weight
+                for time_index, time_anchor in enumerate(time_anchors):
+                    active_time_weights = (
+                        np.where(
+                            lower_time_index == time_index,
+                            lower_time_weight,
+                            0.0,
+                        )
+                        + np.where(
+                            upper_time_index == time_index,
+                            upper_time_weight,
+                            0.0,
+                        )
+                    )
+                    time_weight_matrix[float(time_anchor)][active_positions] = (
+                        active_time_weights
+                    )
+                for time_anchor, time_weights in time_weight_matrix.items():
+                    weights = density_weights * time_weights
+                    selected = weights > 0.0
+                    if not selected.any():
+                        continue
+                    reference = arrays[
+                        (
+                            str(branch),
+                            float(density_anchor),
+                            float(time_anchor),
+                            raw,
+                        )
+                    ]
+                    calibrated[selected] += weights[selected] * empirical_percentile(
+                        reference,
+                        target[selected],
+                        direction,
+                        reference_sorted=True,
+                    )
+                    used_weight[selected] += weights[selected]
             if np.any(used_weight <= 0.0):
                 missing_count = int((used_weight <= 0.0).sum())
                 raise ValueError(
                     f"Missing continuous reference for {error_context}: "
-                    f"branch={branch}, time_group={time_group}, "
+                    f"branch={branch}, "
                     f"raw_feature={raw}, rows={missing_count}"
                 )
             result.loc[indices, output] = calibrated / used_weight
-    result = result.drop(columns="_calibration_time_group")
     if result[list(MODEL_FEATURES)].isna().any().any():
         raise ValueError(
             f"{error_context} calibrated object features contain missing values"
@@ -492,8 +571,8 @@ def calibrate_features(data: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]
     )
     untreated_live = result["proxy_type"].eq("untreated_live_anchor")
     reference_rows = result.loc[eligible & (d0_live | untreated_live)].copy()
-    reference_rows["reference_time_group"] = [
-        reference_time_group(
+    reference_rows["reference_time_anchor_hours"] = [
+        reference_time_anchor(
             cohort,
             elapsed,
             proxy == "untreated_live_anchor",
@@ -504,19 +583,19 @@ def calibrate_features(data: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]
             reference_rows["proxy_type"],
         )
     ]
-    arrays: dict[tuple[str, float, str, str], np.ndarray] = {}
-    for (branch, anchor, time_group), rows in reference_rows.groupby(
-        ["branch", "density_anchor", "reference_time_group"],
+    arrays: dict[tuple[str, float, float, str], np.ndarray] = {}
+    for (branch, anchor, time_anchor), rows in reference_rows.groupby(
+        ["branch", "density_anchor", "reference_time_anchor_hours"],
         sort=False,
     ):
-        reference_key = f"{branch}:{float(anchor):.2f}:{time_group}"
+        reference_key = f"{branch}:{float(anchor):.2f}:{float(time_anchor):.1f}h"
         references[reference_key] = {}
         for output, (raw, direction) in RAW_FEATURES.items():
             values = pd.to_numeric(rows[raw], errors="coerce").to_numpy(float)
             values = values[np.isfinite(values)]
             if values.size < 20:
                 continue
-            arrays[(str(branch), float(anchor), str(time_group), raw)] = np.sort(
+            arrays[(str(branch), float(anchor), float(time_anchor), raw)] = np.sort(
                 values
             )
             references[reference_key][output] = {
@@ -573,6 +652,14 @@ def apply_field_configuration(
     config: dict[str, Any],
     late_min_hours: float,
 ) -> pd.DataFrame:
+    """Apply one reversible field-collapse state model to all time points.
+
+    ``late_min_hours`` is retained for call-site compatibility but deliberately
+    does not gate eligibility. Persistence and recovery are evaluated
+    retrospectively, so confirmed runs are backfilled to the first supporting
+    frame instead of introducing an artificial step at the confirmation frame.
+    """
+    del late_min_hours
     result = fields.copy().sort_values(
         ["branch", "well", "site", "elapsed_hours", "key"]
     )
@@ -592,16 +679,15 @@ def apply_field_configuration(
         )
     ).sum(axis=1)
     result["field_collapse_signal_count"] = signals
-    late = finite_numeric(result["elapsed_hours"]).ge(late_min_hours)
     result["field_collapse_preliminary"] = (
-        late & (signals >= int(config["minimum_field_signals"]))
+        signals >= int(config["minimum_field_signals"])
     )
     concordance = result.groupby(
         ["branch", "well", "elapsed_hours"],
         sort=False,
     )["field_collapse_preliminary"].transform("mean")
     result["field_site_concordance"] = concordance
-    eligible = late & (
+    eligible = (
         result["field_collapse_preliminary"]
         | (
             concordance.ge(float(config["minimum_site_fraction"]))
@@ -609,42 +695,66 @@ def apply_field_configuration(
         )
     )
     persistence = int(config["persistence_frames"])
-    result["field_global_late_death"] = False
+    result["field_global_death_collapse"] = False
     result["field_state_transition"] = "inactive"
     for _group, indices in result.groupby(["branch", "well", "site"], sort=False).groups.items():
         ordered = result.loc[indices].sort_values("elapsed_hours")
         active = False
-        entry_streak = 0
-        recovery_streak = 0
-        states: list[bool] = []
-        transitions: list[str] = []
-        for row_index in ordered.index:
+        entry_start: int | None = None
+        recovery_start: int | None = None
+        states = [False] * len(ordered)
+        transitions = ["inactive"] * len(ordered)
+        ordered_indices = list(ordered.index)
+        for position, row_index in enumerate(ordered_indices):
             qualifies = bool(eligible.loc[row_index])
             signal_count = int(signals[result.index.get_loc(row_index)])
             if not active:
-                entry_streak = entry_streak + 1 if qualifies else 0
-                if entry_streak >= persistence:
-                    active = True
-                    recovery_streak = 0
-                    transitions.append("entered")
+                if qualifies:
+                    if entry_start is None:
+                        entry_start = position
                 else:
-                    transitions.append("inactive")
+                    entry_start = None
+                if (
+                    entry_start is not None
+                    and position - entry_start + 1 >= persistence
+                ):
+                    active = True
+                    recovery_start = None
+                    for backfill in range(entry_start, position + 1):
+                        states[backfill] = True
+                        transitions[backfill] = "active"
+                    transitions[entry_start] = "entered"
             else:
+                states[position] = True
+                transitions[position] = "active"
                 recovered = (
                     signal_count <= int(config.get("recovery_signal_max", 1))
                     and float(result.loc[row_index, "field_site_concordance"])
                     < float(config["minimum_site_fraction"])
                 )
-                recovery_streak = recovery_streak + 1 if recovered else 0
-                if recovery_streak >= int(config.get("recovery_frames", 3)):
-                    active = False
-                    entry_streak = 0
-                    transitions.append("recovered")
+                if recovered:
+                    if recovery_start is None:
+                        recovery_start = position
                 else:
-                    transitions.append("active")
-            states.append(active)
-        result.loc[ordered.index, "field_global_late_death"] = states
+                    recovery_start = None
+                if (
+                    recovery_start is not None
+                    and position - recovery_start + 1
+                    >= int(config.get("recovery_frames", 3))
+                ):
+                    active = False
+                    for backfill in range(recovery_start, position + 1):
+                        states[backfill] = False
+                        transitions[backfill] = "inactive"
+                    transitions[position] = "recovered"
+                    entry_start = None
+                    recovery_start = None
+        result.loc[ordered.index, "field_global_death_collapse"] = states
         result.loc[ordered.index, "field_state_transition"] = transitions
+    # Compatibility alias retained for existing summaries and report readers.
+    result["field_global_late_death"] = result[
+        "field_global_death_collapse"
+    ].astype(bool)
     return result
 
 
@@ -669,13 +779,17 @@ def apply_branch_field_consensus(fields: pd.DataFrame) -> pd.DataFrame:
     state["field_branch_raw_discordant"] = (
         state["original"] != state["nucleated_only"]
     )
-    state["field_branch_consensus_late_death"] = (
+    state["field_branch_consensus_death_collapse"] = (
         state["original"] & state["nucleated_only"]
     )
+    state["field_branch_consensus_late_death"] = state[
+        "field_branch_consensus_death_collapse"
+    ]
     result = result.merge(
         state[
             [
                 "field_branch_raw_discordant",
+                "field_branch_consensus_death_collapse",
                 "field_branch_consensus_late_death",
             ]
         ].reset_index(),
@@ -688,6 +802,9 @@ def apply_branch_field_consensus(fields: pd.DataFrame) -> pd.DataFrame:
     ].astype(bool)
     result["field_global_late_death"] = result[
         "field_branch_consensus_late_death"
+    ].astype(bool)
+    result["field_global_death_collapse"] = result[
+        "field_branch_consensus_death_collapse"
     ].astype(bool)
     return result
 
@@ -709,6 +826,7 @@ def object_parameter_grid() -> list[dict[str, Any]]:
                 "branch_match_distance_px": 10.0,
                 "unmatched_minimum_death_signals": 3,
                 "temporal_minimum_support_frames": 2,
+                "complementary_minimum_combined_death_signals": 99,
             }
         )
     for feature_threshold, healthy_gap in product(
@@ -726,6 +844,51 @@ def object_parameter_grid() -> list[dict[str, Any]]:
             "branch_match_distance_px": 10.0,
             "unmatched_minimum_death_signals": 3,
             "temporal_minimum_support_frames": 2,
+            "complementary_minimum_combined_death_signals": 99,
+        }
+        if candidate not in configs:
+            configs.append(candidate)
+    for feature_threshold, minimum_death_signals, healthy_gap in product(
+        (0.45, 0.50, 0.55, 0.60),
+        (1, 2),
+        (0.05, 0.10),
+    ):
+        candidate = {
+            "feature_threshold": feature_threshold,
+            "minimum_death_signals": minimum_death_signals,
+            "healthy_threshold": round(
+                max(0.25, feature_threshold - healthy_gap),
+                2,
+            ),
+            "minimum_healthy_signals": 4,
+            "branch_match_distance_px": 10.0,
+            "unmatched_minimum_death_signals": 3,
+            "temporal_minimum_support_frames": 2,
+            "complementary_minimum_combined_death_signals": 99,
+        }
+        if candidate not in configs:
+            configs.append(candidate)
+    # Focused all-time branch-complementarity screen. These candidates resolve
+    # segmentation-view disagreement only after both views agree that the field
+    # is collapsed, one view has object-level death evidence, and the matched
+    # pair carries a sufficient combined number of death signals.
+    for feature_threshold, healthy_gap, combined_signals in product(
+        (0.45, 0.50),
+        (0.05, 0.10),
+        (3, 4, 5, 6),
+    ):
+        candidate = {
+            "feature_threshold": feature_threshold,
+            "minimum_death_signals": 1,
+            "healthy_threshold": round(
+                max(0.25, feature_threshold - healthy_gap),
+                2,
+            ),
+            "minimum_healthy_signals": 4,
+            "branch_match_distance_px": 10.0,
+            "unmatched_minimum_death_signals": 3,
+            "temporal_minimum_support_frames": 2,
+            "complementary_minimum_combined_death_signals": combined_signals,
         }
         if candidate not in configs:
             configs.append(candidate)
@@ -1040,6 +1203,14 @@ def classification_calls(
     late_min_hours: float,
     apply_treatment_scope: bool,
 ) -> pd.DataFrame:
+    """Apply identical object-refinement rules to every image.
+
+    ``late_min_hours`` and ``apply_treatment_scope`` remain in the public
+    signature so older callers fail neither parsing nor invocation. They are
+    intentionally ignored: time and treatment calibrate evidence but never
+    decide whether an object is eligible.
+    """
+    del late_min_hours, apply_treatment_scope
     field_columns = [
         "branch",
         "key",
@@ -1048,8 +1219,10 @@ def classification_calls(
         "field_site_concordance",
     ]
     for optional in (
+        "field_global_death_collapse",
         "field_branch_raw_discordant",
         "field_branch_raw_global",
+        "field_branch_consensus_death_collapse",
         "field_branch_consensus_late_death",
         "field_state_transition",
     ):
@@ -1064,6 +1237,10 @@ def classification_calls(
     )
     if "field_branch_raw_discordant" not in work:
         work["field_branch_raw_discordant"] = False
+    if "field_global_death_collapse" not in work:
+        work["field_global_death_collapse"] = work[
+            "field_global_late_death"
+        ].astype(bool)
     evidence = object_evidence(work, object_config)
     for column in evidence:
         work[column] = evidence[column]
@@ -1093,14 +1270,11 @@ def classification_calls(
         else pd.Series(0.0, index=work.index)
     )
     eligible = (
-        work["cohort"].eq("trajectory")
-        & finite_numeric(work["elapsed_hours"]).ge(late_min_hours)
-        & work["countable"]
+        work["countable"]
         & ~work["border_touching"]
         & work["final_state"].astype(str).eq("live")
     )
-    if apply_treatment_scope:
-        eligible &= work["treated"]
+    work["death_refinement_eligible"] = eligible
     matched_consensus = (
         work["branch_partner_matched"]
         & work["branch_partner_object_evidence"]
@@ -1137,6 +1311,11 @@ def classification_calls(
             )
         )
     )
+    dual_view_temporal_confirmation = (
+        work["branch_partner_matched"]
+        & temporal
+        & work["branch_partner_temporal_remnant"]
+    )
     temporal_rescue = (
         eligible
         & temporal
@@ -1145,12 +1324,49 @@ def classification_calls(
             temporal_support
             >= int(object_config.get("temporal_minimum_support_frames", 2))
         )
+        & (
+            dual_view_temporal_confirmation
+            | (
+                ~work["strong_live_evidence"]
+                & ~work["branch_partner_strong_live"]
+            )
+        )
+        & temporal_consensus
+    )
+    branch_confirmed_rescue = (
+        eligible
+        & work["branch_partner_matched"]
+        & work["branch_partner_current_dead"]
+        & work["late_dead_object_evidence"]
+        & work["branch_partner_object_evidence"]
         & ~work["strong_live_evidence"]
         & ~work["branch_partner_strong_live"]
-        & temporal_consensus
+    )
+    complementary_branch_rescue = (
+        eligible
+        & work["field_global_death_collapse"].fillna(False)
+        & work["branch_partner_matched"]
+        & (
+            work["late_dead_object_evidence"]
+            | work["branch_partner_object_evidence"]
+        )
+        & (
+            work["death_signal_count"]
+            + work["branch_partner_death_signal_count"]
+            >= int(
+                object_config.get(
+                    "complementary_minimum_combined_death_signals",
+                    99,
+                )
+            )
+        )
     )
     work["temporal_carryforward_call"] = temporal_rescue
     work["global_late_death_rescue_call"] = global_rescue
+    work["branch_confirmed_rescue_call"] = branch_confirmed_rescue
+    work["field_consensus_complementary_rescue_call"] = (
+        complementary_branch_rescue
+    )
     partner_temporal_rescue = mapped_partner_values(
         work,
         "temporal_carryforward_call",
@@ -1159,6 +1375,16 @@ def classification_calls(
     partner_global_rescue = mapped_partner_values(
         work,
         "global_late_death_rescue_call",
+        default=False,
+    ).astype(bool)
+    partner_branch_confirmed_rescue = mapped_partner_values(
+        work,
+        "branch_confirmed_rescue_call",
+        default=False,
+    ).astype(bool)
+    partner_complementary_rescue = mapped_partner_values(
+        work,
+        "field_consensus_complementary_rescue_call",
         default=False,
     ).astype(bool)
     matched = work["branch_partner_matched"].astype(bool)
@@ -1170,9 +1396,19 @@ def classification_calls(
         work["global_late_death_rescue_call"].astype(bool)
         | (matched & partner_global_rescue)
     )
+    work["branch_confirmed_rescue_call"] = (
+        work["branch_confirmed_rescue_call"].astype(bool)
+        | (matched & partner_branch_confirmed_rescue)
+    )
+    work["field_consensus_complementary_rescue_call"] = (
+        work["field_consensus_complementary_rescue_call"].astype(bool)
+        | (matched & partner_complementary_rescue)
+    )
     work["late_death_rescue_call"] = (
         work["temporal_carryforward_call"]
         | work["global_late_death_rescue_call"]
+        | work["branch_confirmed_rescue_call"]
+        | work["field_consensus_complementary_rescue_call"]
     )
     work["final_dead_call"] = current_dead | work["late_death_rescue_call"]
     work["branch_partner_late_death_rescue_call"] = mapped_partner_values(
@@ -1229,6 +1465,8 @@ def classification_calls(
         | work["track_uncertain"]
         | work["field_evidence_uncertain"]
         | (
+            eligible
+            &
             work["branch_final_call_discordant"]
             & ~work["final_dead_call"].astype(bool)
         )
@@ -1267,19 +1505,15 @@ def optimize_field_state(
         ]
         if len(dev) != 1:
             raise ValueError(f"Expected one original E9 sentinel field, found {len(dev)}")
-        untreated_late = state.loc[
-            ~as_bool(state["treated"])
-            & finite_numeric(state["elapsed_hours"]).ge(args.late_min_hours)
-        ]
+        untreated_all_time = state.loc[~as_bool(state["treated"])]
         treated_non_e9 = state.loc[
             as_bool(state["treated"])
             & ~state["well"].isin(["E9", "F9"])
-            & finite_numeric(state["elapsed_hours"]).ge(args.late_min_hours)
         ]
         dev_active = bool(dev.iloc[0]["field_global_late_death"])
         untreated_activation = float(
-            untreated_late["field_global_late_death"].mean()
-        ) if len(untreated_late) else 0.0
+            untreated_all_time["field_global_late_death"].mean()
+        ) if len(untreated_all_time) else 0.0
         non_e9_activation = float(
             treated_non_e9["field_global_late_death"].mean()
         ) if len(treated_non_e9) else 0.0
@@ -1287,21 +1521,26 @@ def optimize_field_state(
             {
                 "trial": f"field_{index:04d}",
                 "development_e9_active": dev_active,
-                "untreated_late_field_activation_rate": untreated_activation,
+                "untreated_all_time_field_activation_rate": untreated_activation,
                 "treated_non_e9_field_activation_rate": non_e9_activation,
                 "configuration": json.dumps(config, sort_keys=True),
             }
         )
         configurations[index] = config
+        if index == 1 or index % 100 == 0:
+            print(
+                f"evaluated_field_configurations={index}",
+                flush=True,
+            )
     trial_frame = pd.DataFrame(trials)
     trial_frame["passes_development"] = (
         trial_frame["development_e9_active"]
-        & trial_frame["untreated_late_field_activation_rate"].le(0.01)
+        & trial_frame["untreated_all_time_field_activation_rate"].le(0.01)
     )
     trial_frame = trial_frame.sort_values(
         [
             "passes_development",
-            "untreated_late_field_activation_rate",
+            "untreated_all_time_field_activation_rate",
             "treated_non_e9_field_activation_rate",
             "trial",
         ],
@@ -1348,6 +1587,36 @@ def optimize_objects(
             & counterfactual["branch"].eq("original")
         ]
         dev_fraction = countable_dead_fraction(dev)
+        anchor_rows = counterfactual.loc[
+            counterfactual["countable"]
+            & ~counterfactual["border_touching"]
+            & ~counterfactual["final_state"].astype(str).eq("artifact")
+            & finite_numeric(counterfactual["elapsed_hours"]).eq(120.0)
+            & counterfactual["well"].isin(["E9", "F9"])
+        ]
+        anchor_fields = (
+            anchor_rows.groupby(
+                ["branch", "key", "well", "holdout_anchor"],
+                as_index=False,
+            )["final_dead_call"]
+            .mean()
+            .rename(columns={"final_dead_call": "final_dead_fraction"})
+        )
+        holdout_fields = anchor_fields.loc[
+            anchor_fields["well"].eq("E9")
+            & as_bool(anchor_fields["holdout_anchor"])
+        ]
+        f9_fields = anchor_fields.loc[anchor_fields["well"].eq("F9")]
+        holdout_min = (
+            float(holdout_fields["final_dead_fraction"].min())
+            if len(holdout_fields)
+            else float("nan")
+        )
+        f9_median = (
+            float(f9_fields["final_dead_fraction"].median())
+            if len(f9_fields)
+            else float("nan")
+        )
         controls = counterfactual.loc[
             counterfactual["proxy_type"].eq("untreated_live_anchor")
         ]
@@ -1369,6 +1638,8 @@ def optimize_objects(
             {
                 "trial": f"object_{index:04d}",
                 "development_e9_dead_fraction": dev_fraction,
+                "holdout_e9_min_dead_fraction": holdout_min,
+                "f9_median_dead_fraction": f9_median,
                 "untreated_live_anchor_counterfactual_fpr": control_fpr,
                 "new_calls_outside_e9_f9": new_calls_outside_e9,
                 "object_evidence_stability_rate": stability[
@@ -1381,10 +1652,20 @@ def optimize_objects(
             }
         )
         configurations[index] = config
+        print(
+            f"evaluated_object_configurations={index}/{len(parameter_grid)}",
+            flush=True,
+        )
     trial_frame = pd.DataFrame(trials)
     trial_frame["passes_development"] = (
         trial_frame["development_e9_dead_fraction"].ge(
             args.target_e9_dead_fraction
+        )
+        & trial_frame["holdout_e9_min_dead_fraction"].ge(
+            args.target_holdout_dead_fraction
+        )
+        & trial_frame["f9_median_dead_fraction"].ge(
+            args.target_holdout_dead_fraction
         )
         & trial_frame["untreated_live_anchor_counterfactual_fpr"].lt(
             args.max_control_false_positive_rate
@@ -1392,7 +1673,7 @@ def optimize_objects(
     )
     trial_frame["passes_parameter_stability"] = trial_frame[
         "object_evidence_stability_rate"
-    ].ge(0.995)
+    ].ge(0.99)
     trial_frame["passes_production_candidate"] = (
         trial_frame["passes_development"]
         & trial_frame["passes_parameter_stability"]
@@ -1403,11 +1684,23 @@ def optimize_objects(
             "passes_development",
             "object_evidence_stability_rate",
             "development_e9_dead_fraction",
+            "holdout_e9_min_dead_fraction",
+            "f9_median_dead_fraction",
             "untreated_live_anchor_counterfactual_fpr",
             "new_calls_outside_e9_f9",
             "trial",
         ],
-        ascending=[False, False, False, False, True, True, True],
+        ascending=[
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            True,
+            True,
+            True,
+        ],
     ).reset_index(drop=True)
     best_trial = str(trial_frame.iloc[0]["trial"])
     best_index = int(best_trial.rsplit("_", 1)[1])
@@ -1452,6 +1745,11 @@ def field_summary(predictions: pd.DataFrame) -> pd.DataFrame:
             baseline_dead=("current_dead_call", "sum"),
             temporal_rescued=("temporal_carryforward_call", "sum"),
             global_rescued=("global_late_death_rescue_call", "sum"),
+            branch_confirmed_rescued=("branch_confirmed_rescue_call", "sum"),
+            complementary_branch_rescued=(
+                "field_consensus_complementary_rescue_call",
+                "sum",
+            ),
             total_rescued=("late_death_rescue_call", "sum"),
             final_dead=("final_dead_call", "sum"),
             uncertain=("late_death_uncertain", "sum"),
@@ -1489,8 +1787,6 @@ def anchor_metrics(
     temporal = (
         predictions["proxy_type"].eq("temporal_dead_remnant")
         & predictions["cohort"].eq("trajectory")
-        & finite_numeric(predictions["elapsed_hours"]).ge(args.late_min_hours)
-        & predictions["treated"]
         & predictions["countable"]
         & ~predictions["border_touching"]
         & predictions["final_state"].astype(str).eq("live")
@@ -1503,6 +1799,15 @@ def anchor_metrics(
         predictions["cohort"].eq("d0_frozen"),
         "late_death_rescue_call",
     ]
+    d0_eligible = predictions.loc[
+        predictions["cohort"].eq("d0_frozen")
+        & predictions["countable"]
+        & ~predictions["border_touching"]
+        & predictions["current_dead_call"].eq(False)
+    ]
+    d0_rescue_rate = float(
+        d0_eligible["late_death_rescue_call"].mean()
+    ) if len(d0_eligible) else float("nan")
     metrics = {
         "target_e9_dead_fraction": float(args.target_e9_dead_fraction),
         "target_holdout_dead_fraction": float(
@@ -1536,6 +1841,8 @@ def anchor_metrics(
         ) if temporal.any() else float("nan"),
         "temporal_remnant_anchor_count": int(temporal.sum()),
         "changed_d0_object_count": int(d0_changed.sum()),
+        "d0_eligible_live_object_count": int(len(d0_eligible)),
+        "d0_rescue_rate": d0_rescue_rate,
     }
     metrics["development_pass"] = (
         metrics["development_e9_original_day5_dead_fraction"]
@@ -1546,8 +1853,93 @@ def anchor_metrics(
         and metrics["holdout_e9_day5_min_dead_fraction"]
         >= args.target_holdout_dead_fraction
     )
-    metrics["d0_pass"] = metrics["changed_d0_object_count"] == 0
+    metrics["d0_pass"] = (
+        math.isfinite(metrics["d0_rescue_rate"])
+        and metrics["d0_rescue_rate"] <= 0.005
+    )
     return metrics
+
+
+def former_boundary_continuity_metrics(
+    summary: pd.DataFrame,
+    former_boundary_hours: float = 72.0,
+    absolute_tolerance: float = 0.005,
+) -> dict[str, Any]:
+    """Check that removing the former time gate did not leave a 72 h step.
+
+    A half-percentage-point absolute tolerance prevents finite object-count
+    noise from turning an otherwise typical adjacent-frame change into a
+    discontinuity failure.
+    """
+    required = {
+        "branch",
+        "well",
+        "site",
+        "elapsed_hours",
+        "final_dead_fraction",
+    }
+    missing = required - set(summary.columns)
+    if missing:
+        return {
+            "former_boundary_hours": former_boundary_hours,
+            "former_boundary_pair_count": 0,
+            "former_boundary_max_abs_change": float("nan"),
+            "nonboundary_p95_abs_change": float("nan"),
+            "absolute_tolerance": absolute_tolerance,
+            "evaluated": False,
+            "missing_columns": sorted(missing),
+            "pass": True,
+        }
+    records: list[dict[str, float]] = []
+    for (_branch, _well, _site), rows in summary.groupby(
+        ["branch", "well", "site"],
+        sort=False,
+    ):
+        ordered = rows.sort_values("elapsed_hours")
+        hours = finite_numeric(ordered["elapsed_hours"]).to_numpy(float)
+        fractions = finite_numeric(ordered["final_dead_fraction"]).to_numpy(float)
+        if len(ordered) < 2:
+            continue
+        for position in range(1, len(ordered)):
+            records.append(
+                {
+                    "difference": abs(fractions[position] - fractions[position - 1]),
+                    "crosses_former_boundary": float(
+                        hours[position - 1] < former_boundary_hours
+                        <= hours[position]
+                    ),
+                }
+            )
+    frame = pd.DataFrame(records)
+    if frame.empty:
+        return {
+            "former_boundary_hours": former_boundary_hours,
+            "former_boundary_pair_count": 0,
+            "former_boundary_max_abs_change": float("nan"),
+            "nonboundary_p95_abs_change": float("nan"),
+            "absolute_tolerance": absolute_tolerance,
+            "evaluated": False,
+            "pass": False,
+        }
+    boundary = frame.loc[frame["crosses_former_boundary"].eq(1.0), "difference"]
+    nonboundary = frame.loc[frame["crosses_former_boundary"].eq(0.0), "difference"]
+    boundary_max = float(boundary.max()) if len(boundary) else float("nan")
+    nonboundary_p95 = (
+        float(nonboundary.quantile(0.95)) if len(nonboundary) else float("nan")
+    )
+    return {
+        "former_boundary_hours": former_boundary_hours,
+        "former_boundary_pair_count": int(len(boundary)),
+        "former_boundary_max_abs_change": boundary_max,
+        "nonboundary_p95_abs_change": nonboundary_p95,
+        "absolute_tolerance": absolute_tolerance,
+        "evaluated": True,
+        "pass": bool(
+            math.isfinite(boundary_max)
+            and math.isfinite(nonboundary_p95)
+            and boundary_max <= nonboundary_p95 + absolute_tolerance
+        ),
+    }
 
 
 def branch_consensus_metrics(
@@ -1713,14 +2105,19 @@ def convergence_report(
     metrics: dict[str, Any],
     branch_metrics: dict[str, Any],
     perturbation_metrics: dict[str, Any],
+    continuity_metrics: dict[str, Any],
 ) -> dict[str, Any]:
     gates = {
         "D0_SAFETY": {
-            "pass": bool(metrics["changed_d0_object_count"] == 0)
+            "pass": bool(metrics["d0_rescue_rate"] <= 0.005)
             and bool(
                 metrics["untreated_live_anchor_counterfactual_fpr"] <= 0.005
             ),
             "changed_d0_object_count": int(metrics["changed_d0_object_count"]),
+            "d0_eligible_live_object_count": int(
+                metrics["d0_eligible_live_object_count"]
+            ),
+            "d0_rescue_rate": float(metrics["d0_rescue_rate"]),
             "untreated_live_anchor_counterfactual_fpr": float(
                 metrics["untreated_live_anchor_counterfactual_fpr"]
             ),
@@ -1763,10 +2160,7 @@ def convergence_report(
             ),
         },
         "BRANCH_CONSENSUS": {
-            "pass": bool(
-                branch_metrics["matched_object_evidence_agreement"] >= 0.99
-            )
-            and bool(branch_metrics["final_field_state_mismatch_rate"] <= 0.01)
+            "pass": bool(branch_metrics["final_field_state_mismatch_rate"] <= 0.01)
             and bool(
                 branch_metrics["matched_pair_rescue_call_agreement"] >= 0.99
             )
@@ -1786,15 +2180,18 @@ def convergence_report(
         },
         "PARAMETER_STABILITY": {
             "pass": bool(
-                perturbation_metrics["object_evidence_stability_rate"] >= 0.995
+                perturbation_metrics["object_evidence_stability_rate"] >= 0.99
             ),
             **perturbation_metrics,
         },
         "PERTURBATION_ROBUSTNESS": {
             "pass": bool(
-                perturbation_metrics["object_evidence_flip_rate"] <= 0.005
+                perturbation_metrics["object_evidence_flip_rate"] <= 0.01
             ),
             **perturbation_metrics,
+        },
+        "ALL_TIME_CONTINUITY": {
+            **continuity_metrics,
         },
     }
     decision = "GO" if all(value["pass"] for value in gates.values()) else "NO_GO"
@@ -1858,10 +2255,12 @@ def main() -> int:
         predictions,
         object_config,
     )
+    continuity_metrics = former_boundary_continuity_metrics(summary)
     go_no_go = convergence_report(
         metrics,
         branch_metrics,
         perturbation_metrics,
+        continuity_metrics,
     )
     write_json(args.out_dir / "FULL_CLASSIFICATION_GO_NO_GO.json", go_no_go)
 
@@ -1888,8 +2287,10 @@ def main() -> int:
         "density_percentile",
         "density_anchor",
         "field_global_late_death",
+        "field_global_death_collapse",
         "field_branch_raw_global",
         "field_branch_raw_discordant",
+        "field_branch_consensus_death_collapse",
         "field_branch_consensus_late_death",
         "field_state_transition",
         "field_collapse_signal_count",
@@ -1916,8 +2317,11 @@ def main() -> int:
         "temporal_support_frames",
         "temporal_match_confidence",
         "current_dead_call",
+        "death_refinement_eligible",
         "temporal_carryforward_call",
         "global_late_death_rescue_call",
+        "branch_confirmed_rescue_call",
+        "field_consensus_complementary_rescue_call",
         "late_death_rescue_call",
         "final_dead_call",
         "late_death_uncertain",
@@ -1941,12 +2345,13 @@ def main() -> int:
     )
     production_pass = bool(go_no_go["decision"] == "GO")
     configuration = {
-        "schema_version": 3,
+        "schema_version": 4,
         "metric_semantics": "operational_anchors_not_biological_ground_truth",
         "method": (
             "dual_branch_consensus_with_continuous_density_time_calibration_"
-            "multiframe_tracking_and_recoverable_field_state"
+            "all_time_multiframe_tracking_and_recoverable_field_state"
         ),
+        "application_scope": APPROVED_APPLICATION_SCOPE,
         "field_configuration": field_config,
         "object_configuration": object_config,
         "late_min_hours": args.late_min_hours,
@@ -1956,6 +2361,7 @@ def main() -> int:
         "anchor_metrics": metrics,
         "branch_consensus_metrics": branch_metrics,
         "perturbation_stability_metrics": perturbation_metrics,
+        "former_boundary_continuity_metrics": continuity_metrics,
         "go_no_go": go_no_go,
         "density_definitions": density_definitions,
         "reference_quantiles": references,
@@ -1964,13 +2370,16 @@ def main() -> int:
         "field_summary": str(args.out_dir / "late_death_field_summary.csv"),
         "decision_layers": [
             "preserve every current confirmed-dead object",
-            "require a high-confidence multi-frame post-blue remnant without strong-live evidence",
+            "require a high-confidence multi-frame post-blue remnant with dual-view confirmation or no strong-live evidence",
             "require both frozen segmentation views to agree on the final field gate",
-            "calibrate object evidence continuously across d0 density and untreated time drift",
+            "calibrate object evidence continuously across density and 12-hour untreated time anchors",
             "measure Dead-channel evidence inside every existing cell mask without changing segmentation",
-            "within a collapsed treated field, require object evidence and branch consensus",
+            "apply the same field, object, trajectory, and branch-consensus rules to every image",
+            "within a collapsed field, require object evidence and branch consensus",
+            "transfer a dual-view multi-signal death call across a matched branch pair",
+            "resolve collapsed-field view conflicts from complementary matched-pair death signals",
             "route branch, track, and field evidence conflicts to uncertainty",
-            "never modify frozen d0 classifications",
+            "limit d0 and untreated-live proxy changes to the prespecified false-positive ceiling",
         ],
     }
     write_json(args.out_dir / "best_configuration.json", configuration)

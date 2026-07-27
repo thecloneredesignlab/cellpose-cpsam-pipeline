@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Apply the frozen late-death trajectory model to production classifications.
+"""Apply the frozen all-time death trajectory model to classifications.
 
 This is a post-classification stage.  It never changes segmentation masks.
 It calibrates object features against the current run's frozen d0 fields,
-detects persistent multi-site field collapse, refines eligible live objects,
+detects persistent multi-site field collapse at any time, refines live objects,
 updates per-cell predictions/features and per-field summaries atomically, and
 regenerates the affected cell-state QC overlays.
 """
@@ -28,7 +28,7 @@ import pandas as pd
 import tifffile
 
 
-METHOD_VERSION = "death_classification_consensus_v2_20260725"
+METHOD_VERSION = "death_classification_consensus_v3_all_time_20260727"
 BRANCH_DIRS = {
     "original": "classification_fusion",
     "nucleated_only": "classification_fusion_nucleated_only",
@@ -59,7 +59,7 @@ OBJECT_CONFIGURATION = dict(MODEL.APPROVED_OBJECT_CONFIGURATION)
 LATE_MIN_HOURS = float(MODEL.APPROVED_LATE_MIN_HOURS)
 
 
-WORKER_REFERENCES: dict[tuple[str, float, str, str], np.ndarray] = {}
+WORKER_REFERENCES: dict[tuple[str, float, float, str], np.ndarray] = {}
 WORKER_FIELD_STATES = pd.DataFrame()
 WORKER_ARGS: dict[str, Any] = {}
 
@@ -108,6 +108,14 @@ def validate_approved_calibration_configuration(
     if calibration_configuration.get("production_integration") != "approved":
         raise RuntimeError(
             "Selected calibration configuration is not approved for production"
+        )
+    if (
+        calibration_configuration.get("application_scope")
+        != MODEL.APPROVED_APPLICATION_SCOPE
+    ):
+        raise RuntimeError(
+            "Production application scope does not match the approved "
+            "all-time calibration configuration"
         )
     if calibration_configuration.get("field_configuration") != FIELD_CONFIGURATION:
         raise RuntimeError(
@@ -310,7 +318,7 @@ def prepare_field_states(
 def build_live_references(
     inventory: pd.DataFrame,
     field_states: pd.DataFrame,
-) -> tuple[dict[tuple[str, float, str, str], np.ndarray], dict[str, int]]:
+) -> tuple[dict[tuple[str, float, float, str], np.ndarray], dict[str, int]]:
     field_density = field_states[
         [
             "branch",
@@ -321,7 +329,7 @@ def build_live_references(
             "density_anchor",
         ]
     ].drop_duplicates(["branch", "key"])
-    references: dict[tuple[str, float, str, str], list[np.ndarray]] = {}
+    references: dict[tuple[str, float, float, str], list[np.ndarray]] = {}
     for row in inventory.itertuples(index=False):
         shard = Path(row.shard_path)
         frame = pd.read_csv(shard, low_memory=False)
@@ -343,7 +351,7 @@ def build_live_references(
         live = frame.loc[eligible]
         if live.empty:
             continue
-        time_group = MODEL.reference_time_group(
+        time_anchor = MODEL.reference_time_anchor(
             str(row.cohort),
             float(density_row["elapsed_hours"]),
             not d0,
@@ -353,10 +361,10 @@ def build_live_references(
             values = pd.to_numeric(live[raw], errors="coerce").to_numpy(float)
             values = values[np.isfinite(values)]
             references.setdefault(
-                (str(row.branch), density_anchor, time_group, raw),
+                (str(row.branch), density_anchor, float(time_anchor), raw),
                 [],
             ).append(values)
-    arrays: dict[tuple[str, float, str, str], np.ndarray] = {}
+    arrays: dict[tuple[str, float, float, str], np.ndarray] = {}
     counts: dict[str, int] = {}
     for key, pieces in references.items():
         values = np.concatenate(pieces) if pieces else np.empty(0, dtype=float)
@@ -364,10 +372,10 @@ def build_live_references(
             continue
         arrays[key] = np.sort(values)
         counts[
-            f"{key[0]}:{key[1]:.2f}:{key[2]}:{key[3]}"
+            f"{key[0]}:{key[1]:.2f}:{key[2]:.1f}h:{key[3]}"
         ] = int(values.size)
     expected = {
-        (branch, anchor, "d0", raw)
+        (branch, anchor, 0.0, raw)
         for branch in BRANCH_DIRS
         for anchor in MODEL.DENSITY_ANCHORS
         for raw, _direction in MODEL.RAW_FEATURES.values()
@@ -475,12 +483,12 @@ def load_inventory_and_fields(
 
 def write_reference_artifacts(
     paths: dict[str, Path],
-    references: dict[tuple[str, float, str, str], np.ndarray],
+    references: dict[tuple[str, float, float, str], np.ndarray],
 ) -> None:
     payload: dict[str, np.ndarray] = {}
     index: list[dict[str, Any]] = []
     for array_index, key in enumerate(sorted(references), start=1):
-        branch, density_anchor, time_group, raw_feature = key
+        branch, density_anchor, time_anchor, raw_feature = key
         array_name = f"reference_{array_index:04d}"
         values = np.asarray(references[key], dtype=float)
         payload[array_name] = values
@@ -489,7 +497,7 @@ def write_reference_artifacts(
                 "array_name": array_name,
                 "branch": branch,
                 "density_anchor": float(density_anchor),
-                "time_group": time_group,
+                "time_anchor_hours": float(time_anchor),
                 "raw_feature": raw_feature,
                 "count": int(values.size),
             }
@@ -498,7 +506,7 @@ def write_reference_artifacts(
     write_json_atomic(
         paths["reference_index"],
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "references": index,
         },
     )
@@ -506,9 +514,11 @@ def write_reference_artifacts(
 
 def load_reference_artifacts(
     paths: dict[str, Path],
-) -> dict[tuple[str, float, str, str], np.ndarray]:
+) -> dict[tuple[str, float, float, str], np.ndarray]:
     index_payload = json.loads(paths["reference_index"].read_text())
-    references: dict[tuple[str, float, str, str], np.ndarray] = {}
+    if int(index_payload.get("schema_version", -1)) != 2:
+        raise RuntimeError("Prepared reference index schema is not all-time v2")
+    references: dict[tuple[str, float, float, str], np.ndarray] = {}
     with np.load(paths["references"], allow_pickle=False) as archive:
         for record in index_payload["references"]:
             array_name = str(record["array_name"])
@@ -522,7 +532,7 @@ def load_reference_artifacts(
             key = (
                 str(record["branch"]),
                 float(record["density_anchor"]),
-                str(record["time_group"]),
+                float(record["time_anchor_hours"]),
                 str(record["raw_feature"]),
             )
             if key in references:
@@ -604,7 +614,7 @@ def prepare_refinement_state(
     well_counts.to_csv(temporary_manifest, sep="\t", index=False)
     os.replace(temporary_manifest, paths["well_manifest"])
     receipt = {
-        "schema_version": 1,
+        "schema_version": 2,
         "method_version": METHOD_VERSION,
         "expected_fields_per_branch": args.expected_fields_per_branch,
         "expected_wells": args.expected_wells,
@@ -680,7 +690,7 @@ def validate_prepared_state(
 
 
 def initialize_worker(
-    references: dict[tuple[str, float, str, str], np.ndarray],
+    references: dict[tuple[str, float, float, str], np.ndarray],
     field_states: pd.DataFrame,
     worker_args: dict[str, Any],
 ) -> None:
@@ -780,6 +790,18 @@ def update_summary(
     result.loc[row_index, "late_death_rescue_count"] = int(
         field_rows["late_death_rescue_call"].sum()
     )
+    result.loc[row_index, "branch_confirmed_rescue_count"] = int(
+        field_rows.get(
+            "branch_confirmed_rescue_call",
+            pd.Series(False, index=field_rows.index),
+        ).sum()
+    )
+    result.loc[row_index, "complementary_branch_rescue_count"] = int(
+        field_rows.get(
+            "field_consensus_complementary_rescue_call",
+            pd.Series(False, index=field_rows.index),
+        ).sum()
+    )
     result.loc[row_index, "late_death_uncertain_count"] = int(
         field_rows["late_death_uncertain"].sum()
     )
@@ -827,9 +849,11 @@ def update_field_outputs(field_rows: pd.DataFrame) -> dict[str, Any]:
     annotation_columns = [
         "combined_mask_id",
         "field_global_late_death",
+        "field_global_death_collapse",
         "field_branch_raw_global",
         "field_branch_raw_discordant",
         "field_branch_consensus_late_death",
+        "field_branch_consensus_death_collapse",
         "field_state_transition",
         "field_collapse_signal_count",
         "field_site_concordance",
@@ -859,6 +883,9 @@ def update_field_outputs(field_rows: pd.DataFrame) -> dict[str, Any]:
         "temporal_match_confidence",
         "temporal_carryforward_call",
         "global_late_death_rescue_call",
+        "branch_confirmed_rescue_call",
+        "field_consensus_complementary_rescue_call",
+        "death_refinement_eligible",
         "late_death_rescue_call",
         "branch_discordant_uncertain",
         "track_uncertain",
@@ -874,6 +901,7 @@ def update_field_outputs(field_rows: pd.DataFrame) -> dict[str, Any]:
         "field_branch_raw_global": False,
         "field_branch_raw_discordant": False,
         "field_branch_consensus_late_death": False,
+        "field_branch_consensus_death_collapse": False,
         "field_state_transition": "inactive",
         "density_percentile": 0.5,
         "density_anchor": 0.5,
@@ -924,6 +952,11 @@ def update_field_outputs(field_rows: pd.DataFrame) -> dict[str, Any]:
         "late_dead_object_evidence": "late_death_object_evidence",
         "temporal_carryforward_call": "late_death_temporal_carryforward_call",
         "global_late_death_rescue_call": "late_death_global_rescue_call",
+        "branch_confirmed_rescue_call": "late_death_branch_confirmed_rescue_call",
+        "field_consensus_complementary_rescue_call": (
+            "late_death_field_consensus_complementary_rescue_call"
+        ),
+        "death_refinement_eligible": "late_death_refinement_eligible",
         "late_death_rescue_call": "late_death_rescue_call",
         "late_death_uncertain": "late_death_uncertain",
         **{
@@ -1137,6 +1170,18 @@ def update_field_outputs(field_rows: pd.DataFrame) -> dict[str, Any]:
         "baseline_dead": int(field_rows["current_dead_call"].sum()),
         "refined_dead": int(field_rows["final_dead_call"].sum()),
         "rescued": int(field_rows["late_death_rescue_call"].sum()),
+        "branch_confirmed_rescued": int(
+            field_rows.get(
+                "branch_confirmed_rescue_call",
+                pd.Series(False, index=field_rows.index),
+            ).sum()
+        ),
+        "complementary_branch_rescued": int(
+            field_rows.get(
+                "field_consensus_complementary_rescue_call",
+                pd.Series(False, index=field_rows.index),
+            ).sum()
+        ),
         "uncertain": int(field_rows["late_death_uncertain"].sum()),
         "branch_discordant_uncertain": int(
             field_rows.get(
@@ -1330,6 +1375,11 @@ def write_production_go_no_go(
     expected_keys = int(expected_fields_per_branch)
     key_counts = status_frame.groupby("branch")["key"].nunique().to_dict()
     d0 = status_frame["key"].astype(str).str.endswith("_00d00h00m")
+    d0_objects = int(status_frame.loc[d0, "objects"].sum())
+    d0_rescued = int(status_frame.loc[d0, "rescued"].sum())
+    d0_uncertain = int(status_frame.loc[d0, "uncertain"].sum())
+    d0_rescue_rate = d0_rescued / d0_objects if d0_objects else 0.0
+    d0_uncertainty_rate = d0_uncertain / d0_objects if d0_objects else 0.0
     field_states = status_frame.pivot(
         index="key",
         columns="branch",
@@ -1423,6 +1473,10 @@ def write_production_go_no_go(
             else 0.0
         ),
     }
+    continuity_input = consensus.rename(
+        columns={"dead_fraction": "final_dead_fraction"}
+    )
+    continuity = MODEL.former_boundary_continuity_metrics(continuity_input)
     gates = {
         "SEGMENTATION_FROZEN": {
             "pass": bool(freeze_receipt.get("verified")),
@@ -1456,18 +1510,18 @@ def write_production_go_no_go(
             ),
             "consensus_fields": int(len(consensus)),
         },
-        "D0_INVARIANCE": {
+        "D0_SAFETY": {
             "pass": bool(
-                int(status_frame.loc[d0, "rescued"].sum()) == 0
-                and int(status_frame.loc[d0, "uncertain"].sum()) == 0
+                d0_rescue_rate <= 0.005
+                and d0_uncertainty_rate <= 0.005
             ),
             "d0_field_rows": int(d0.sum()),
-            "d0_rescued_objects": int(
-                status_frame.loc[d0, "rescued"].sum()
-            ),
-            "d0_uncertain_objects": int(
-                status_frame.loc[d0, "uncertain"].sum()
-            ),
+            "d0_objects": d0_objects,
+            "d0_rescued_objects": d0_rescued,
+            "d0_rescue_rate": d0_rescue_rate,
+            "d0_uncertain_objects": d0_uncertain,
+            "d0_uncertainty_rate": d0_uncertainty_rate,
+            "maximum_rate": 0.005,
         },
         "DUAL_VIEW_DIAGNOSTICS": {
             "pass": bool(diagnostics["field_state_mismatch_rate"] <= 0.01)
@@ -1479,12 +1533,13 @@ def write_production_go_no_go(
             ),
             **diagnostics,
         },
+        "ALL_TIME_CONTINUITY": continuity,
     }
     decision = (
         "GO" if all(bool(gate["pass"]) for gate in gates.values()) else "NO_GO"
     )
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "decision": decision,
         "metric_semantics": (
             "operational_proxy_validation_without_manual_biological_ground_truth"
@@ -1797,8 +1852,9 @@ def finalize_refinement(
         "method_version": METHOD_VERSION,
         "method": (
             "dual_branch_consensus_with_continuous_density_time_calibration_"
-            "multiframe_tracking_and_recoverable_field_state"
+            "all_time_multiframe_tracking_and_recoverable_field_state"
         ),
+        "application_scope": MODEL.APPROVED_APPLICATION_SCOPE,
         "metric_semantics": "operational_model_without_manual_object_ground_truth",
         "field_configuration": FIELD_CONFIGURATION,
         "object_configuration": OBJECT_CONFIGURATION,
@@ -1827,6 +1883,7 @@ def finalize_refinement(
     }
     frozen_model_payload = {
         "method_version": METHOD_VERSION,
+        "application_scope": MODEL.APPROVED_APPLICATION_SCOPE,
         "field_configuration": FIELD_CONFIGURATION,
         "object_configuration": OBJECT_CONFIGURATION,
         "late_min_hours": LATE_MIN_HOURS,

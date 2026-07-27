@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Re-run only full-time-course classification against immutable segmentation
 # outputs. Per-field d0-calibrated classification is followed by the frozen
-# late-field-collapse and object-level multi-signal death-rescue stage.
+# all-time field-collapse and object-level multi-signal death-rescue stage.
 
 BASE="/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/20260619_SUM159_Doxorubicin_Cyclophosphamide"
 PROJECT_DIR="${PROJECT_DIR:-/share/lab_crd/lab_crd/HighPloidy_CostBenefits/data/BreastCancerCellLines/SUM-159/N01_Incucyte_SUM159_Doxorubicin_Cyclophosphamide/cellpose-cpsam-pipeline-v3}"
@@ -24,7 +24,7 @@ PLOT_WORKER="${PLOT_WORKER:-$SCRIPT_DIR/analysisi/05_run_well_count_timecourse_p
 DOSE_RESPONSE_WORKER="${DOSE_RESPONSE_WORKER:-$SCRIPT_DIR/analysisi/06_run_dose_response_analysis.sh}"
 REPORT_WORKER="${REPORT_WORKER:-$SCRIPT_DIR/analysisi/07_run_full_classification_report.sh}"
 CALIBRATION_REPORT_WORKER="${CALIBRATION_REPORT_WORKER:-$SCRIPT_DIR/Parameter_calibration/27_generate_late_dead_d0_d5_report.sh}"
-CALIBRATION_ROOT="${CALIBRATION_ROOT:-$BASE/results/Tests_and_Parameters_calibration/death_classification_consensus_optimization_20260725_213646}"
+CALIBRATION_ROOT="${CALIBRATION_ROOT:-$BASE/results/Tests_and_Parameters_calibration/death_classification_all_time_consensus_optimization_20260727_145000/retry4}"
 CALIBRATION_CONFIGURATION_DIR="${CALIBRATION_CONFIGURATION_DIR:-$CALIBRATION_ROOT/optimization}"
 CALIBRATION_GO_NO_GO="${CALIBRATION_GO_NO_GO:-$CALIBRATION_CONFIGURATION_DIR/FULL_CLASSIFICATION_GO_NO_GO.json}"
 SEGMENTATION_FREEZE_MANIFEST="${SEGMENTATION_FREEZE_MANIFEST:-$PROJECT_DIR/cellpose_pipeline/configs/segmentation_freeze_v3_20260725.json}"
@@ -365,7 +365,8 @@ write_submission_summary() {
     echo "segmentation_freeze_manifest=$SEGMENTATION_FREEZE_MANIFEST"
     echo "segmentation_freeze_receipt=$SEGMENTATION_FREEZE_RECEIPT"
     echo "classification_method=cellpose_pipeline/scripts/08_fuse_multichannel_classification.py+cellpose_pipeline/scripts/14_apply_late_dead_trajectory_refinement.py"
-    echo "late_death_method_version=death_classification_consensus_v2_20260725"
+    echo "death_refinement_method_version=death_classification_consensus_v3_all_time_20260727"
+    echo "death_refinement_scope=all_time_all_treatments"
     echo "classification_timepoint=all"
     echo "classification_cpus_per_task=$CLASSIFICATION_CPUS"
     echo "classification_mem_per_task=$CLASSIFICATION_MEM"
