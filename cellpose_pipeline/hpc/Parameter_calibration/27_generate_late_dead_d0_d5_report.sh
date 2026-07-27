@@ -93,6 +93,8 @@ assert receipt["qc_grid_rows"] == 2
 assert receipt["d0_qc_panels_per_case"] == 4
 assert receipt["d5_qc_panels_per_case"] == 4
 assert receipt["qc_composite_font_scale"] == 2
+assert receipt["qc_composite_title_font_scale"] == 1
+assert receipt["qc_composite_label_font_scale"] == 2
 assert receipt["late_death_evidence_panel_embedded"] is False
 assert receipt["classification_boundary_width"] == 2
 assert receipt["html_enhancement"]["carousel_groups"] == 3

@@ -1358,6 +1358,12 @@ def main() -> int:
         "d0_qc_panels_per_case": 4,
         "d5_qc_panels_per_case": 4,
         "qc_composite_font_scale": FULL_REPORT.QC_COMPOSITE_FONT_SCALE,
+        "qc_composite_title_font_scale": (
+            FULL_REPORT.QC_COMPOSITE_TITLE_FONT_SCALE
+        ),
+        "qc_composite_label_font_scale": (
+            FULL_REPORT.QC_COMPOSITE_LABEL_FONT_SCALE
+        ),
         "late_death_evidence_panel_embedded": False,
         "classification_boundary_width": (
             FULL_REPORT.CLASSIFICATION_BOUNDARY_WIDTH

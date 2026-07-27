@@ -364,7 +364,9 @@ class ClassificationReportManifestTests(unittest.TestCase):
         self.assertEqual(module.STATE_COLORS["dead"].astype(int).tolist(), [176, 74, 214])
         self.assertEqual(module.STATE_COLORS["uncertain"].astype(int).tolist(), [255, 214, 10])
         self.assertEqual(module.QC_COMPOSITE_FONT_SCALE, 2)
-        self.assertEqual(module.QC_COMPOSITE_TITLE_FONT_SIZE, 144)
+        self.assertEqual(module.QC_COMPOSITE_TITLE_FONT_SCALE, 1)
+        self.assertEqual(module.QC_COMPOSITE_LABEL_FONT_SCALE, 2)
+        self.assertEqual(module.QC_COMPOSITE_TITLE_FONT_SIZE, 72)
         self.assertEqual(module.QC_COMPOSITE_LABEL_FONT_SIZE, 136)
         _title, manifest = fixture_manifest("full")
         workflow_intro = next(

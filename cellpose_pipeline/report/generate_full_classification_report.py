@@ -128,8 +128,10 @@ STATE_COLORS = {
 }
 CLASSIFICATION_BOUNDARY_WIDTH = 2
 QC_COMPOSITE_FONT_SCALE = 2
-QC_COMPOSITE_TITLE_FONT_SIZE = 72 * QC_COMPOSITE_FONT_SCALE
-QC_COMPOSITE_LABEL_FONT_SIZE = 68 * QC_COMPOSITE_FONT_SCALE
+QC_COMPOSITE_TITLE_FONT_SCALE = 1
+QC_COMPOSITE_LABEL_FONT_SCALE = 2
+QC_COMPOSITE_TITLE_FONT_SIZE = 72 * QC_COMPOSITE_TITLE_FONT_SCALE
+QC_COMPOSITE_LABEL_FONT_SIZE = 68 * QC_COMPOSITE_LABEL_FONT_SCALE
 QC_PLOIDY_ORDER = ("2N", "4N")
 QC_TIMEPOINTS = (
     {"id": "day_0", "label": "Day 0", "day": 0, "hours": 0.0},
@@ -2614,6 +2616,8 @@ def main() -> int:
         "qc_grid_columns": 4,
         "qc_grid_rows": 3,
         "qc_composite_font_scale": QC_COMPOSITE_FONT_SCALE,
+        "qc_composite_title_font_scale": QC_COMPOSITE_TITLE_FONT_SCALE,
+        "qc_composite_label_font_scale": QC_COMPOSITE_LABEL_FONT_SCALE,
         "workflow_pdf": str(workflow_pdf),
         "workflow_figure_embedded": True,
         "classification_boundary_width": CLASSIFICATION_BOUNDARY_WIDTH,

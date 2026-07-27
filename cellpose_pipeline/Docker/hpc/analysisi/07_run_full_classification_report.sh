@@ -125,6 +125,8 @@ assert receipt["qc_panels_per_sample"] == 10
 assert receipt["qc_grid_columns"] == 4
 assert receipt["qc_grid_rows"] == 3
 assert receipt["qc_composite_font_scale"] == 2
+assert receipt["qc_composite_title_font_scale"] == 1
+assert receipt["qc_composite_label_font_scale"] == 2
 assert receipt["workflow_figure_embedded"] is True
 assert receipt["workflow_pdf"].endswith("/docs/death_classification_workflow.pdf")
 assert receipt["classification_boundary_width"] == 2
