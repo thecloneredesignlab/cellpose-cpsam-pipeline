@@ -50,6 +50,19 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
             MODEL.APPROVED_OBJECT_CONFIGURATION,
             MODEL.object_parameter_grid(),
         )
+        unmatched_thresholds = {
+            configuration["unmatched_minimum_death_signals"]
+            for configuration in MODEL.object_parameter_grid()
+            if (
+                configuration["feature_threshold"] == 0.45
+                and configuration["healthy_threshold"] == 0.40
+                and configuration[
+                    "complementary_minimum_combined_death_signals"
+                ]
+                == 3
+            )
+        }
+        self.assertEqual(unmatched_thresholds, {1, 2, 3})
 
     def test_former_boundary_continuity_uses_declared_count_noise_tolerance(self) -> None:
         rows = []
@@ -71,6 +84,30 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
         )
         self.assertTrue(metrics["pass"])
         self.assertEqual(metrics["absolute_tolerance"], 0.005)
+
+    def test_former_boundary_continuity_rejects_missing_schema(self) -> None:
+        metrics = MODEL.former_boundary_continuity_metrics(
+            pd.DataFrame({"well": ["E9"]})
+        )
+        self.assertFalse(metrics["evaluated"])
+        self.assertFalse(metrics["pass"])
+        self.assertIn("branch", metrics["missing_columns"])
+
+    def test_uncertainty_coverage_is_hard_gated_at_well_time_grain(self) -> None:
+        counts = pd.DataFrame(
+            {
+                "branch": ["original", "original", "nucleated_only"],
+                "well": ["E2", "E3", "E2"],
+                "elapsed_hours": [0.0, 0.0, 0.0],
+                "total_cell_count": [1000, 100, 1000],
+                "uncertain_count": [0, 2, 0],
+            }
+        )
+        metrics = MODEL.uncertainty_count_metrics(counts)
+        self.assertLess(metrics["global_uncertainty_rate"], 0.01)
+        self.assertEqual(metrics["maximum_well_time_uncertainty_rate"], 0.02)
+        self.assertEqual(metrics["worst_well_time"], "original|E3|0.0")
+        self.assertFalse(metrics["pass"])
 
     @unittest.skipUnless(
         DATASET_BUILDER is not None,
@@ -243,6 +280,109 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
             first.loc[first["branch"].eq("original"), "field_branch_raw_global"].iloc[0],
             True,
         )
+
+    def test_field_discordance_is_not_broadcast_to_live_objects(self) -> None:
+        rows = []
+        for branch, x_offset in (
+            ("original", 0.0),
+            ("nucleated_only", 0.5),
+        ):
+            row = {
+                "cohort": "trajectory",
+                "branch": branch,
+                "key": "E9_1_05d00h00m",
+                "well": "E9",
+                "site": 1,
+                "elapsed_hours": 120.0,
+                "treated": True,
+                "combined_mask_id": 1,
+                "centroid_y": 50.0,
+                "centroid_x": 50.0 + x_offset,
+                "countable": True,
+                "border_touching": False,
+                "final_state": "live",
+                "proxy_type": "unlabeled",
+                "temporal_track_confident": False,
+                "temporal_support_frames": 0,
+                "temporal_match_confidence": 0.0,
+            }
+            row.update({feature: 0.10 for feature in MODEL.MODEL_FEATURES})
+            rows.append(row)
+        fields = pd.DataFrame(
+            {
+                "branch": ["original", "nucleated_only"],
+                "key": ["E9_1_05d00h00m", "E9_1_05d00h00m"],
+                "field_global_late_death": [False, False],
+                "field_collapse_signal_count": [5, 0],
+                "field_site_concordance": [1.0, 0.0],
+                "field_branch_raw_discordant": [True, True],
+                "field_branch_raw_global": [True, False],
+                "field_branch_consensus_late_death": [False, False],
+            }
+        )
+        calls = MODEL.classification_calls(
+            pd.DataFrame(rows),
+            fields,
+            REFINEMENT.OBJECT_CONFIGURATION,
+            REFINEMENT.LATE_MIN_HOURS,
+            apply_treatment_scope=True,
+        )
+        self.assertTrue(calls["strong_live_evidence"].astype(bool).all())
+        self.assertFalse(calls["branch_discordant_uncertain"].astype(bool).any())
+        self.assertFalse(calls["late_death_uncertain"].astype(bool).any())
+
+    def test_object_level_branch_conflict_remains_uncertain(self) -> None:
+        rows = []
+        for branch, x_offset in (
+            ("original", 0.0),
+            ("nucleated_only", 0.5),
+        ):
+            row = {
+                "cohort": "trajectory",
+                "branch": branch,
+                "key": "E9_1_05d00h00m",
+                "well": "E9",
+                "site": 1,
+                "elapsed_hours": 120.0,
+                "treated": True,
+                "combined_mask_id": 1,
+                "centroid_y": 50.0,
+                "centroid_x": 50.0 + x_offset,
+                "countable": True,
+                "border_touching": False,
+                "final_state": "live",
+                "proxy_type": "unlabeled",
+                "temporal_track_confident": False,
+                "temporal_support_frames": 0,
+                "temporal_match_confidence": 0.0,
+            }
+            row.update({feature: 0.41 for feature in MODEL.MODEL_FEATURES})
+            if branch == "original":
+                row["core_nc_percentile"] = 0.60
+                row["area_depletion_percentile"] = 0.60
+            rows.append(row)
+        fields = pd.DataFrame(
+            {
+                "branch": ["original", "nucleated_only"],
+                "key": ["E9_1_05d00h00m", "E9_1_05d00h00m"],
+                "field_global_late_death": [False, False],
+                "field_collapse_signal_count": [0, 0],
+                "field_site_concordance": [0.0, 0.0],
+                "field_branch_raw_discordant": [True, True],
+                "field_branch_raw_global": [True, False],
+                "field_branch_consensus_late_death": [False, False],
+            }
+        )
+        calls = MODEL.classification_calls(
+            pd.DataFrame(rows),
+            fields,
+            REFINEMENT.OBJECT_CONFIGURATION,
+            REFINEMENT.LATE_MIN_HOURS,
+            apply_treatment_scope=True,
+        )
+        self.assertFalse(calls["strong_live_evidence"].astype(bool).any())
+        self.assertTrue(calls["branch_discordant_uncertain"].astype(bool).all())
+        self.assertTrue(calls["late_death_uncertain"].astype(bool).all())
 
     def test_temporal_rescue_requires_consensus_and_respects_live_veto(self) -> None:
         base = {
@@ -541,7 +681,7 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
                 "temporal_support_frames": 0,
                 "temporal_match_confidence": 0.0,
             }
-            row.update({feature: 0.10 for feature in MODEL.MODEL_FEATURES})
+            row.update({feature: 0.41 for feature in MODEL.MODEL_FEATURES})
             if branch == "original":
                 for feature in (
                     "core_nc_percentile",
@@ -577,6 +717,64 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
         )
         self.assertTrue(calls["final_dead_call"].astype(bool).all())
         self.assertTrue(calls["branch_final_dead_call_agree"].astype(bool).all())
+        self.assertFalse(calls["late_death_uncertain"].astype(bool).any())
+
+    def test_single_signal_branch_conflict_retains_prior_live_state(self) -> None:
+        rows = []
+        for branch, x_offset in (
+            ("original", 0.0),
+            ("nucleated_only", 0.5),
+        ):
+            row = {
+                "cohort": "trajectory",
+                "branch": branch,
+                "key": "F9_1_01d12h00m",
+                "well": "F9",
+                "site": 1,
+                "elapsed_hours": 36.0,
+                "treated": True,
+                "combined_mask_id": 1,
+                "centroid_y": 50.0,
+                "centroid_x": 50.0 + x_offset,
+                "countable": True,
+                "border_touching": False,
+                "final_state": "live",
+                "proxy_type": "unlabeled",
+                "temporal_track_confident": False,
+                "temporal_support_frames": 0,
+                "temporal_match_confidence": 0.0,
+            }
+            row.update({feature: 0.41 for feature in MODEL.MODEL_FEATURES})
+            if branch == "original":
+                row["core_nc_percentile"] = 0.95
+            rows.append(row)
+        fields = pd.DataFrame(
+            {
+                "branch": ["original", "nucleated_only"],
+                "key": ["F9_1_01d12h00m", "F9_1_01d12h00m"],
+                "field_global_late_death": [False, False],
+                "field_global_death_collapse": [False, False],
+                "field_collapse_signal_count": [0, 0],
+                "field_site_concordance": [0.0, 0.0],
+                "field_branch_raw_discordant": [False, False],
+                "field_branch_raw_global": [False, False],
+                "field_branch_consensus_late_death": [False, False],
+            }
+        )
+        configuration = dict(REFINEMENT.OBJECT_CONFIGURATION)
+        configuration[
+            "branch_uncertainty_minimum_combined_death_signals"
+        ] = 2
+        calls = MODEL.classification_calls(
+            pd.DataFrame(rows),
+            fields,
+            configuration,
+            REFINEMENT.LATE_MIN_HOURS,
+            apply_treatment_scope=True,
+        )
+        self.assertFalse(calls["strong_live_evidence"].astype(bool).any())
+        self.assertFalse(calls["late_death_rescue_call"].astype(bool).any())
+        self.assertFalse(calls["final_dead_call"].astype(bool).any())
         self.assertFalse(calls["late_death_uncertain"].astype(bool).any())
 
     def test_persistent_field_collapse_and_object_evidence_rescue(self) -> None:
@@ -858,26 +1056,38 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
                 / "cell_count_summary.csv"
             )
             consensus_path.parent.mkdir(parents=True)
+            keys = [
+                "E2_1_00d00h00m",
+                "E2_1_02d00h00m",
+                "E2_1_03d00h00m",
+                "E2_1_04d00h00m",
+            ]
             pd.DataFrame(
                 {
-                    "key": ["E2_1_00d00h00m", "E9_1_05d00h00m"],
-                    "branch_dead_fraction_abs_diff": [0.0, 0.005],
-                    "late_death_rescue_count": [0, 10],
-                    "total_cell_count": [100, 100],
-                    "nucleated_only_late_death_rescue_count": [0, 10],
-                    "nucleated_only_total_cell_count": [100, 100],
+                    "key": keys,
+                    "well": ["E2"] * 4,
+                    "site": [1] * 4,
+                    "elapsed_hours": [0.0, 48.0, 72.0, 96.0],
+                    "dead_fraction": [0.10, 0.20, 0.30, 0.40],
+                    "branch_dead_fraction_abs_diff": [0.0] * 4,
+                    "late_death_rescue_count": [0, 10, 10, 10],
+                    "total_cell_count": [100] * 4,
+                    "uncertain_count": [0] * 4,
+                    "nucleated_only_late_death_rescue_count": [0, 10, 10, 10],
+                    "nucleated_only_total_cell_count": [100] * 4,
+                    "nucleated_only_uncertain_count": [0] * 4,
                 }
             ).to_csv(consensus_path, index=False)
             status_rows = []
             for branch in ("original", "nucleated_only"):
-                for key in ("E2_1_00d00h00m", "E9_1_05d00h00m"):
+                for key in keys:
                     status_rows.append(
                         {
                             "branch": branch,
                             "key": key,
-                            "field_global_late_death": key.startswith("E9"),
+                            "field_global_late_death": False,
                             "objects": 100,
-                            "rescued": 0 if key.startswith("E2") else 10,
+                            "rescued": 0,
                             "uncertain": 0,
                             "matched_objects": 100,
                             "matched_rescue_call_agree": 100,
@@ -900,7 +1110,7 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
                     "source_run_root": "frozen",
                     "verified_file_count": 34,
                 },
-                expected_fields_per_branch=2,
+                expected_fields_per_branch=4,
             )
             self.assertTrue(receipt_path.is_file())
             self.assertEqual(receipt["decision"], "GO")
@@ -909,6 +1119,10 @@ class LateDeathTrajectoryRefinementTests(unittest.TestCase):
             self.assertTrue(
                 receipt["gates"]["FULL_COHORT_COMPLETENESS"]["pass"]
             )
+            self.assertTrue(
+                receipt["gates"]["UNCERTAINTY_COVERAGE"]["pass"]
+            )
+            self.assertTrue(receipt["gates"]["ALL_TIME_CONTINUITY"]["pass"])
 
     def test_field_outputs_are_updated_and_force_rerun_stays_clean(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

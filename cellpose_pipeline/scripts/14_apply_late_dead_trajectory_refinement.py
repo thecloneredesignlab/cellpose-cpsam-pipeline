@@ -28,7 +28,7 @@ import pandas as pd
 import tifffile
 
 
-METHOD_VERSION = "death_classification_consensus_v3_all_time_20260727"
+METHOD_VERSION = "death_classification_consensus_v3_low_uncertainty_20260728"
 BRANCH_DIRS = {
     "original": "classification_fusion",
     "nucleated_only": "classification_fusion_nucleated_only",
@@ -1475,8 +1475,38 @@ def write_production_go_no_go(
     }
     continuity_input = consensus.rename(
         columns={"dead_fraction": "final_dead_fraction"}
-    )
+    ).copy()
+    continuity_input["branch"] = "original"
     continuity = MODEL.former_boundary_continuity_metrics(continuity_input)
+    original_uncertainty = consensus[
+        [
+            "well",
+            "elapsed_hours",
+            "total_cell_count",
+            "uncertain_count",
+        ]
+    ].copy()
+    original_uncertainty["branch"] = "original"
+    nucleated_uncertainty = consensus[
+        [
+            "well",
+            "elapsed_hours",
+            "nucleated_only_total_cell_count",
+            "nucleated_only_uncertain_count",
+        ]
+    ].rename(
+        columns={
+            "nucleated_only_total_cell_count": "total_cell_count",
+            "nucleated_only_uncertain_count": "uncertain_count",
+        }
+    )
+    nucleated_uncertainty["branch"] = "nucleated_only"
+    uncertainty_coverage = MODEL.uncertainty_count_metrics(
+        pd.concat(
+            [original_uncertainty, nucleated_uncertainty],
+            ignore_index=True,
+        )
+    )
     gates = {
         "SEGMENTATION_FROZEN": {
             "pass": bool(freeze_receipt.get("verified")),
@@ -1523,6 +1553,7 @@ def write_production_go_no_go(
             "d0_uncertainty_rate": d0_uncertainty_rate,
             "maximum_rate": 0.005,
         },
+        "UNCERTAINTY_COVERAGE": uncertainty_coverage,
         "DUAL_VIEW_DIAGNOSTICS": {
             "pass": bool(diagnostics["field_state_mismatch_rate"] <= 0.01)
             and bool(
@@ -1539,7 +1570,7 @@ def write_production_go_no_go(
         "GO" if all(bool(gate["pass"]) for gate in gates.values()) else "NO_GO"
     )
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "decision": decision,
         "metric_semantics": (
             "operational_proxy_validation_without_manual_biological_ground_truth"

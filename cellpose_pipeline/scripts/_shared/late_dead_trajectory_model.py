@@ -76,17 +76,19 @@ APPROVED_OBJECT_CONFIGURATION = {
     "minimum_death_signals": 1,
     "minimum_healthy_signals": 4,
     "branch_match_distance_px": 10.0,
-    "unmatched_minimum_death_signals": 3,
+    "unmatched_minimum_death_signals": 2,
     "temporal_minimum_support_frames": 2,
     "complementary_minimum_combined_death_signals": 3,
+    "branch_uncertainty_minimum_combined_death_signals": 2,
 }
 APPROVED_APPLICATION_SCOPE = "all_time_all_treatments"
+MAX_UNCERTAINTY_RATE = 0.01
 # Kept only to read historical calibration receipts and preserve the command
 # interface. It is not used as an eligibility threshold.
 APPROVED_LATE_MIN_HOURS = 72.0
 APPROVED_CONFIGURATION_SOURCE = (
-    "death_classification_all_time_consensus_optimization_20260727_145000/"
-    "retry4/optimization/best_configuration.json"
+    "death_classification_uncertainty_optimization_20260728_170922/"
+    "retry6/optimization/best_configuration.json"
 )
 
 
@@ -869,9 +871,9 @@ def object_parameter_grid() -> list[dict[str, Any]]:
         if candidate not in configs:
             configs.append(candidate)
     # Focused all-time branch-complementarity screen. These candidates resolve
-    # segmentation-view disagreement only after both views agree that the field
-    # is collapsed, one view has object-level death evidence, and the matched
-    # pair carries a sufficient combined number of death signals.
+    # segmentation-view disagreement when one view has object-level death
+    # evidence, neither view has strong-live evidence, and the matched pair
+    # carries a sufficient combined number of death signals.
     for feature_threshold, healthy_gap, combined_signals in product(
         (0.45, 0.50),
         (0.05, 0.10),
@@ -892,6 +894,37 @@ def object_parameter_grid() -> list[dict[str, Any]]:
         }
         if candidate not in configs:
             configs.append(candidate)
+    # Focused unmatched-object screen for consensus-collapse fields.  This
+    # resolves the remaining uncertainty when one segmentation view contains
+    # a plausible death remnant that has no mutual-nearest partner in the
+    # other view.  The field must still be collapsed in both branches and the
+    # object must still pass the strong-live veto.
+    for unmatched_signals in (1, 2):
+        candidate = {
+            "feature_threshold": 0.45,
+            "minimum_death_signals": 1,
+            "healthy_threshold": 0.40,
+            "minimum_healthy_signals": 4,
+            "branch_match_distance_px": 10.0,
+            "unmatched_minimum_death_signals": unmatched_signals,
+            "temporal_minimum_support_frames": 2,
+            "complementary_minimum_combined_death_signals": 3,
+        }
+        if candidate not in configs:
+            configs.append(candidate)
+    candidate = {
+        "feature_threshold": 0.45,
+        "minimum_death_signals": 1,
+        "healthy_threshold": 0.40,
+        "minimum_healthy_signals": 4,
+        "branch_match_distance_px": 10.0,
+        "unmatched_minimum_death_signals": 2,
+        "temporal_minimum_support_frames": 2,
+        "complementary_minimum_combined_death_signals": 3,
+        "branch_uncertainty_minimum_combined_death_signals": 2,
+    }
+    if candidate not in configs:
+        configs.append(candidate)
     return configs
 
 
@@ -1438,26 +1471,46 @@ def classification_calls(
     work["branch_final_call_discordant"] = (
         matched & ~work["branch_final_dead_call_agree"]
     )
+    # Field-level branch discordance is a diagnostic and a veto on the shared
+    # field-collapse rescue gate.  It must never be broadcast to every object
+    # in the field.  Only a matched object pair with genuinely discordant
+    # object evidence, and no strong-live evidence in either view, is routed
+    # to uncertainty.
+    object_evidence_discordant = (
+        work["branch_partner_matched"]
+        & ~work["branch_object_evidence_agree"]
+    )
     work["branch_discordant_uncertain"] = (
         eligible
+        & object_evidence_discordant
         & (
-            work["field_branch_raw_discordant"].fillna(False)
-            | (
-                work["branch_partner_matched"]
-                & ~work["branch_object_evidence_agree"]
+            work["death_signal_count"]
+            + work["branch_partner_death_signal_count"]
+            >= int(
+                object_config.get(
+                    "branch_uncertainty_minimum_combined_death_signals",
+                    1,
+                )
             )
         )
+        & ~work["strong_live_evidence"]
+        & ~work["branch_partner_strong_live"]
         & ~work["late_death_rescue_call"]
     )
     work["track_uncertain"] = (
         eligible
         & temporal
+        & temporal_track_confident
+        & ~work["strong_live_evidence"]
+        & ~work["branch_partner_strong_live"]
         & ~work["late_death_rescue_call"]
     )
     work["field_evidence_uncertain"] = (
         eligible
         & work["field_global_late_death"].fillna(False)
         & work["late_dead_object_evidence"]
+        & ~work["strong_live_evidence"]
+        & ~work["branch_partner_strong_live"]
         & ~work["late_death_rescue_call"]
     )
     work["late_death_uncertain"] = (
@@ -1468,6 +1521,8 @@ def classification_calls(
             eligible
             &
             work["branch_final_call_discordant"]
+            & ~work["strong_live_evidence"]
+            & ~work["branch_partner_strong_live"]
             & ~work["final_dead_call"].astype(bool)
         )
     )
@@ -1634,6 +1689,7 @@ def optimize_objects(
             counterfactual,
             config,
         )
+        uncertainty = prediction_uncertainty_metrics(counterfactual)
         trials.append(
             {
                 "trial": f"object_{index:04d}",
@@ -1648,6 +1704,24 @@ def optimize_objects(
                 "object_evidence_flip_rate": stability[
                     "object_evidence_flip_rate"
                 ],
+                "global_uncertainty_rate": uncertainty[
+                    "global_uncertainty_rate"
+                ],
+                "maximum_well_time_uncertainty_rate": uncertainty[
+                    "maximum_well_time_uncertainty_rate"
+                ],
+                "unmatched_minimum_death_signals": int(
+                    config["unmatched_minimum_death_signals"]
+                ),
+                "complementary_minimum_combined_death_signals": int(
+                    config["complementary_minimum_combined_death_signals"]
+                ),
+                "branch_uncertainty_minimum_combined_death_signals": int(
+                    config.get(
+                        "branch_uncertainty_minimum_combined_death_signals",
+                        1,
+                    )
+                ),
                 "configuration": json.dumps(config, sort_keys=True),
             }
         )
@@ -1674,15 +1748,27 @@ def optimize_objects(
     trial_frame["passes_parameter_stability"] = trial_frame[
         "object_evidence_stability_rate"
     ].ge(0.99)
+    trial_frame["passes_uncertainty_coverage"] = (
+        trial_frame["global_uncertainty_rate"].le(MAX_UNCERTAINTY_RATE)
+        & trial_frame["maximum_well_time_uncertainty_rate"].le(
+            MAX_UNCERTAINTY_RATE
+        )
+    )
     trial_frame["passes_production_candidate"] = (
         trial_frame["passes_development"]
         & trial_frame["passes_parameter_stability"]
+        & trial_frame["passes_uncertainty_coverage"]
     )
     trial_frame = trial_frame.sort_values(
         [
             "passes_production_candidate",
             "passes_development",
             "object_evidence_stability_rate",
+            "unmatched_minimum_death_signals",
+            "complementary_minimum_combined_death_signals",
+            "branch_uncertainty_minimum_combined_death_signals",
+            "maximum_well_time_uncertainty_rate",
+            "global_uncertainty_rate",
             "development_e9_dead_fraction",
             "holdout_e9_min_dead_fraction",
             "f9_median_dead_fraction",
@@ -1694,6 +1780,11 @@ def optimize_objects(
             False,
             False,
             False,
+            False,
+            False,
+            False,
+            True,
+            True,
             False,
             False,
             False,
@@ -1888,7 +1979,7 @@ def former_boundary_continuity_metrics(
             "absolute_tolerance": absolute_tolerance,
             "evaluated": False,
             "missing_columns": sorted(missing),
-            "pass": True,
+            "pass": False,
         }
     records: list[dict[str, float]] = []
     for (_branch, _well, _site), rows in summary.groupby(
@@ -1940,6 +2031,157 @@ def former_boundary_continuity_metrics(
             and boundary_max <= nonboundary_p95 + absolute_tolerance
         ),
     }
+
+
+def uncertainty_count_metrics(
+    counts: pd.DataFrame,
+    maximum_rate: float = MAX_UNCERTAINTY_RATE,
+) -> dict[str, Any]:
+    """Audit binary-classification coverage at every production grouping.
+
+    ``counts`` must contain one or more rows at branch/well/time grain.  The
+    hard gate is intentionally evaluated globally and for every branch,
+    plate row, well, time point, and well/time combination so a good cohort
+    average cannot hide a localized uncertainty cliff.
+    """
+    required = {
+        "branch",
+        "well",
+        "elapsed_hours",
+        "total_cell_count",
+        "uncertain_count",
+    }
+    missing = required - set(counts.columns)
+    if missing:
+        return {
+            "evaluated": False,
+            "missing_columns": sorted(missing),
+            "maximum_rate": float(maximum_rate),
+            "pass": False,
+        }
+    work = counts[list(required)].copy()
+    work["branch"] = work["branch"].astype(str)
+    work["well"] = work["well"].astype(str)
+    work["plate_row"] = work["well"].str[:1]
+    work["elapsed_hours"] = finite_numeric(work["elapsed_hours"])
+    work["total_cell_count"] = finite_numeric(
+        work["total_cell_count"],
+        fallback=-1.0,
+    )
+    work["uncertain_count"] = finite_numeric(
+        work["uncertain_count"],
+        fallback=-1.0,
+    )
+    valid = (
+        work["total_cell_count"].ge(0)
+        & work["uncertain_count"].ge(0)
+        & work["uncertain_count"].le(work["total_cell_count"])
+    )
+
+    def rate(frame: pd.DataFrame) -> float:
+        denominator = float(frame["total_cell_count"].sum())
+        if denominator <= 0:
+            return float("nan")
+        return float(frame["uncertain_count"].sum() / denominator)
+
+    def worst(group_columns: list[str]) -> tuple[float, str]:
+        records: list[tuple[float, str]] = []
+        grouper: str | list[str] = (
+            group_columns[0] if len(group_columns) == 1 else group_columns
+        )
+        for key, rows in work.groupby(grouper, sort=False):
+            value = rate(rows)
+            if not isinstance(key, tuple):
+                key = (key,)
+            label = "|".join(str(part) for part in key)
+            records.append((value, label))
+        finite = [
+            record
+            for record in records
+            if math.isfinite(record[0])
+        ]
+        return max(finite, default=(float("nan"), "none"), key=lambda item: item[0])
+
+    global_rate = rate(work)
+    branch_rate, worst_branch = worst(["branch"])
+    plate_row_rate, worst_plate_row = worst(["branch", "plate_row"])
+    well_rate, worst_well = worst(["branch", "well"])
+    time_rate, worst_time = worst(["branch", "elapsed_hours"])
+    well_time_rate, worst_well_time = worst(
+        ["branch", "well", "elapsed_hours"]
+    )
+    rates = (
+        global_rate,
+        branch_rate,
+        plate_row_rate,
+        well_rate,
+        time_rate,
+        well_time_rate,
+    )
+    evaluated = bool(valid.all()) and all(math.isfinite(value) for value in rates)
+    return {
+        "evaluated": evaluated,
+        "row_count": int(len(work)),
+        "total_cell_count": int(work["total_cell_count"].sum()),
+        "uncertain_count": int(work["uncertain_count"].sum()),
+        "global_uncertainty_rate": global_rate,
+        "maximum_branch_uncertainty_rate": branch_rate,
+        "worst_branch": worst_branch,
+        "maximum_plate_row_uncertainty_rate": plate_row_rate,
+        "worst_plate_row": worst_plate_row,
+        "maximum_well_uncertainty_rate": well_rate,
+        "worst_well": worst_well,
+        "maximum_time_uncertainty_rate": time_rate,
+        "worst_time": worst_time,
+        "maximum_well_time_uncertainty_rate": well_time_rate,
+        "worst_well_time": worst_well_time,
+        "maximum_rate": float(maximum_rate),
+        "pass": bool(
+            evaluated
+            and all(value <= float(maximum_rate) for value in rates)
+        ),
+    }
+
+
+def prediction_uncertainty_metrics(
+    predictions: pd.DataFrame,
+    maximum_rate: float = MAX_UNCERTAINTY_RATE,
+) -> dict[str, Any]:
+    """Convert object-level calibration predictions into count audit rows."""
+    required = {
+        "branch",
+        "well",
+        "elapsed_hours",
+        "countable",
+        "final_state",
+        "late_death_uncertain",
+    }
+    missing = required - set(predictions.columns)
+    if missing:
+        return {
+            "evaluated": False,
+            "missing_columns": sorted(missing),
+            "maximum_rate": float(maximum_rate),
+            "pass": False,
+        }
+    selected = predictions.loc[
+        as_bool(predictions["countable"])
+        & ~predictions["final_state"].astype(str).eq("artifact")
+    ].copy()
+    selected["uncertain_flag"] = as_bool(
+        selected["late_death_uncertain"]
+    ).astype(int)
+    counts = (
+        selected.groupby(
+            ["branch", "well", "elapsed_hours"],
+            as_index=False,
+        )
+        .agg(
+            total_cell_count=("uncertain_flag", "size"),
+            uncertain_count=("uncertain_flag", "sum"),
+        )
+    )
+    return uncertainty_count_metrics(counts, maximum_rate=maximum_rate)
 
 
 def branch_consensus_metrics(
@@ -2106,6 +2348,7 @@ def convergence_report(
     branch_metrics: dict[str, Any],
     perturbation_metrics: dict[str, Any],
     continuity_metrics: dict[str, Any],
+    uncertainty_metrics: dict[str, Any],
 ) -> dict[str, Any]:
     gates = {
         "D0_SAFETY": {
@@ -2168,6 +2411,9 @@ def convergence_report(
                 branch_metrics["matched_pair_final_dead_call_agreement"] >= 0.99
             ),
             **branch_metrics,
+        },
+        "UNCERTAINTY_COVERAGE": {
+            **uncertainty_metrics,
         },
         "TEMPORAL_STABILITY": {
             "pass": bool(metrics["temporal_remnant_anchor_recall"] >= 0.99),
@@ -2251,6 +2497,7 @@ def main() -> int:
         < args.max_control_false_positive_rate
     )
     branch_metrics = branch_consensus_metrics(predictions, summary)
+    uncertainty_metrics = prediction_uncertainty_metrics(predictions)
     perturbation_metrics = perturbation_stability_metrics(
         predictions,
         object_config,
@@ -2261,6 +2508,7 @@ def main() -> int:
         branch_metrics,
         perturbation_metrics,
         continuity_metrics,
+        uncertainty_metrics,
     )
     write_json(args.out_dir / "FULL_CLASSIFICATION_GO_NO_GO.json", go_no_go)
 
@@ -2360,6 +2608,7 @@ def main() -> int:
         "max_control_false_positive_rate": args.max_control_false_positive_rate,
         "anchor_metrics": metrics,
         "branch_consensus_metrics": branch_metrics,
+        "uncertainty_coverage_metrics": uncertainty_metrics,
         "perturbation_stability_metrics": perturbation_metrics,
         "former_boundary_continuity_metrics": continuity_metrics,
         "go_no_go": go_no_go,
@@ -2377,8 +2626,9 @@ def main() -> int:
             "apply the same field, object, trajectory, and branch-consensus rules to every image",
             "within a collapsed field, require object evidence and branch consensus",
             "transfer a dual-view multi-signal death call across a matched branch pair",
-            "resolve collapsed-field view conflicts from complementary matched-pair death signals",
-            "route branch, track, and field evidence conflicts to uncertainty",
+            "resolve view conflicts from complementary matched-pair death signals when neither view has strong-live evidence",
+            "treat field-level branch discordance as a rescue veto and diagnostic, not an object label",
+            "route only object-level branch, track, and field evidence conflicts to uncertainty",
             "limit d0 and untreated-live proxy changes to the prespecified false-positive ceiling",
         ],
     }

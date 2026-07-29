@@ -147,6 +147,8 @@ class PlotWellCountsTests(unittest.TestCase):
         self.assertEqual(int(record["dead_count"]), 4)
         self.assertAlmostEqual(float(record["live_fraction"]), 11 / 17)
         self.assertAlmostEqual(float(record["dead_fraction"]), 4 / 17)
+        self.assertEqual(int(record["binary_classified_count"]), 15)
+        self.assertAlmostEqual(float(record["classification_coverage"]), 15 / 17)
 
     def test_legacy_loader_preserves_intermediate_state_counts(self) -> None:
         fieldnames = [

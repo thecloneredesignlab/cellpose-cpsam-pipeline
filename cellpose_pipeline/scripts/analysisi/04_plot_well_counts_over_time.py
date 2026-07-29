@@ -453,6 +453,12 @@ def aggregate_counts(summary: pd.DataFrame, plate_map: pd.DataFrame) -> pd.DataF
     denominator = grouped["total_cell_count"].where(grouped["total_cell_count"] != 0, pd.NA)
     grouped["live_fraction"] = grouped["live_count"] / denominator
     grouped["dead_fraction"] = grouped["dead_count"] / denominator
+    grouped["binary_classified_count"] = (
+        grouped["live_count"] + grouped["dead_count"]
+    )
+    grouped["classification_coverage"] = (
+        grouped["binary_classified_count"] / denominator
+    )
     return grouped
 
 
@@ -481,13 +487,25 @@ def set_y_limits(
     if mode == "independent":
         return
     if mode == "shared":
-        maximum = float(aggregated[["live_count", "dead_count"]].max().max())
+        maximum = float(
+            aggregated[
+                ["live_count", "dead_count", "uncertain_count", "total_cell_count"]
+            ]
+            .max()
+            .max()
+        )
         limit = max(1.0, maximum * 1.05)
         for ax in axes_by_well.values():
             ax.set_ylim(0, limit)
         return
     for plate_row, row_data in aggregated.groupby("plate_row"):
-        maximum = float(row_data[["live_count", "dead_count"]].max().max())
+        maximum = float(
+            row_data[
+                ["live_count", "dead_count", "uncertain_count", "total_cell_count"]
+            ]
+            .max()
+            .max()
+        )
         limit = max(1.0, maximum * 1.05)
         for well, ax in axes_by_well.items():
             if well.startswith(str(plate_row)):
@@ -497,6 +515,21 @@ def set_y_limits(
 def style_data_axis(ax: plt.Axes, well: str, data: pd.DataFrame, minimum_time: float) -> None:
     ax.plot(data["elapsed_hours"], data["live_count"], color="#c9332c", linewidth=1.25, label="live")
     ax.plot(data["elapsed_hours"], data["dead_count"], color="#2367c9", linewidth=1.25, label="dead")
+    ax.plot(
+        data["elapsed_hours"],
+        data["uncertain_count"],
+        color="#d28b00",
+        linewidth=1.05,
+        label="uncertain",
+    )
+    ax.plot(
+        data["elapsed_hours"],
+        data["total_cell_count"],
+        color="#303030",
+        linewidth=0.9,
+        linestyle=":",
+        label="total countable",
+    )
     ax.text(
         0.025,
         0.96,
@@ -595,13 +628,17 @@ def plot_plate_counts(
 
     first_axis = next(iter(axes_by_well.values()))
     handles, labels = first_axis.get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.966), ncol=2, frameon=False, fontsize=9)
-    fig.suptitle("SUM-159 live and dead cell counts over time by well", y=0.992, fontsize=14)
+    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.966), ncol=4, frameon=False, fontsize=9)
+    fig.suptitle(
+        "SUM-159 classified and uncertain cell counts over time by well",
+        y=0.992,
+        fontsize=14,
+    )
     site_counts = sorted(int(value) for value in aggregated["n_sites"].unique())
     state_note = (
-        "artifacts excluded; final fusion transitional/uncertain states are not retained"
+        "artifacts excluded; live + dead + uncertain = total countable"
         if branch != "legacy-combined"
-        else "artifacts excluded; legacy transitional/uncertain states retained"
+        else "artifacts excluded; legacy live + dead + transitional + uncertain = total countable"
     )
     fig.text(
         0.5,
@@ -652,10 +689,14 @@ def plot_grid_counts(
     set_y_limits(axes_by_well, aggregated, y_axis)
 
     handles, labels = axes_flat[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False, fontsize=9)
+    fig.legend(handles, labels, loc="upper center", ncol=4, frameon=False, fontsize=9)
     fig.supxlabel("Elapsed time (hours)", fontsize=10)
     fig.supylabel("Count across imaging sites", fontsize=10)
-    fig.suptitle(f"SUM-159 live and dead counts: {source_description(branch)}", y=0.995, fontsize=12)
+    fig.suptitle(
+        f"SUM-159 classified and uncertain counts: {source_description(branch)}",
+        y=0.995,
+        fontsize=12,
+    )
     fig.tight_layout(rect=(0.02, 0.02, 1, 0.965))
     out_png.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_png, dpi=dpi)

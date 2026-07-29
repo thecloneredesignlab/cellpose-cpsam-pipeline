@@ -1,12 +1,19 @@
 # Current Death Classification Workflow
 
-Method version: `death_classification_consensus_v3_all_time_20260727`
+Method version: `death_classification_consensus_v3_low_uncertainty_20260728`
 
 This diagram documents the production classification-only workflow. Segmentation
 is immutable. The workflow reads the existing original and nucleated-only masks,
 performs multichannel classification, and applies one density- and
 time-calibrated death-refinement method to every image, regardless of time point
 or treatment.
+
+Approved calibration:
+`death_classification_uncertainty_optimization_20260728_170922/retry6`.
+Its operational GO receipt evaluated 3,194,462 cell objects and reported 230
+uncertain objects globally (0.0072%). The worst branch/well/time group was
+`nucleated_only / F9 / 36 h` at 0.6928%, below the 1% hard limit. These are
+automated operational proxy metrics without manual biological ground truth.
 
 ![Current death classification workflow](death_classification_workflow.svg)
 
@@ -37,7 +44,17 @@ The editable Mermaid source is
   when one view has object-level death evidence and the two views jointly carry
   at least three death signals; the call is propagated symmetrically to preserve
   branch agreement.
-- Conflicting evidence is routed to `uncertain`.
+- Field-level disagreement between segmentation branches is a rescue veto and
+  diagnostic; it is not broadcast as an object label.
+- Only a matched object-level branch conflict, a confident unresolved temporal
+  remnant, or unresolved object evidence in a consensus-collapse field is
+  routed to `uncertain`. Strong-live evidence in either matched view vetoes
+  that routing. A matched branch conflict supported by only one combined death
+  signal retains the preceding live state; at least two combined death signals
+  are required before that conflict can become `uncertain`.
+- The production gate requires uncertainty to remain at or below 1% globally
+  and in every branch, plate row, well, time point, and branch/well/time group.
+  Missing inputs fail the gate rather than being treated as unevaluated success.
 - Supplemental confirmed Dead objects remain independently countable and may
   spatially overlap a live cell mask.
 - The authoritative field table uses original-branch counts and retains the
