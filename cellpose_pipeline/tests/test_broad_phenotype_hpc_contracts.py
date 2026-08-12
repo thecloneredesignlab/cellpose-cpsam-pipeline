@@ -1017,6 +1017,13 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
                 "  echo 'unsafe environment reached fake sbatch' >&2\n"
                 "  exit 91\n"
                 "fi\n"
+                "export_spec=''\n"
+                "for argument in \"$@\"; do case \"$argument\" in --export=*) export_spec=${argument#--export=};; esac; done\n"
+                "[ -n \"$export_spec\" ] || { echo 'missing explicit export spec' >&2; exit 93; }\n"
+                "old_ifs=$IFS; IFS=,\n"
+                "for name in $export_spec; do printenv \"$name\" >/dev/null || { echo \"undefined exported variable: $name\" >&2; exit 94; }; done\n"
+                "IFS=$old_ifs\n"
+                "case \"${HPC_CONTAINER_BINDS-}\" in *,*) :;; *) echo 'comma-valued bind list was not preserved' >&2; exit 95;; esac\n"
                 f'printf "%s\\n" "$*" >> "{sbatch_log}"\n'
                 f'count=$(wc -l < "{sbatch_log}")\n'
                 "printf '%s\\n' \"$((91000 + count))\"\n",

@@ -942,7 +942,27 @@ if [[ "$EXECUTION_MODE" == "direct_test" ]]; then
 fi
 
 cpu_sbatch() {
-  /usr/bin/env -i PATH=/usr/bin:/bin "$SBATCH_BIN" --parsable "$@"
+  local argument export_names name
+  local -a clean_environment=(/usr/bin/env -i "PATH=$CONTROLLED_TOOL_PATH")
+  for argument in "$@"; do
+    case "$argument" in
+      --export=*)
+        export_names="${argument#--export=}"
+        local old_ifs="$IFS"
+        IFS=,
+        for name in $export_names; do
+          [[ "$name" =~ ^[A-Z][A-Z0-9_]*$ && -n "${!name+x}" ]] || {
+            IFS="$old_ifs"
+            echo "Invalid or undefined Slurm export variable before sbatch: $name" >&2
+            return 2
+          }
+          clean_environment+=("$name=${!name-}")
+        done
+        IFS="$old_ifs"
+        ;;
+    esac
+  done
+  "${clean_environment[@]}" "$SBATCH_BIN" --parsable "$@"
 }
 submit_job() {
   if [[ "$DRY_RUN_SUBMIT" == "1" ]]; then
