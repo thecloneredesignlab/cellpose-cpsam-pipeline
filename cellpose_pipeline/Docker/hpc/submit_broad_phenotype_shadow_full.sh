@@ -235,6 +235,10 @@ if [[ "$RESUME_STAGE" != "phase-a" ]]; then
       echo "Code snapshot archive hash differs before resume re-exec" >&2
       exit 2
     }
+    if find "$CODE_SNAPSHOT_ROOT" -perm /222 -print -quit | grep -q .; then
+      echo "Frozen code snapshot contains a writable path before resume re-exec" >&2
+      exit 2
+    fi
     tar -tf "$CODE_SNAPSHOT_ARCHIVE" | awk '
       /^\// {exit 2}
       {n=split($0, parts, "/"); for(i=1;i<=n;i++) if(parts[i]=="..") exit 3}
@@ -549,6 +553,10 @@ verify_code_snapshot() {
     echo "Code snapshot generation is incomplete" >&2
     return 2
   }
+  if find "$CODE_SNAPSHOT_ROOT" -perm /222 -print -quit | grep -q .; then
+    echo "Frozen code snapshot contains a writable path" >&2
+    return 2
+  fi
   [[ "$(head -n 1 "$CODE_SNAPSHOT_RECEIPT")" == $'property\tvalue' ]] || {
     echo "Code snapshot receipt header changed" >&2
     return 2
@@ -686,6 +694,7 @@ if [[ "$RESUME_STAGE" == "phase-a" ]]; then
   mv "$snapshot_archive_staging" "$CODE_SNAPSHOT_ARCHIVE"
   mkdir "$CODE_SNAPSHOT_ROOT"
   tar -xf "$CODE_SNAPSHOT_ARCHIVE" -C "$CODE_SNAPSHOT_ROOT"
+  chmod -R a-w "$CODE_SNAPSHOT_ROOT"
   code_snapshot_receipt_tmp="$SHADOW_ROOT/workflow_status/.code_snapshot_receipt.tmp.$$"
   sed $'s/\\\\t/\t/g' > "$code_snapshot_receipt_tmp" <<EOF
 property\tvalue
@@ -699,6 +708,10 @@ archive_sha256\t$code_snapshot_archive_sha256
 EOF
   mv "$code_snapshot_receipt_tmp" "$CODE_SNAPSHOT_RECEIPT"
   verify_code_snapshot "$submission_staging_dir/snapshot_compare"
+  if find "$CODE_SNAPSHOT_ROOT" -perm /222 -print -quit | grep -q .; then
+    echo "Frozen code snapshot contains a writable path" >&2
+    exit 2
+  fi
   PROJECT_DIR="$CODE_SNAPSHOT_ROOT"
   DEPENDENCY_LOCK="$PROJECT_DIR/cellpose_pipeline/configs/cellphenotypeannotator_dependency.lock.tsv"
   FEATURE_CONFIG="$PROJECT_DIR/cellpose_pipeline/configs/broad_phenotype_features_v1.json"
@@ -1024,13 +1037,16 @@ slurm_export_spec() {
   done
   printf '%s\n' "$spec"
 }
-dependency_args=()
+dependency_args=( )
 if [[ -n "${DEPENDENCY_JOB_ID:-}" ]]; then
   dependency_args+=(--dependency "afterok:$DEPENDENCY_JOB_ID")
 fi
-if [[ "${#dependency_args[@]}" -eq 0 ]]; then
-  dependency_args=()
-fi
+append_dependency_args() {
+  local -n destination="$1"
+  if [[ -n "${DEPENDENCY_JOB_ID:-}" ]]; then
+    destination+=(--dependency "afterok:$DEPENDENCY_JOB_ID")
+  fi
+}
 base_args=(--chdir "$PROJECT_DIR" --output "$SHADOW_ROOT/logs/%x.%A_%a.out" --error "$SHADOW_ROOT/logs/%x.%A_%a.err")
 if [[ -n "$BROAD_PHENOTYPE_QOS" ]]; then
   base_args+=(--qos "$BROAD_PHENOTYPE_QOS")
@@ -1052,7 +1068,9 @@ if [[ "$RESUME_STAGE" == "phase-a" ]]; then
   annotate_export="$umap_export"
   printf 'stage\tjob_id\tdependency\n' > "$phase_a_dag"
   disarm_bootstrap_cleanup
-  preflight_job="$(submit_job input-preflight --job-name bp_input_preflight --cpus-per-task "$PREFLIGHT_CPUS" --mem "$PREFLIGHT_MEM" --time "$PREFLIGHT_TIME" "${base_args[@]}" "${dependency_args[@]}" --export="$preflight_export" --wrap="$preflight_wrap")"
+  preflight_submit_args=(--job-name bp_input_preflight --cpus-per-task "$PREFLIGHT_CPUS" --mem "$PREFLIGHT_MEM" --time "$PREFLIGHT_TIME" "${base_args[@]}")
+  append_dependency_args preflight_submit_args
+  preflight_job="$(submit_job input-preflight "${preflight_submit_args[@]}" --export="$preflight_export" --wrap="$preflight_wrap")"
   printf 'input_preflight\t%s\t%s\n' "$preflight_job" "${DEPENDENCY_JOB_ID:-none}" >> "$phase_a_dag"
   feature_job="$(submit_job feature --job-name bp_feature --cpus-per-task "$FEATURE_CPUS" --mem "$FEATURE_MEM" --time "$FEATURE_TIME" --array "1-${N_TASKS}%${FEATURE_MAX_CONCURRENT}" "${base_args[@]}" --dependency "afterok:$preflight_job" --export="$feature_export" --wrap="$feature_wrap")"
   printf 'feature\t%s\t%s\n' "$feature_job" "$preflight_job" >> "$phase_a_dag"
@@ -1121,7 +1139,9 @@ if [[ "$RESUME_STAGE" == "predict-sharded" ]]; then
   prediction_submission="$SHADOW_ROOT/workflow_status/resume_submission_predict-sharded_${RUN_STAMP}.tsv"
   [[ ! -e "$prediction_submission" ]] || { echo "Immutable resume submission already exists: $prediction_submission" >&2; exit 2; }
   prediction_export="$(slurm_export_spec "FEATURE_MANIFEST PREDICTION_ROOT CPA_MODEL_DIR CPA_TRAIN_RECEIPT MODEL_ACCEPTANCE_RECEIPT MODEL_ACCEPTANCE_SHA256_FILE")"
-  acceptance_job="$(submit_job model-acceptance --job-name bp_model_acceptance --cpus-per-task "$MODEL_ACCEPTANCE_CPUS" --mem "$MODEL_ACCEPTANCE_MEM" --time "$MODEL_ACCEPTANCE_TIME" "${base_args[@]}" "${dependency_args[@]}" --export="$prediction_export" --wrap="$(worker_wrap_command "$MODEL_ACCEPTANCE_WORKER")")"
+  acceptance_submit_args=(--job-name bp_model_acceptance --cpus-per-task "$MODEL_ACCEPTANCE_CPUS" --mem "$MODEL_ACCEPTANCE_MEM" --time "$MODEL_ACCEPTANCE_TIME" "${base_args[@]}")
+  append_dependency_args acceptance_submit_args
+  acceptance_job="$(submit_job model-acceptance "${acceptance_submit_args[@]}" --export="$prediction_export" --wrap="$(worker_wrap_command "$MODEL_ACCEPTANCE_WORKER")")"
   prediction_job="$(submit_job predict-sharded --job-name bp_predict_sharded --cpus-per-task "$PREDICT_CPUS" --mem "$PREDICT_MEM" --time "$PREDICT_TIME" --array "1-${prediction_tasks}%${PREDICT_MAX_CONCURRENT}" "${base_args[@]}" --dependency "afterok:$acceptance_job" --export="$prediction_export" --wrap="$(worker_wrap_command "$PREDICT_WORKER")")"
   printf 'stage\tjob_id\tdependency\nmodel-acceptance\t%s\t%s\npredict-sharded\t%s\t%s\n' "$acceptance_job" "${DEPENDENCY_JOB_ID:-none}" "$prediction_job" "$acceptance_job" > "$prediction_submission"
   echo "model_acceptance_job_id=$acceptance_job"
@@ -1134,7 +1154,9 @@ if [[ "$RESUME_STAGE" == "input-preflight" ]]; then
   [[ ! -e "$RESOLVED_FIELD_MANIFEST_DIR" ]] || { echo "Resolved Stage 06 manifest already exists: $RESOLVED_FIELD_MANIFEST_DIR" >&2; exit 2; }
   resume_submission="$SHADOW_ROOT/workflow_status/resume_submission_input-preflight_${RUN_STAMP}.tsv"
   [[ ! -e "$resume_submission" ]] || { echo "Immutable resume submission already exists: $resume_submission" >&2; exit 2; }
-  resume_job="$(submit_job input-preflight --job-name bp_input_preflight --cpus-per-task "$PREFLIGHT_CPUS" --mem "$PREFLIGHT_MEM" --time "$PREFLIGHT_TIME" "${base_args[@]}" "${dependency_args[@]}" --export="$(slurm_export_spec "RESOLVED_FIELD_MANIFEST_DIR")" --wrap="$(worker_wrap_command "$PREFLIGHT_WORKER")")"
+  resume_submit_args=(--job-name bp_input_preflight --cpus-per-task "$PREFLIGHT_CPUS" --mem "$PREFLIGHT_MEM" --time "$PREFLIGHT_TIME" "${base_args[@]}")
+  append_dependency_args resume_submit_args
+  resume_job="$(submit_job input-preflight "${resume_submit_args[@]}" --export="$(slurm_export_spec "RESOLVED_FIELD_MANIFEST_DIR")" --wrap="$(worker_wrap_command "$PREFLIGHT_WORKER")")"
   echo -e "stage\tjob_id\tdependency\ninput-preflight\t$resume_job\t${DEPENDENCY_JOB_ID:-none}" > "$resume_submission"
   echo "resume_stage=input-preflight"
   echo "resume_job_id=$resume_job"
@@ -1166,7 +1188,9 @@ if [[ "$RESUME_STAGE" == "feature-retry" ]]; then
   export TASK_LIST="$retry_frozen_list"
   resume_submission="$SHADOW_ROOT/workflow_status/resume_submission_feature-retry_${RUN_STAMP}_${retry_sha:0:12}.tsv"
   [[ ! -e "$resume_submission" ]] || { echo "Immutable resume submission already exists: $resume_submission" >&2; exit 2; }
-  resume_job="$(submit_job feature-retry --job-name bp_feature_retry --cpus-per-task "$FEATURE_CPUS" --mem "$FEATURE_MEM" --time "$FEATURE_TIME" --array "1-${retry_task_count}%${FEATURE_MAX_CONCURRENT}" "${base_args[@]}" "${dependency_args[@]}" --export="$(slurm_export_spec)" --wrap="$(worker_wrap_command "$FEATURE_WORKER")")"
+  resume_submit_args=(--job-name bp_feature_retry --cpus-per-task "$FEATURE_CPUS" --mem "$FEATURE_MEM" --time "$FEATURE_TIME" --array "1-${retry_task_count}%${FEATURE_MAX_CONCURRENT}" "${base_args[@]}")
+  append_dependency_args resume_submit_args
+  resume_job="$(submit_job feature-retry "${resume_submit_args[@]}" --export="$(slurm_export_spec)" --wrap="$(worker_wrap_command "$FEATURE_WORKER")")"
   echo -e "stage\tjob_id\tdependency\tretry_task_list\tfrozen_retry_task_list\tretry_task_list_sha256\nfeature-retry\t$resume_job\t${DEPENDENCY_JOB_ID:-none}\t$RETRY_TASK_LIST\t$retry_frozen_list\t$retry_sha" > "$resume_submission"
   echo "resume_stage=feature-retry"
   echo "resume_job_id=$resume_job"
@@ -1236,7 +1260,9 @@ fi
 resume_export="$(slurm_export_spec "$resume_extra_names")"
 resume_submission="$SHADOW_ROOT/workflow_status/resume_submission_${RESUME_STAGE}_${RUN_STAMP}.tsv"
 [[ ! -e "$resume_submission" ]] || { echo "Immutable resume submission already exists: $resume_submission" >&2; exit 2; }
-resume_job="$(submit_job "$RESUME_STAGE" --job-name "bp_${RESUME_STAGE//-/_}" --cpus-per-task "$resume_cpus" --mem "$resume_mem" --time "$resume_time" "${base_args[@]}" "${dependency_args[@]}" --export="$resume_export" --wrap="$(worker_wrap_command "$resume_worker")")"
+resume_submit_args=(--job-name "bp_${RESUME_STAGE//-/_}" --cpus-per-task "$resume_cpus" --mem "$resume_mem" --time "$resume_time" "${base_args[@]}")
+append_dependency_args resume_submit_args
+resume_job="$(submit_job "$RESUME_STAGE" "${resume_submit_args[@]}" --export="$resume_export" --wrap="$(worker_wrap_command "$resume_worker")")"
 echo -e "stage\tjob_id\tdependency\n$RESUME_STAGE\t$resume_job\t${DEPENDENCY_JOB_ID:-none}" > "$resume_submission"
 echo "resume_stage=$RESUME_STAGE"
 echo "resume_job_id=$resume_job"

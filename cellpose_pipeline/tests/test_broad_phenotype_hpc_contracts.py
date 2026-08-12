@@ -952,6 +952,13 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
                 shadow / "workflow_status" / "code_snapshot"
             ))
             self.assertEqual(preflight["source_project_dir"], str(REPO_ROOT))
+            snapshot_root = shadow / "workflow_status" / "code_snapshot"
+            writable_snapshot_paths = [
+                path
+                for path in snapshot_root.rglob("*")
+                if path.stat().st_mode & 0o222
+            ]
+            self.assertEqual(writable_snapshot_paths, [])
             snapshot_archive = shadow / "workflow_status" / "code_snapshot.tar"
             self.assertEqual(
                 preflight["code_snapshot_archive_sha256"],
@@ -1124,6 +1131,7 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
             )
             snapshot_submitter_bytes = snapshot_submitter.read_bytes()
             execution_marker = root / "tampered_snapshot_submitter_executed"
+            snapshot_submitter.chmod(snapshot_submitter.stat().st_mode | 0o200)
             snapshot_submitter.write_text(
                 "#!/bin/sh\n"
                 f'printf executed > "{execution_marker}"\n'
@@ -1151,6 +1159,7 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
             )
             self.assertFalse(execution_marker.exists())
             snapshot_submitter.write_bytes(snapshot_submitter_bytes)
+            snapshot_submitter.chmod(snapshot_submitter.stat().st_mode & ~0o222)
 
             snapshot_config = (
                 shadow
@@ -1160,6 +1169,7 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
                 / "configs"
                 / "broad_phenotype_features_v1.json"
             )
+            snapshot_config.chmod(snapshot_config.stat().st_mode | 0o200)
             snapshot_config.write_text('{"drift":true}\n', encoding="utf-8")
             drift_env = {
                 **env,
