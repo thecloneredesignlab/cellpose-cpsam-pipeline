@@ -1139,8 +1139,13 @@ if [[ "$RESUME_STAGE" == "predict-sharded" ]]; then
     acceptance_submit_args+=(--dependency "afterok:$DEPENDENCY_JOB_ID")
   fi
   acceptance_job="$(submit_job model-acceptance "${acceptance_submit_args[@]}" --export="$prediction_export" --wrap="$(worker_wrap_command "$MODEL_ACCEPTANCE_WORKER")")"
-  prediction_job="$(submit_job predict-sharded --job-name bp_predict_sharded --cpus-per-task "$PREDICT_CPUS" --mem "$PREDICT_MEM" --time "$PREDICT_TIME" --array "1-${prediction_tasks}%${PREDICT_MAX_CONCURRENT}" "${base_args[@]}" --dependency "afterok:$acceptance_job" --export="$prediction_export" --wrap="$(worker_wrap_command "$PREDICT_WORKER")")"
-  printf 'stage\tjob_id\tdependency\nmodel-acceptance\t%s\t%s\npredict-sharded\t%s\t%s\n' "$acceptance_job" "${DEPENDENCY_JOB_ID:-none}" "$prediction_job" "$acceptance_job" > "$prediction_submission"
+  printf 'stage\tjob_id\tdependency\nmodel-acceptance\t%s\t%s\n' "$acceptance_job" "${DEPENDENCY_JOB_ID:-none}" > "$prediction_submission"
+  if ! prediction_job="$(submit_job predict-sharded --job-name bp_predict_sharded --cpus-per-task "$PREDICT_CPUS" --mem "$PREDICT_MEM" --time "$PREDICT_TIME" --array "1-${prediction_tasks}%${PREDICT_MAX_CONCURRENT}" "${base_args[@]}" --dependency "afterok:$acceptance_job" --export="$prediction_export" --wrap="$(worker_wrap_command "$PREDICT_WORKER")")"; then
+    printf 'predict-sharded\tSUBMISSION_FAILED\t%s\n' "$acceptance_job" >> "$prediction_submission"
+    echo "Prediction-array submission failed after model-acceptance job $acceptance_job; the immutable submission receipt preserves that live job identity: $prediction_submission" >&2
+    exit 1
+  fi
+  printf 'predict-sharded\t%s\t%s\n' "$prediction_job" "$acceptance_job" >> "$prediction_submission"
   echo "model_acceptance_job_id=$acceptance_job"
   echo "prediction_array_job_id=$prediction_job"
   echo "prediction_root=$PREDICTION_ROOT"

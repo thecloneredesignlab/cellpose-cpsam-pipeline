@@ -341,6 +341,12 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
         self.assertIn('legacy_no_go_enforcement\\tinformational_only', text)
         self.assertIn('RESUME_STAGE" == "predict-sharded"', text)
         self.assertIn('finalize-sharded)', text)
+        predict_resume = text[text.index('if [[ "$RESUME_STAGE" == "predict-sharded" ]]') :]
+        self.assertLess(
+            predict_resume.index("model-acceptance\\t%s"),
+            predict_resume.index('prediction_job="$(submit_job predict-sharded'),
+        )
+        self.assertIn("predict-sharded\\tSUBMISSION_FAILED", predict_resume)
         self.assertNotIn("--nodelist", text)
         self.assertNotIn("--node=", text)
         self.assertNotIn("--gres=", text)
