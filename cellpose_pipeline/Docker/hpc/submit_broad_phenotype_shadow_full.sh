@@ -62,7 +62,7 @@ MAX_UMAP_CELLS_PER_WELL="${MAX_UMAP_CELLS_PER_WELL:-500}"
 UMAP_SAMPLE_SEED="${UMAP_SAMPLE_SEED:-20260812}"
 FIXED_HPC_CONTAINER_FORWARD_PREFIXES="PYTHONNOUSERSITE,KMP_DUPLICATE_LIB_OK,MPLCONFIGDIR,CUDA_VISIBLE_DEVICES,REPORT_PLUGIN_ROOT"
 
-for forbidden_runtime_override in HPC_CONTAINER_RUNTIME_ROOT HPC_CONTAINER_FORWARD_PREFIXES SOURCE_FIELD_MANIFEST_FILE; do
+for forbidden_runtime_override in HPC_CONTAINER_RUNTIME_ROOT HPC_CONTAINER_FORWARD_PREFIXES HPC_PROJECT_ROOT_SOURCE SOURCE_FIELD_MANIFEST_FILE; do
   [[ -z "${!forbidden_runtime_override+x}" ]] || {
     echo "$forbidden_runtime_override is forbidden; the submitter derives the runtime and manifest from frozen roots" >&2
     exit 2
@@ -138,6 +138,11 @@ case "$EXECUTION_MODE" in
   slurm|direct_test) ;;
   *) echo "EXECUTION_MODE must be slurm or direct_test" >&2; exit 2 ;;
 esac
+if [[ "$EXECUTION_MODE" == "slurm" ]]; then
+  CODE_SNAPSHOT_EXECUTION_MODE="node_local_verified_archive_v1"
+else
+  CODE_SNAPSHOT_EXECUTION_MODE="shared_verified_snapshot_direct_test_v1"
+fi
 case "$DRY_RUN_SUBMIT" in 0|1) ;; *) echo "DRY_RUN_SUBMIT must be 0 or 1" >&2; exit 2 ;; esac
 case "$BRANCH" in original|nucleated) ;; *) echo "BRANCH must be original or nucleated" >&2; exit 2 ;; esac
 case "$INCLUDE_NUCLEI_COMPARATOR" in 0|1) ;; *) echo "INCLUDE_NUCLEI_COMPARATOR must be 0 or 1" >&2; exit 2 ;; esac
@@ -235,6 +240,42 @@ if [[ "$RESUME_STAGE" != "phase-a" ]]; then
   current_submitter_realpath="$(cd "$SCRIPT_DIR" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
   snapshot_submitter_realpath="$(cd "$(dirname "$snapshot_submitter")" && pwd -P)/$(basename "$snapshot_submitter")"
   if [[ "$current_submitter_realpath" != "$snapshot_submitter_realpath" ]]; then
+    if [[ -n "${BROAD_PHENOTYPE_VERIFIED_RESUME_SOURCE:-}" ]]; then
+      verified_resume_source="$(cd "$BROAD_PHENOTYPE_VERIFIED_RESUME_SOURCE" && pwd -P)"
+      current_resume_source="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
+      [[ "$verified_resume_source" == "$current_resume_source" ]] || {
+        echo "Verified resume source does not contain the running submitter" >&2
+        exit 2
+      }
+      [[ "${BROAD_PHENOTYPE_VERIFIED_RESUME_ARCHIVE_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] || {
+        echo "Verified resume source is missing its archive SHA-256" >&2
+        exit 2
+      }
+      observed_verified_resume_sha="$(sha256sum "$CODE_SNAPSHOT_ARCHIVE")"
+      observed_verified_resume_sha="${observed_verified_resume_sha%%[[:space:]]*}"
+      [[ "$observed_verified_resume_sha" == "$BROAD_PHENOTYPE_VERIFIED_RESUME_ARCHIVE_SHA256" ]] || {
+        echo "Verified resume archive changed before frozen submitter execution" >&2
+        exit 2
+      }
+      tar -tf "$CODE_SNAPSHOT_ARCHIVE" | awk '
+        /^\// {exit 2}
+        {n=split($0, parts, "/"); for(i=1;i<=n;i++) if(parts[i]=="..") exit 3}
+      ' || {
+        echo "Verified resume archive contains an unsafe path" >&2
+        exit 2
+      }
+      verified_resume_compare="$(mktemp -d "${TMPDIR:-/tmp}/broad-phenotype-resume-child.XXXXXX")"
+      cleanup_verified_resume_compare() { rm -rf -- "$verified_resume_compare"; }
+      trap cleanup_verified_resume_compare EXIT
+      tar -xf "$CODE_SNAPSHOT_ARCHIVE" -C "$verified_resume_compare"
+      diff -qr "$verified_resume_compare" "$verified_resume_source" >/dev/null || {
+        echo "Verified resume source differs from its frozen archive" >&2
+        exit 2
+      }
+      cleanup_verified_resume_compare
+      trap - EXIT
+      unset BROAD_PHENOTYPE_VERIFIED_RESUME_SOURCE BROAD_PHENOTYPE_VERIFIED_RESUME_ARCHIVE_SHA256
+    else
     [[ "$(head -n 1 "$CODE_SNAPSHOT_RECEIPT")" == $'property\tvalue' ]] || {
       echo "Code snapshot receipt header changed before resume re-exec" >&2
       exit 2
@@ -291,9 +332,13 @@ if [[ "$RESUME_STAGE" != "phase-a" ]]; then
       echo "Extracted code snapshot differs from its frozen archive before resume re-exec" >&2
       exit 2
     }
-    rm -rf -- "$early_snapshot_compare"
-    trap - EXIT
-    exec /usr/bin/env -i \
+    verified_snapshot_submitter="$early_snapshot_compare/cellpose_pipeline/Docker/hpc/submit_broad_phenotype_shadow_full.sh"
+    [[ -x "$verified_snapshot_submitter" ]] || {
+      echo "Verified archive lacks its executable resume submitter" >&2
+      exit 2
+    }
+    set +e
+    /usr/bin/env -i \
       PATH="$CONTROLLED_TOOL_PATH" \
       RESULTS_ROOT="$RESULTS_ROOT" \
       DATASET_ROOT="$DATASET_ROOT" \
@@ -346,7 +391,15 @@ if [[ "$RESUME_STAGE" != "phase-a" ]]; then
       MODEL_ACCEPTANCE_CPUS="${MODEL_ACCEPTANCE_CPUS:-}" \
       MODEL_ACCEPTANCE_MEM="${MODEL_ACCEPTANCE_MEM:-}" \
       MODEL_ACCEPTANCE_TIME="${MODEL_ACCEPTANCE_TIME:-}" \
-      "$SYSTEM_BASH_BIN" "$snapshot_submitter" "$@"
+      BROAD_PHENOTYPE_VERIFIED_RESUME_SOURCE="$early_snapshot_compare" \
+      BROAD_PHENOTYPE_VERIFIED_RESUME_ARCHIVE_SHA256="$early_archive_sha" \
+      "$SYSTEM_BASH_BIN" "$verified_snapshot_submitter" "$@"
+    verified_resume_status=$?
+    set -e
+    cleanup_early_snapshot_compare
+    trap - EXIT
+    exit "$verified_resume_status"
+    fi
   fi
 fi
 
@@ -380,7 +433,6 @@ append_bind "$FIELD_MANIFEST_DIR:$FIELD_MANIFEST_DIR:ro"
 append_bind "$SOURCE_SEGMENTATION_ROOT:$SOURCE_SEGMENTATION_ROOT:ro"
 append_bind "$CLASSIFICATION_ROOT:$CLASSIFICATION_ROOT:ro"
 append_bind "$CPA_REFERENCE_ROOT:$CPA_REFERENCE_ROOT:ro"
-append_bind "$CODE_SNAPSHOT_ROOT:$CODE_SNAPSHOT_ROOT:ro"
 export HPC_CONTAINER_BINDS
 
 source "$SCRIPT_DIR/util/hpc_container_apptainer_runtime.sh"
@@ -838,6 +890,7 @@ if [[ "$RESUME_STAGE" != "phase-a" ]]; then
   compare_frozen code_snapshot_root "$CODE_SNAPSHOT_ROOT"
   compare_frozen code_snapshot_archive_sha256 "$code_snapshot_archive_sha256"
   compare_frozen code_snapshot_host_permission_mode "$snapshot_host_permission_mode"
+  compare_frozen code_snapshot_execution_mode "$CODE_SNAPSHOT_EXECUTION_MODE"
   compare_frozen hpc_container_sha256 "$observed_sif_sha256"
   compare_frozen hpc_container_identity_file "$HPC_CONTAINER_IDENTITY_FILE"
   compare_frozen hpc_container_identity_file_sha256 "$HPC_CONTAINER_IDENTITY_FILE_SHA256"
@@ -900,6 +953,7 @@ code_snapshot_root\t$CODE_SNAPSHOT_ROOT
 code_snapshot_archive\t$CODE_SNAPSHOT_ARCHIVE
 code_snapshot_archive_sha256\t$code_snapshot_archive_sha256
 code_snapshot_host_permission_mode\t$snapshot_host_permission_mode
+code_snapshot_execution_mode\t$CODE_SNAPSHOT_EXECUTION_MODE
 results_root\t$RESULTS_ROOT
 dataset_root\t$DATASET_ROOT
 source_segmentation_root\t$SOURCE_SEGMENTATION_ROOT
@@ -1042,12 +1096,77 @@ submit_job() {
 }
 worker_wrap_command() {
   local worker="$1"
+  local worker_relative bootstrap_program
   case "$worker" in
     "$CODE_SNAPSHOT_ROOT"/*) ;;
     *) echo "Slurm worker must reside in the frozen code snapshot: $worker" >&2; return 2 ;;
   esac
   [[ -x "$worker" ]] || { echo "Slurm worker is not executable: $worker" >&2; return 2; }
-  printf 'export PATH=/usr/bin:/bin; exec %q %q' "$SYSTEM_BASH_BIN" "$worker"
+  worker_relative="${worker#"$CODE_SNAPSHOT_ROOT"/}"
+  [[ "$worker_relative" =~ ^[A-Za-z0-9._/-]+$ && "$worker_relative" != /* && "/$worker_relative/" != */../* ]] || {
+    echo "Slurm worker has an unsafe snapshot-relative path: $worker_relative" >&2
+    return 2
+  }
+  bootstrap_program='set -euo pipefail
+export PATH=/usr/bin:/bin:/sbin
+archive="$1"
+expected_sha256="$2"
+canonical_root="$3"
+worker_relative="$4"
+system_bash="$5"
+[[ "$archive" == /* && -r "$archive" ]] || { echo "Code snapshot archive is unavailable: $archive" >&2; exit 2; }
+[[ "$expected_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "Invalid frozen code snapshot archive SHA-256" >&2; exit 2; }
+[[ "$canonical_root" == /* ]] || { echo "Canonical code snapshot root must be absolute: $canonical_root" >&2; exit 2; }
+[[ "$worker_relative" =~ ^[A-Za-z0-9._/-]+$ && "$worker_relative" != /* && "/$worker_relative/" != */../* ]] || { echo "Unsafe node-local worker path: $worker_relative" >&2; exit 2; }
+[[ "$system_bash" == /* && -x "$system_bash" ]] || { echo "Node-local worker requires an absolute Bash interpreter" >&2; exit 2; }
+node_tmp_base="${SLURM_TMPDIR:-/tmp}"
+[[ "$node_tmp_base" == /* && -d "$node_tmp_base" ]] || { echo "SLURM_TMPDIR must be an absolute existing node-local directory: $node_tmp_base" >&2; exit 2; }
+node_local_parent="$(mktemp -d "$node_tmp_base/broad-phenotype-code.XXXXXX")"
+cleanup_node_local_snapshot() {
+  if [[ -d "${local_project:-}" ]]; then chmod -R u+w "$local_project" 2>/dev/null || true; fi
+  rm -rf -- "$node_local_parent"
+}
+trap cleanup_node_local_snapshot EXIT
+trap "exit 129" HUP
+trap "exit 130" INT
+trap "exit 143" TERM
+local_archive="$node_local_parent/code_snapshot.tar"
+local_project="$node_local_parent/project"
+cp -- "$archive" "$local_archive"
+observed_sha256="$(sha256sum "$local_archive")"
+observed_sha256="${observed_sha256%%[[:space:]]*}"
+[[ "$observed_sha256" == "$expected_sha256" ]] || { echo "Node-local code snapshot archive SHA-256 mismatch: expected=$expected_sha256 observed=$observed_sha256" >&2; exit 2; }
+tar -tf "$local_archive" | awk '\''
+  /^\// {exit 2}
+  {n=split($0, parts, "/"); for(i=1;i<=n;i++) if(parts[i]=="..") exit 3}
+'\'' || { echo "Node-local code snapshot archive contains an unsafe path" >&2; exit 2; }
+mkdir "$local_project"
+tar -xf "$local_archive" -C "$local_project"
+local_worker="$local_project/$worker_relative"
+[[ -f "$local_worker" && ! -L "$local_worker" && -x "$local_worker" ]] || { echo "Verified node-local snapshot lacks executable worker: $worker_relative" >&2; exit 2; }
+chmod -R a-w "$local_project"
+export BROAD_PHENOTYPE_NODE_LOCAL_SNAPSHOT_ROOT="$local_project"
+export HPC_PROJECT_ROOT_SOURCE="$local_project"
+export PROJECT_DIR="$canonical_root"
+export HPC_PROJECT_ROOT="$canonical_root"
+export HPC_CONTAINER_RUNTIME_ROOT="$local_project/cellpose_pipeline/Docker/hpc"
+export DEPENDENCY_LOCK="$canonical_root/cellpose_pipeline/configs/cellphenotypeannotator_dependency.lock.tsv"
+export FEATURE_CONFIG="$canonical_root/cellpose_pipeline/configs/broad_phenotype_features_v1.json"
+export CLASSES_FILE="$canonical_root/cellpose_pipeline/configs/broad_phenotype_classes_v1.tsv"
+export PLATE_MAP="$canonical_root/cellpose_pipeline/scripts/analysisi/resources/SUM159_AC_Experiment1_PlateMap.csv"
+printf "code_snapshot_execution_mode=node_local_verified_archive_v1\\n"
+printf "code_snapshot_archive_sha256=%s\\n" "$expected_sha256"
+printf "node_local_code_snapshot_root=%s\\n" "$local_project"
+printf "canonical_code_snapshot_root=%s\\n" "$canonical_root"
+"$system_bash" "$local_worker"'
+  printf 'exec %q --noprofile --norc -c %q broad-phenotype-node-local %q %q %q %q %q' \
+    "$SYSTEM_BASH_BIN" \
+    "$bootstrap_program" \
+    "$CODE_SNAPSHOT_ARCHIVE" \
+    "$code_snapshot_archive_sha256" \
+    "$CODE_SNAPSHOT_ROOT" \
+    "$worker_relative" \
+    "$SYSTEM_BASH_BIN"
 }
 slurm_export_spec() {
   local extra_names="${1:-}"
@@ -1075,7 +1194,7 @@ slurm_export_spec() {
   done
   printf '%s\n' "$spec"
 }
-base_args=(--chdir "$PROJECT_DIR" --output "$SHADOW_ROOT/logs/%x.%A_%a.out" --error "$SHADOW_ROOT/logs/%x.%A_%a.err")
+base_args=(--chdir "$SHADOW_ROOT" --output "$SHADOW_ROOT/logs/%x.%A_%a.out" --error "$SHADOW_ROOT/logs/%x.%A_%a.err")
 if [[ -n "$BROAD_PHENOTYPE_QOS" ]]; then
   base_args+=(--qos "$BROAD_PHENOTYPE_QOS")
 fi

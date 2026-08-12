@@ -417,7 +417,14 @@ def index_feature_shards(
 
 
 def image_shape(path: Path) -> tuple[int, int, int, int]:
-    """Return height, width, component count, and page count without full decode."""
+    """Return height, width, component count, and TIFF IFD count.
+
+    TIFF metadata may contain auxiliary one-pixel IFDs that tifffile excludes
+    from the primary series but the reference R backend still exposes.  The
+    page count therefore stays explicit so ``images.tsv`` can select the
+    primary full-resolution grayscale IFD without silently relying on a
+    first-page fallback.
+    """
     suffix = path.suffix.lower()
     if suffix in {".tif", ".tiff"}:
         with tifffile.TiffFile(path) as tif:
@@ -1075,6 +1082,7 @@ def audit_feature_shards(
                         "width": "",
                         "components": "",
                         "pages": "",
+                        "page_index": "",
                         "matches_combined": "",
                     }
                 )
@@ -1096,6 +1104,9 @@ def audit_feature_shards(
                     "width": shape[1],
                     "components": shape[2],
                     "pages": shape[3],
+                    "page_index": (
+                        "1" if column in REVIEW_RAW_COLUMNS and shape[3] > 1 else ""
+                    ),
                     "matches_combined": matches,
                 }
             )
@@ -1108,10 +1119,13 @@ def audit_feature_shards(
                 )
         for column in REVIEW_RAW_COLUMNS:
             shape = dimensions[column]
-            if shape[2] != 1 or shape[3] != 1:
+            if shape[2] != 1:
                 raise ValueError(
-                    f"Scalar review channel must be a single 2D plane for key={key}, {column}={shape}"
+                    f"Scalar review channel primary series must be grayscale for "
+                    f"key={key}, {column}={shape}"
                 )
+            if shape[3] < 1:
+                raise ValueError(f"Review TIFF contains no readable IFD for key={key}, {column}")
 
         mask_path = Path(field[selected_mask_column]).expanduser().resolve()
         header = read_delimited_header(shard)
@@ -1472,13 +1486,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ("brightfield", "brightfield_raw", "Brightfield", "#ffffff"),
                     ("nuclei", "nuclei_raw", "Nuclei", "#00ffff"),
                 ):
+                    source_path = Path(field[source]).expanduser().resolve()
+                    source_shape = image_shape(source_path)
                     images_writer.writerow(
                         {
                             **common_image,
                             "channel_id": channel_id,
-                            "image_path": str(Path(field[source]).expanduser().resolve()),
+                            "image_path": str(source_path),
                             "channel_index": "",
-                            "page_index": "",
+                            "page_index": "1" if source_shape[3] > 1 else "",
                             "display_name": name,
                             "display_color": color,
                         }
@@ -1575,6 +1591,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "width",
             "components",
             "pages",
+            "page_index",
             "matches_combined",
         ],
         path_audit,

@@ -9,6 +9,7 @@ HPC_CONTAINER_BINDS="${HPC_CONTAINER_BINDS:-}"
 HPC_CONTAINER_FORWARD_PREFIXES="${HPC_CONTAINER_FORWARD_PREFIXES:-PYTHONNOUSERSITE,KMP_DUPLICATE_LIB_OK,MPLCONFIGDIR,CUDA_VISIBLE_DEVICES,REPORT_PLUGIN_ROOT}"
 HPC_CONTAINER_GPU="${HPC_CONTAINER_GPU:-auto}"
 HPC_PROJECT_ROOT_BIND_MODE="${HPC_PROJECT_ROOT_BIND_MODE:-rw}"
+HPC_PROJECT_ROOT_SOURCE="${HPC_PROJECT_ROOT_SOURCE:-}"
 HPC_CONTAINER_RUNTIME_ACTIVE=TRUE
 
 case ":${PATH}:" in
@@ -22,6 +23,7 @@ export HPC_CONTAINER_BINDS
 export HPC_CONTAINER_FORWARD_PREFIXES
 export HPC_CONTAINER_GPU
 export HPC_PROJECT_ROOT_BIND_MODE
+export HPC_PROJECT_ROOT_SOURCE
 export HPC_CONTAINER_RUNTIME_ACTIVE
 export PATH
 
@@ -45,6 +47,12 @@ hpc_container_prepare() {
       return 2
       ;;
   esac
+  if [[ -n "${HPC_PROJECT_ROOT_SOURCE}" ]]; then
+    [[ "${HPC_PROJECT_ROOT_SOURCE}" == /* && -d "${HPC_PROJECT_ROOT_SOURCE}" ]] || {
+      echo "HPC_PROJECT_ROOT_SOURCE must be an absolute existing directory: ${HPC_PROJECT_ROOT_SOURCE}" >&2
+      return 2
+    }
+  fi
 }
 
 hpc_container_ignore_host_runtime() {
@@ -137,9 +145,16 @@ hpc_apptainer_exec() {
     fi
   done < <(compgen -e)
 
+  # The project destination remains canonical for receipts and command-line
+  # contracts, while Slurm jobs may provide a verified node-local source.
   local project_root="${HPC_PROJECT_ROOT:-${PWD}}"
+  local project_root_source="${HPC_PROJECT_ROOT_SOURCE:-${project_root}}"
+  [[ "${project_root}" == /* ]] || {
+    echo "HPC_PROJECT_ROOT must be an absolute container destination: ${project_root}" >&2
+    return 2
+  }
   local host_home="${HOME:-}"
-  if [[ -n "${host_home}" && "${project_root}" == "${host_home}" ]]; then
+  if [[ -n "${host_home}" && ( "${project_root}" == "${host_home}" || "${project_root_source}" == "${host_home}" ) ]]; then
     echo "Refusing to bind the whole host home as the project root." >&2
     return 2
   fi
@@ -205,8 +220,8 @@ hpc_apptainer_exec() {
       [[ "${duplicate_bind}" -eq 0 ]] || continue
 
       if [[ "${bind_destination}" == "${project_root}" ]]; then
-        [[ "${bind_source}" == "${project_root}" && "${bind_options}" == "${HPC_PROJECT_ROOT_BIND_MODE}" ]] || {
-          echo "Explicit project-root bind must match source, destination, and mode ${HPC_PROJECT_ROOT_BIND_MODE}: ${bind_path}" >&2
+        [[ "${bind_source}" == "${project_root_source}" && "${bind_options}" == "${HPC_PROJECT_ROOT_BIND_MODE}" ]] || {
+          echo "Explicit project-root bind must match source ${project_root_source}, destination ${project_root}, and mode ${HPC_PROJECT_ROOT_BIND_MODE}: ${bind_path}" >&2
           IFS="${old_ifs}"
           return 2
         }
@@ -219,9 +234,9 @@ hpc_apptainer_exec() {
     IFS="${old_ifs}"
   fi
 
-  if [[ -d "${project_root}" ]]; then
+  if [[ -d "${project_root_source}" ]]; then
     if [[ "${project_bind_present}" -eq 0 ]]; then
-      command+=(--bind "${project_root}:${project_root}:${HPC_PROJECT_ROOT_BIND_MODE}")
+      command+=(--bind "${project_root_source}:${project_root}:${HPC_PROJECT_ROOT_BIND_MODE}")
     fi
     command+=(--pwd "${project_root}")
   fi

@@ -83,8 +83,14 @@ class BroadPhenotypeCPAAdapterTests(unittest.TestCase):
                 "nucleated_combined_mask": field / "nucleated_mask.tif",
             }
             tifffile.imwrite(paths["combined_raw"], combined, photometric="rgb")
-            for role in ("brightfield_raw", "dead_raw", "nuclei_raw"):
-                tifffile.imwrite(paths[role], scalar)
+            for role in ("brightfield_raw", "nuclei_raw"):
+                # Live Incucyte TIFFs expose a full-resolution primary IFD and
+                # a one-pixel auxiliary IFD to R's tiff reader.  Exercise that
+                # exact contract so the adapter must write page_index=1.
+                with tifffile.TiffWriter(paths[role]) as writer:
+                    writer.write(scalar)
+                    writer.write(np.zeros((1, 1), dtype=scalar.dtype))
+            tifffile.imwrite(paths["dead_raw"], scalar)
             tifffile.imwrite(paths["combined_mask"], mask)
             tifffile.imwrite(paths["nucleated_combined_mask"], mask)
             manifest_rows.append({"key": key, **{role: str(path) for role, path in paths.items()}})
@@ -249,10 +255,17 @@ class BroadPhenotypeCPAAdapterTests(unittest.TestCase):
                 [display["display_id"] for display in project["review"]["displays"]],
                 ["brightfield", "nuclei"],
             )
-            self.assertEqual(
-                {row["channel_id"] for row in read_tsv(shadow / "cpa" / "images.tsv")},
-                {"brightfield", "nuclei"},
+            image_rows = read_tsv(shadow / "cpa" / "images.tsv")
+            self.assertEqual({row["channel_id"] for row in image_rows}, {"brightfield", "nuclei"})
+            self.assertEqual({row["page_index"] for row in image_rows}, {"1"})
+            path_audit = read_tsv(
+                shadow / "workflow_status" / "adapter" / "path_dimension_audit.tsv"
             )
+            review_rows = [
+                row for row in path_audit if row["asset_role"] in {"brightfield_raw", "nuclei_raw"}
+            ]
+            self.assertEqual({row["pages"] for row in review_rows}, {"2"})
+            self.assertEqual({row["page_index"] for row in review_rows}, {"1"})
             policy = {row["column"]: row for row in read_tsv(shadow / "workflow_status" / "adapter" / "feature_policy.tsv")}
             self.assertEqual(policy["centroid_x_px"]["included"], "false")
             self.assertEqual(policy["nuclei_count"]["usage"], "nuclei_comparator_only")

@@ -188,6 +188,52 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("Conflicting container binds target the same destination", completed.stderr)
 
+    def test_apptainer_runtime_maps_node_local_project_to_canonical_destination(self) -> None:
+        runtime = DOCKER_HPC / "util" / "hpc_container_apptainer_runtime.sh"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            local_project = root / "node-local-project"
+            canonical_project = root / "shared" / "code_snapshot"
+            local_project.mkdir()
+            canonical_project.mkdir(parents=True)
+            image = root / "fixture.sif"
+            image.write_bytes(b"fixture")
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            log = root / "apptainer.args"
+            apptainer = fake_bin / "apptainer"
+            apptainer.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' \"$@\" > \"$FAKE_APPTAINER_ARGS\"\n"
+            )
+            apptainer.chmod(0o755)
+            completed = subprocess.run(
+                ["bash", "-c", 'source "$1"; hpc_apptainer_exec true', "_", str(runtime)],
+                env={
+                    **os.environ,
+                    "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                    "FAKE_APPTAINER_ARGS": str(log),
+                    "HPC_CONTAINER_IMAGE": str(image),
+                    "HPC_CONTAINER_GPU": "0",
+                    "HPC_PROJECT_ROOT": str(canonical_project),
+                    "HPC_PROJECT_ROOT_SOURCE": str(local_project),
+                    "HPC_PROJECT_ROOT_BIND_MODE": "ro",
+                    "HPC_CONTAINER_BINDS": f"{canonical_project.parent}:{canonical_project.parent}",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            arguments = log.read_text().splitlines()
+            local_bind = f"{local_project}:{canonical_project}:ro"
+            parent_bind = f"{canonical_project.parent}:{canonical_project.parent}"
+            self.assertIn(local_bind, arguments)
+            self.assertIn(parent_bind, arguments)
+            self.assertGreater(arguments.index(local_bind), arguments.index(parent_bind))
+            self.assertNotIn(f"{canonical_project}:{canonical_project}:ro", arguments)
+            self.assertIn(str(canonical_project), arguments)
+
     def test_submitter_rejects_ambient_code_and_bind_overrides_before_bootstrap(self) -> None:
         submitter = DOCKER_HPC / "submit_broad_phenotype_shadow_full.sh"
         forbidden = (
@@ -206,6 +252,7 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
             "CPA_VALIDATE_OUTPUT_DIR",
             "HPC_CONTAINER_RUNTIME_ROOT",
             "HPC_CONTAINER_FORWARD_PREFIXES",
+            "HPC_PROJECT_ROOT_SOURCE",
             "SOURCE_FIELD_MANIFEST_FILE",
         )
         for variable in forbidden:
@@ -307,7 +354,13 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
         self.assertIn('"PATH=$CONTROLLED_TOOL_PATH"', text)
         self.assertIn("SYSTEM_BASH_BIN=/usr/bin/bash", text)
         self.assertIn("SYSTEM_BASH_BIN=/bin/bash", text)
-        self.assertIn("export PATH=/usr/bin:/bin; exec %q %q", text)
+        self.assertIn("node_local_verified_archive_v1", text)
+        self.assertIn('HPC_PROJECT_ROOT_SOURCE="$local_project"', text)
+        self.assertIn('export PATH=/usr/bin:/bin:/sbin', text)
+        self.assertIn('cp -- "$archive" "$local_archive"', text)
+        self.assertIn('sha256sum "$local_archive"', text)
+        self.assertIn('tar -xf "$local_archive" -C "$local_project"', text)
+        self.assertIn('base_args=(--chdir "$SHADOW_ROOT"', text)
         self.assertIn('Formal Slurm runs forbid HELDOUT_WELLS', text)
         self.assertIn('compare_frozen plate_map_sha256', text)
         self.assertIn('MAX_UMAP_FIELDS_PER_WELL="${MAX_UMAP_FIELDS_PER_WELL:-20}"', text)
@@ -322,9 +375,11 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
         self.assertIn("broad_phenotype_code_snapshot_v2", text)
         self.assertIn("shared_filesystem_mode_bits_unavailable", text)
         self.assertIn('git -C "$SOURCE_PROJECT_DIR" archive --format=tar', text)
-        self.assertIn('append_bind "$CODE_SNAPSHOT_ROOT:$CODE_SNAPSHOT_ROOT:ro"', text)
+        self.assertNotIn('append_bind "$CODE_SNAPSHOT_ROOT:$CODE_SNAPSHOT_ROOT:ro"', text)
         self.assertIn("verify_code_snapshot", text)
-        self.assertIn('"$SYSTEM_BASH_BIN" "$snapshot_submitter" "$@"', text)
+        self.assertIn('"$SYSTEM_BASH_BIN" "$verified_snapshot_submitter" "$@"', text)
+        self.assertIn("BROAD_PHENOTYPE_VERIFIED_RESUME_SOURCE", text)
+        self.assertIn("cleanup_early_snapshot_compare", text)
         self.assertIn("Code snapshot archive hash differs before resume re-exec", text)
         self.assertIn("Extracted code snapshot differs from its frozen archive before resume re-exec", text)
         self.assertIn("-u SLURM_CLUSTERS -u SLURM_CONF -u SLURM_CONF_SERVER", text)
@@ -970,6 +1025,10 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
                 preflight["code_snapshot_host_permission_mode"],
                 "posix_mode_bits_read_only",
             )
+            self.assertEqual(
+                preflight["code_snapshot_execution_mode"],
+                "node_local_verified_archive_v1",
+            )
             snapshot_root = shadow / "workflow_status" / "code_snapshot"
             writable_snapshot_paths = [
                 path
@@ -1044,14 +1103,20 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
                 "  exit 91\n"
                 "fi\n"
                 "export_spec=''\n"
-                "for argument in \"$@\"; do case \"$argument\" in --export=*) export_spec=${argument#--export=};; esac; done\n"
+                "for argument in \"$@\"; do\n"
+                "  case \"$argument\" in\n"
+                "    --export=*) export_spec=${argument#--export=};;\n"
+                "    --wrap=*) /bin/bash -n -c \"${argument#--wrap=}\" || exit 96;;\n"
+                "  esac\n"
+                "done\n"
                 "[ -n \"$export_spec\" ] || { echo 'missing explicit export spec' >&2; exit 93; }\n"
                 "old_ifs=$IFS; IFS=,\n"
                 "for name in $export_spec; do printenv \"$name\" >/dev/null || { echo \"undefined exported variable: $name\" >&2; exit 94; }; done\n"
                 "IFS=$old_ifs\n"
                 "case \"${HPC_CONTAINER_BINDS-}\" in *,*) :;; *) echo 'comma-valued bind list was not preserved' >&2; exit 95;; esac\n"
                 f'printf "%s\\n" "$*" >> "{sbatch_log}"\n'
-                f'count=$(wc -l < "{sbatch_log}")\n'
+                f'count=$(awk "END{{print NR}}" "{sbatch_log}")\n'
+                f'env > "{root}/sbatch.env.$count"\n'
                 "printf '%s\\n' \"$((91000 + count))\"\n",
                 encoding="utf-8",
             )
@@ -1087,7 +1152,7 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
             system_bash = "/usr/bin/bash" if Path("/usr/bin/bash").is_file() else "/bin/bash"
             self.assertTrue(
                 all(
-                    f"--wrap=export PATH=/usr/bin:/bin; exec {system_bash} " in row
+                    f"--wrap=exec {system_bash} --noprofile --norc -c " in row
                     for row in submitted
                 ),
                 submitted,
@@ -1097,8 +1162,107 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
                 any("--export=ALL" in row or "--export=NONE" in row for row in submitted),
                 submitted,
             )
-            self.assertTrue(all("/workflow_status/code_snapshot/" in row for row in submitted))
+            self.assertTrue(
+                all("/workflow_status/code_snapshot.tar" in row for row in submitted),
+                submitted,
+            )
+            self.assertTrue(
+                all("node_local_verified_archive_v1" in row for row in submitted),
+                submitted,
+            )
+            self.assertFalse(
+                any(
+                    f"exec {system_bash} {shadow}/workflow_status/code_snapshot/" in row
+                    for row in submitted
+                ),
+                submitted,
+            )
             self.assertFalse(any(row.rstrip().endswith(".sh") and "--wrap=" not in row for row in submitted))
+
+            # Execute the exact command that Slurm would spool.  The shared
+            # snapshot worker is replaced after submission; a correct wrapper
+            # still runs the archive copy from node-local storage, never the
+            # mutable shared path, and always removes its temporary tree.
+            first_wrap = submitted[0].split("--wrap=", 1)[1]
+            real_shadow = results / "broad_phenotype_shadow_20990101_000010"
+            first_job_env: dict[str, str] = {}
+            for line in (root / "sbatch.env.1").read_text().splitlines():
+                if "=" in line:
+                    name, value = line.split("=", 1)
+                    first_job_env[name] = value
+            node_tmp = root / "node-tmp"
+            node_tmp.mkdir()
+            shared_worker = (
+                real_shadow
+                / "workflow_status"
+                / "code_snapshot"
+                / "cellpose_pipeline"
+                / "Docker"
+                / "hpc"
+                / "run_broad_phenotype_input_preflight.sh"
+            )
+            shared_worker_bytes = shared_worker.read_bytes()
+            shared_worker_mode = shared_worker.stat().st_mode
+            shared_worker_marker = root / "shared_worker_executed"
+            shared_worker.chmod(shared_worker_mode | 0o200)
+            shared_worker.write_text(
+                "#!/bin/sh\n"
+                f'printf executed > "{shared_worker_marker}"\n'
+                "exit 87\n",
+                encoding="utf-8",
+            )
+            shared_worker.chmod(shared_worker_mode & ~0o222)
+            wrap_env = {
+                **first_job_env,
+                "SLURM_TMPDIR": str(node_tmp),
+                "SLURM_JOB_ID": "91991",
+            }
+            wrapped = subprocess.run(
+                [system_bash, "-c", first_wrap],
+                env=wrap_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(wrapped.returncode, 87, wrapped.stdout + wrapped.stderr)
+            self.assertIn(
+                "code_snapshot_execution_mode=node_local_verified_archive_v1",
+                wrapped.stdout,
+                wrapped.stdout + wrapped.stderr,
+            )
+            self.assertIn("node_local_code_snapshot_root=", wrapped.stdout)
+            self.assertFalse(shared_worker_marker.exists())
+            self.assertEqual(list(node_tmp.iterdir()), [], "node-local code must be cleaned after worker exit")
+            shared_worker.chmod(shared_worker_mode | 0o200)
+            shared_worker.write_bytes(shared_worker_bytes)
+            shared_worker.chmod(shared_worker_mode)
+
+            snapshot_archive = real_shadow / "workflow_status" / "code_snapshot.tar"
+            snapshot_archive_bytes = snapshot_archive.read_bytes()
+            frozen_archive_sha = hashlib.sha256(snapshot_archive_bytes).hexdigest()
+            self.assertIn(frozen_archive_sha, first_wrap)
+            snapshot_archive.write_bytes(snapshot_archive_bytes + b"tampered")
+            self.assertNotEqual(
+                hashlib.sha256(snapshot_archive.read_bytes()).hexdigest(),
+                frozen_archive_sha,
+            )
+            tampered_archive = subprocess.run(
+                [system_bash, "-c", first_wrap],
+                env=wrap_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(tampered_archive.returncode, 0)
+            self.assertIn(
+                "Node-local code snapshot archive SHA-256 mismatch",
+                tampered_archive.stderr,
+                tampered_archive.stdout + tampered_archive.stderr,
+            )
+            self.assertEqual(list(node_tmp.iterdir()), [])
+            snapshot_archive.write_bytes(snapshot_archive_bytes)
 
             resolved_stage06 = shadow / "workflow_status" / "resolved_stage06_manifest"
             resolved_stage06.mkdir(parents=True)

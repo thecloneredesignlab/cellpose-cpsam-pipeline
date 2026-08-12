@@ -130,16 +130,20 @@ Each formal run gets a new
 restricted to
 `results/Tests_and_Parameters_calibration/broad_phenotype_shadow_test_<timestamp>/`.
 Before any worker starts, the submitter archives the verified clean Git commit
-into a content-hashed code snapshot inside the new shadow root. Slurm jobs are
-submitted with `--wrap` pointing to that absolute snapshot, so Slurm spool
-relocation and later pulls of the deployment checkout cannot change queued or
-resumed code. The snapshot receives its own read-only nested SIF bind, and every
-resume re-extracts the frozen archive in temporary storage to verify bytewise
-identity. On filesystems that honor POSIX mode changes, every host snapshot
-write bit is also removed. RED's shared filesystem reports success while
-preserving its managed mode bits; that capability is recorded as
-`shared_filesystem_mode_bits_unavailable`, while the immutable archive hash,
-bytewise archive comparison, and nested read-only SIF bind remain enforced.
+into a content-hashed code snapshot inside the new shadow root. Each Slurm
+`--wrap` command embeds the expected archive hash, copies and verifies the
+archive in node-local temporary storage, and executes the worker from that
+verified extraction. The node-local source is bound read-only at the canonical
+snapshot destination inside the SIF, so receipts retain stable paths while
+Slurm-spool relocation, shared-filesystem mode-bit behavior, and later pulls of
+the deployment checkout cannot change queued code. Resume entry points also
+execute from a temporary verified archive extraction, not from the shared
+snapshot. On filesystems that honor POSIX mode changes, every shared host
+snapshot write bit is additionally removed. RED's managed mode-bit behavior is
+recorded as `shared_filesystem_mode_bits_unavailable`; the archive hash,
+bytewise archive comparison, node-local execution, and nested read-only SIF
+bind remain enforced. Direct calibration records its distinct short-lived
+shared-snapshot execution mode rather than claiming the Slurm node-local mode.
 Slurm jobs receive an explicit stage-specific environment allowlist; host
 `SBATCH_*`, shell startup, language-runtime, loader and Apptainer/Singularity
 injection variables are not inherited by the worker process.

@@ -50,8 +50,10 @@ scientific-interpretation contract is documented in
 [`docs/broad_phenotype_shadow_workflow.md`](../../../docs/broad_phenotype_shadow_workflow.md).
 Formal stages default to the 12-hour `xxlarge` contract, and the entry point
 checks the live QOS `MaxWall` before any Slurm submission.
-Workers execute through `sbatch --wrap` from the run's frozen tracked-code
-snapshot, avoiding Slurm-spool path changes and mutable-checkout drift.
+Workers execute through `sbatch --wrap` from a hash-verified node-local
+extraction of the run's frozen tracked-code archive. The extraction is mounted
+read-only at the canonical snapshot path inside the SIF, avoiding Slurm-spool,
+mutable-checkout, and managed shared-filesystem mode-bit drift.
 
 `submit_full_fusion_production.sh` is the public full-production entry point. It
 calls `orchestrate_cellpose_cpsam_full_array.sh`, which constructs the Slurm

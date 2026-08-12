@@ -20,9 +20,11 @@ for its object, feature, model, sharded-inference and promotion contracts.
 Formal CPU stages default to the `xxlarge` QOS with requests no longer than
 12 hours. The submitter reads the live QOS `MaxWall` and rejects an incompatible
 request before creating or submitting any job.
-It also runs every Slurm worker from a frozen, content-hashed tracked-code
-snapshot under the shadow root via `sbatch --wrap`; queued work is therefore
-independent of later pulls to the deployment checkout.
+It also embeds the frozen archive hash in every `sbatch --wrap`, verifies and
+extracts the tracked code in node-local temporary storage, and maps that source
+read-only to the canonical snapshot path inside the SIF. Queued work is
+therefore independent of later pulls and of writable managed shared-filesystem
+mode bits.
 
 `Parameter_calibration/29_run_broad_phenotype_shadow_test.sh` is restricted to
 `hpctpa3pc0009` and writes only below
