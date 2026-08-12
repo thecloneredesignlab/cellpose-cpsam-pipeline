@@ -297,6 +297,19 @@ if [[ "$RESUME_STAGE" != "phase-a" ]]; then
       CPA_MODEL_DIR="${CPA_MODEL_DIR:-}" \
       CPA_TRAIN_RECEIPT="${CPA_TRAIN_RECEIPT:-}" \
       PREDICTION_DIR="${PREDICTION_DIR:-}" \
+      FEATURE_CPUS="${FEATURE_CPUS:-}" FEATURE_MEM="${FEATURE_MEM:-}" FEATURE_TIME="${FEATURE_TIME:-}" \
+      PREFLIGHT_CPUS="${PREFLIGHT_CPUS:-}" PREFLIGHT_MEM="${PREFLIGHT_MEM:-}" PREFLIGHT_TIME="${PREFLIGHT_TIME:-}" \
+      ADAPTER_CPUS="${ADAPTER_CPUS:-}" ADAPTER_MEM="${ADAPTER_MEM:-}" ADAPTER_TIME="${ADAPTER_TIME:-}" \
+      VALIDATE_CPUS="${VALIDATE_CPUS:-}" VALIDATE_MEM="${VALIDATE_MEM:-}" VALIDATE_TIME="${VALIDATE_TIME:-}" \
+      UMAP_CPUS="${UMAP_CPUS:-}" UMAP_MEM="${UMAP_MEM:-}" UMAP_TIME="${UMAP_TIME:-}" \
+      ANNOTATE_CPUS="${ANNOTATE_CPUS:-}" ANNOTATE_MEM="${ANNOTATE_MEM:-}" ANNOTATE_TIME="${ANNOTATE_TIME:-}" \
+      RESUME_CPUS="${RESUME_CPUS:-}" RESUME_MEM="${RESUME_MEM:-}" RESUME_TIME="${RESUME_TIME:-}" \
+      REVIEW_CPUS="${REVIEW_CPUS:-}" REVIEW_MEM="${REVIEW_MEM:-}" REVIEW_TIME="${REVIEW_TIME:-}" \
+      PREDICT_CPUS="${PREDICT_CPUS:-}" PREDICT_MEM="${PREDICT_MEM:-}" PREDICT_TIME="${PREDICT_TIME:-}" \
+      PREDICT_MAX_CONCURRENT="${PREDICT_MAX_CONCURRENT:-}" \
+      MODEL_ACCEPTANCE_CPUS="${MODEL_ACCEPTANCE_CPUS:-}" \
+      MODEL_ACCEPTANCE_MEM="${MODEL_ACCEPTANCE_MEM:-}" \
+      MODEL_ACCEPTANCE_TIME="${MODEL_ACCEPTANCE_TIME:-}" \
       "$SYSTEM_BASH_BIN" "$snapshot_submitter" "$@"
   fi
 fi
@@ -1014,6 +1027,9 @@ slurm_export_spec() {
 dependency_args=()
 if [[ -n "${DEPENDENCY_JOB_ID:-}" ]]; then
   dependency_args+=(--dependency "afterok:$DEPENDENCY_JOB_ID")
+fi
+if [[ "${#dependency_args[@]}" -eq 0 ]]; then
+  dependency_args=()
 fi
 base_args=(--chdir "$PROJECT_DIR" --output "$SHADOW_ROOT/logs/%x.%A_%a.out" --error "$SHADOW_ROOT/logs/%x.%A_%a.err")
 if [[ -n "$BROAD_PHENOTYPE_QOS" ]]; then
