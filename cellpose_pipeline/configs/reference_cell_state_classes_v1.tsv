@@ -1,0 +1,4 @@
+class_id	display_name	color	description	shortcut	trainable	role	order
+multinucleated_cell	Multinucleated cell	#7257c8	Priority 1: the anchored Combined object contains at least two distinct nuclei; this morphology class takes precedence over dead and live assignments	m	true	phenotype	1
+dead_cell	Dead cell	#d43d51	Priority 2: when multinucleation is absent, the Brightfield morphology is consistent with a dead cell; do not use Dead-channel or current-classifier evidence	d	true	phenotype	2
+live_cell	Live cell	#16875b	Priority 3: when neither higher-priority class applies, the Brightfield morphology is consistent with a live cell	l	true	phenotype	3

@@ -49,6 +49,26 @@ full 38.6M-cell universe, and viability inputs. It neither merges labels across
 review IDs nor automatically retrains; one authoritative reviewed-label
 generation is frozen as history for each queue.
 
+## Independent historical reference cell-state axis
+
+`26_prepare_reference_cell_state_project.py` imports a completed,
+development-only representative project into a new root, keeps the exact cell
+universe, selects the historical nine promoted-shape features, installs the
+ordered `multinucleated_cell`, `dead_cell`, and `live_cell` ontology, and
+configures a new UMAP plus grouped nested-CV lasso. It never imports parent
+UMAP coordinates or broad-phenotype classes.
+
+`27_build_reference_morphology_workspace.py` generates the missing historical
+morphology reference beside an immutable CPA annotation page: deterministic
+real-cell BF cutouts at their UMAP coordinates, a Nuclei review atlas, and an
+outer annotation workspace bound to the original annotation hashes.
+
+After both classifiers are frozen,
+`29_compare_current_vs_reference_cell_state.py` performs a read-only stable-ID
+join into a third output root. Its output is explicitly descriptive and cannot
+claim accuracy without independent blinded gold labels. See
+[`docs/reference_cell_state_shadow_workflow.md`](../../docs/reference_cell_state_shadow_workflow.md).
+
 Other directories are separated by purpose:
 
 - `Parameter_calibration/`: tuning, candidate screening, and validation;

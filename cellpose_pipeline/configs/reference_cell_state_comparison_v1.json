@@ -1,0 +1,28 @@
+{
+  "schema_version": "reference_cell_state_comparison_config_v1",
+  "current_states": [
+    "live",
+    "dead",
+    "uncertain",
+    "artifact"
+  ],
+  "reference_classes": [
+    "live_cell",
+    "dead_cell",
+    "multinucleated_cell"
+  ],
+  "current_dead_endpoint": {
+    "live": "not_dead",
+    "dead": "dead",
+    "uncertain": "abstain",
+    "artifact": "abstain"
+  },
+  "reference_dead_endpoint": {
+    "live_cell": "not_dead",
+    "dead_cell": "dead",
+    "multinucleated_cell": "not_dead"
+  },
+  "reference_available_status": "ok",
+  "reference_unavailable_status_prefix": "unavailable",
+  "stable_cell_id_branch": "original"
+}

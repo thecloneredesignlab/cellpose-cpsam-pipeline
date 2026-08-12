@@ -10,6 +10,7 @@ HPC_CONTAINER_FORWARD_PREFIXES="${HPC_CONTAINER_FORWARD_PREFIXES:-PYTHONNOUSERSI
 HPC_CONTAINER_GPU="${HPC_CONTAINER_GPU:-auto}"
 HPC_PROJECT_ROOT_BIND_MODE="${HPC_PROJECT_ROOT_BIND_MODE:-rw}"
 HPC_PROJECT_ROOT_SOURCE="${HPC_PROJECT_ROOT_SOURCE:-}"
+HPC_CONTAINER_NO_MOUNT="${HPC_CONTAINER_NO_MOUNT:-}"
 HPC_CONTAINER_RUNTIME_ACTIVE=TRUE
 
 case ":${PATH}:" in
@@ -24,6 +25,7 @@ export HPC_CONTAINER_FORWARD_PREFIXES
 export HPC_CONTAINER_GPU
 export HPC_PROJECT_ROOT_BIND_MODE
 export HPC_PROJECT_ROOT_SOURCE
+export HPC_CONTAINER_NO_MOUNT
 export HPC_CONTAINER_RUNTIME_ACTIVE
 export PATH
 
@@ -44,6 +46,13 @@ hpc_container_prepare() {
     ro|rw) ;;
     *)
       echo "HPC_PROJECT_ROOT_BIND_MODE must be ro or rw: ${HPC_PROJECT_ROOT_BIND_MODE}" >&2
+      return 2
+      ;;
+  esac
+  case "${HPC_CONTAINER_NO_MOUNT}" in
+    ""|/share) ;;
+    *)
+      echo "HPC_CONTAINER_NO_MOUNT is restricted to empty or /share: ${HPC_CONTAINER_NO_MOUNT}" >&2
       return 2
       ;;
   esac
@@ -130,6 +139,9 @@ hpc_apptainer_exec() {
     --env "XDG_CACHE_HOME=${container_home}/cache"
     --env "HPC_CONTAINER_RUNTIME_ACTIVE=TRUE"
   )
+  if [[ -n "${HPC_CONTAINER_NO_MOUNT}" ]]; then
+    command+=(--no-mount "${HPC_CONTAINER_NO_MOUNT}")
+  fi
 
   if hpc_container_use_gpu; then
     command+=(--nv)

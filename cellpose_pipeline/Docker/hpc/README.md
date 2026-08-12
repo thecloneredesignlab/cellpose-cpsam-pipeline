@@ -55,6 +55,16 @@ extraction of the run's frozen tracked-code archive. The extraction is mounted
 read-only at the canonical snapshot path inside the SIF, avoiding Slurm-spool,
 mutable-checkout, and managed shared-filesystem mode-bit drift.
 
+`submit_reference_cell_state_shadow.sh` is the separate historical-reference
+entry point. It imports the frozen development representative universe into a
+new `reference_cell_state_shadow_<timestamp>` root, recomputes a nine-feature
+UMAP, builds a BF/Nuclei morphology-reference workspace, and stops before the
+human region submission. The current classification root and Dead channel are
+not container binds. Its compute-node calibration entry is
+`Parameter_calibration/30_run_reference_cell_state_shadow_test.sh`. The full
+contract is in
+[`docs/reference_cell_state_shadow_workflow.md`](../../../docs/reference_cell_state_shadow_workflow.md).
+
 `submit_full_fusion_production.sh` is the public full-production entry point. It
 calls `orchestrate_cellpose_cpsam_full_array.sh`, which constructs the Slurm
 dependency graph and submits the production workers retained in this directory.

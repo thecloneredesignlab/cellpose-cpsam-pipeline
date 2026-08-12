@@ -29,6 +29,17 @@ mode bits.
 `Parameter_calibration/29_run_broad_phenotype_shadow_test.sh` is restricted to
 `hpctpa3pc0009` and writes only below
 `results/Tests_and_Parameters_calibration/`.
+
+`submit_reference_cell_state_shadow.sh` creates an independent historical
+three-class reference axis under
+`results/reference_cell_state_shadow_<timestamp>/`. It reuses only the frozen
+development representative universe, recomputes UMAP from nine promoted-shape
+features, builds the BF/Nuclei morphology workspace, and stops at the human
+region-submission barrier. It neither binds nor writes the current
+classification root. The calibration counterpart
+`Parameter_calibration/30_run_reference_cell_state_shadow_test.sh` is hard
+restricted to `hpctpa3pc0009` and the calibration result tree. See the
+[reference cell-state workflow](../../docs/reference_cell_state_shadow_workflow.md).
 It creates a new `results/classification_<timestamp>/` root and submits only:
 
 ```text

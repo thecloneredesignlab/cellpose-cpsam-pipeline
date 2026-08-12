@@ -1,0 +1,50 @@
+{
+  "schema_version": "reference_cell_state_feature_config_v1",
+  "method_version": "reference_promoted_shape_v1",
+  "source_feature_schema_version": "broad_phenotype_features_v1",
+  "numeric_feature_columns": [
+    "area_px2",
+    "perimeter_px",
+    "roundness",
+    "aspect_ratio",
+    "extent",
+    "solidity",
+    "equivalent_diameter_px",
+    "major_axis_px",
+    "minor_axis_px"
+  ],
+  "projection_feature_columns": [
+    "area_px2",
+    "perimeter_px",
+    "roundness",
+    "aspect_ratio",
+    "extent",
+    "solidity",
+    "equivalent_diameter_px",
+    "major_axis_px",
+    "minor_axis_px"
+  ],
+  "classifier_feature_columns": [
+    "area_px2",
+    "perimeter_px",
+    "roundness",
+    "aspect_ratio",
+    "extent",
+    "solidity",
+    "equivalent_diameter_px",
+    "major_axis_px",
+    "minor_axis_px"
+  ],
+  "projection_transform": "robust",
+  "nuclei_policy": "review_display_only",
+  "viability_evidence_policy": "not_read",
+  "classifier_contract": {
+    "engine": "glmnet_multinomial",
+    "alpha": 1.0,
+    "lambda_rule": "lambda.1se",
+    "outer_folds": 5,
+    "inner_folds": 5,
+    "group_column": "well",
+    "minimum_confidence": 0.8
+  }
+}
