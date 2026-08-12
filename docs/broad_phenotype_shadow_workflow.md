@@ -129,6 +129,16 @@ Each formal run gets a new
 `results/broad_phenotype_shadow_<timestamp>/` directory. Test outputs are
 restricted to
 `results/Tests_and_Parameters_calibration/broad_phenotype_shadow_test_<timestamp>/`.
+Before any worker starts, the submitter archives the verified clean Git commit
+into a content-hashed code snapshot inside the new shadow root. Slurm jobs are
+submitted with `--wrap` pointing to that absolute snapshot, so Slurm spool
+relocation and later pulls of the deployment checkout cannot change queued or
+resumed code. The snapshot receives its own read-only nested SIF bind, and every
+resume re-extracts the frozen archive in temporary storage to verify bytewise
+identity.
+Slurm jobs receive an explicit stage-specific environment allowlist; host
+`SBATCH_*`, shell startup, language-runtime, loader and Apptainer/Singularity
+injection variables are not inherited by the worker process.
 The raw dataset, frozen segmentation run, selected current classification run,
 legacy NO_GO receipt and reference checkout are read-only. Only the new shadow
 root is writable inside Apptainer.

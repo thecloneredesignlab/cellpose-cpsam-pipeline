@@ -77,6 +77,8 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
             self.assertNotIn('sha256sum "$HPC_CONTAINER_IMAGE"', text)
             self.assertNotIn("worker_sha256", text)
             self.assertIn("HPC_CONTAINER_GPU=0", text)
+            self.assertIn("HPC_PROJECT_ROOT_BIND_MODE=ro", text)
+            self.assertIn('HPC_CONTAINER_RUNTIME_ROOT="$SCRIPT_DIR"', text)
             self.assertIn("hpc_container_apptainer_runtime.sh", text)
             self.assertNotIn("conda activate", text)
 
@@ -84,6 +86,143 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
         self.assertIn("broad_phenotype_capture_container_identity", submitter)
         self.assertIn("HPC_CONTAINER_IDENTITY_FILE_SHA256", submitter)
         self.assertNotIn('sha256sum "$HPC_CONTAINER_IMAGE"', submitter)
+
+        runtime = (DOCKER_HPC / "util" / "hpc_container_apptainer_runtime.sh").read_text()
+        self.assertIn('HPC_PROJECT_ROOT_BIND_MODE="${HPC_PROJECT_ROOT_BIND_MODE:-rw}"', runtime)
+        self.assertIn('APPTAINER_*|APPTAINERENV_*|SINGULARITY_*|SINGULARITYENV_*', runtime)
+
+    def test_apptainer_runtime_emits_one_read_only_project_bind(self) -> None:
+        runtime = DOCKER_HPC / "util" / "hpc_container_apptainer_runtime.sh"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = root / "code_snapshot"
+            project.mkdir()
+            image = root / "fixture.sif"
+            image.write_bytes(b"fixture")
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            log = root / "apptainer.args"
+            apptainer = fake_bin / "apptainer"
+            apptainer.write_text(
+                "#!/bin/sh\n"
+                "for name in APPTAINER_BIND APPTAINER_BINDPATH APPTAINER_MOUNT APPTAINER_OVERLAY APPTAINER_FUSESPEC APPTAINER_CONTAINLIBS APPTAINERENV_PREPEND_PATH SINGULARITY_BIND SINGULARITY_BINDPATH SINGULARITY_MOUNT SINGULARITY_OVERLAY SINGULARITY_FUSESPEC SINGULARITY_CONTAINLIBS SINGULARITYENV_PYTHONPATH; do\n"
+                "  eval 'value=${'\"$name\"'-}'\n"
+                "  [ -z \"$value\" ] || { echo \"unscrubbed environment: $name\" >&2; exit 91; }\n"
+                "done\n"
+                "printf '%s\\n' \"$@\" > \"$FAKE_APPTAINER_ARGS\"\n"
+            )
+            apptainer.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "FAKE_APPTAINER_ARGS": str(log),
+                "HPC_CONTAINER_IMAGE": str(image),
+                "HPC_CONTAINER_GPU": "0",
+                "HPC_PROJECT_ROOT": str(project),
+                "HPC_PROJECT_ROOT_BIND_MODE": "ro",
+                "HPC_CONTAINER_BINDS": f"{project}:{project}:ro,{project}:{project}:ro",
+                "APPTAINER_BIND": "/:/injected",
+                "APPTAINER_BINDPATH": "/:/injected2",
+                "APPTAINER_MOUNT": "type=bind,src=/,dst=/injected-mount",
+                "APPTAINER_OVERLAY": "/injected/overlay.img",
+                "APPTAINER_FUSESPEC": "host:evil /injected/fuse",
+                "APPTAINER_CONTAINLIBS": "/injected/lib.so",
+                "SINGULARITY_BIND": "/:/injected3",
+                "SINGULARITY_BINDPATH": "/:/injected4",
+                "SINGULARITY_MOUNT": "type=bind,src=/,dst=/injected-mount2",
+                "SINGULARITY_OVERLAY": "/injected/overlay2.img",
+                "SINGULARITY_FUSESPEC": "host:evil /injected/fuse2",
+                "SINGULARITY_CONTAINLIBS": "/injected/lib2.so",
+                "APPTAINERENV_PREPEND_PATH": "/injected/path",
+                "SINGULARITYENV_PYTHONPATH": "/injected/python",
+            }
+            completed = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'source "$1"; hpc_apptainer_exec true',
+                    "_",
+                    str(runtime),
+                ],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            arguments = log.read_text().splitlines()
+            project_spec = f"{project}:{project}:ro"
+            self.assertEqual(arguments.count(project_spec), 1, arguments)
+            self.assertFalse(any("injected" in argument for argument in arguments))
+            self.assertIn("--no-eval", arguments)
+
+    def test_apptainer_runtime_rejects_conflicting_duplicate_destination(self) -> None:
+        runtime = DOCKER_HPC / "util" / "hpc_container_apptainer_runtime.sh"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = root / "code_snapshot"
+            project.mkdir()
+            image = root / "fixture.sif"
+            image.write_bytes(b"fixture")
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            apptainer = fake_bin / "apptainer"
+            apptainer.write_text("#!/bin/sh\nexit 0\n")
+            apptainer.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "HPC_CONTAINER_IMAGE": str(image),
+                "HPC_CONTAINER_GPU": "0",
+                "HPC_PROJECT_ROOT": str(project),
+                "HPC_PROJECT_ROOT_BIND_MODE": "ro",
+                "HPC_CONTAINER_BINDS": f"{project}:{project}:ro,{project}:{project}:rw",
+            }
+            completed = subprocess.run(
+                ["bash", "-c", 'source "$1"; hpc_apptainer_exec true', "_", str(runtime)],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("Conflicting container binds target the same destination", completed.stderr)
+
+    def test_submitter_rejects_ambient_code_and_bind_overrides_before_bootstrap(self) -> None:
+        submitter = DOCKER_HPC / "submit_broad_phenotype_shadow_full.sh"
+        forbidden = (
+            "HPC_CONTAINER_BINDS",
+            "BROAD_PHENOTYPE_FEATURE_SCRIPT",
+            "BROAD_PHENOTYPE_ADAPTER_SCRIPT",
+            "BROAD_PHENOTYPE_PROJECTION_SCRIPT",
+            "BROAD_PHENOTYPE_INPUT_CONTRACT_VALIDATOR",
+            "BROAD_PHENOTYPE_CPA_STAGE_SCRIPT",
+            "BROAD_PHENOTYPE_MODEL_ACCEPT_SCRIPT",
+            "BROAD_PHENOTYPE_SHARD_PREDICT_SCRIPT",
+            "BROAD_PHENOTYPE_FINALIZE_SCRIPT",
+            "BROAD_PHENOTYPE_SHARDED_FINALIZE_SCRIPT",
+            "BROAD_PHENOTYPE_FEATURE_COLUMNS",
+            "PROJECT_FILE",
+            "CPA_VALIDATE_OUTPUT_DIR",
+            "HPC_CONTAINER_RUNTIME_ROOT",
+            "HPC_CONTAINER_FORWARD_PREFIXES",
+            "SOURCE_FIELD_MANIFEST_FILE",
+        )
+        for variable in forbidden:
+            with self.subTest(variable=variable):
+                env = dict(os.environ)
+                for scrubbed in forbidden:
+                    env.pop(scrubbed, None)
+                env[variable] = "/ambient/injection"
+                completed = subprocess.run(
+                    [str(submitter)],
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn(variable, completed.stderr)
 
         rscript_shim = DOCKER_HPC / "bin" / "Rscript"
         self.assertTrue(os.access(rscript_shim, os.X_OK))
@@ -129,6 +268,30 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
         self.assertIn('compare_frozen feature_config_sha256', text)
         self.assertIn('compare_frozen include_nuclei_comparator', text)
         self.assertIn('compare_frozen max_umap_fields_per_well', text)
+        for frozen_knob in (
+            "split_seed",
+            "outer_folds",
+            "inner_folds",
+            "broad_phenotype_project_id",
+            "max_umap_cells_per_field",
+            "max_umap_cells_per_well",
+            "umap_sample_seed",
+        ):
+            self.assertIn(f'compare_frozen {frozen_knob}', text)
+            self.assertIn(f"{frozen_knob}\\t", text)
+        self.assertIn('Ambient HPC_CONTAINER_BINDS is forbidden', text)
+        for forbidden_code_override in (
+            "BROAD_PHENOTYPE_FEATURE_SCRIPT",
+            "BROAD_PHENOTYPE_ADAPTER_SCRIPT",
+            "BROAD_PHENOTYPE_PROJECTION_SCRIPT",
+            "BROAD_PHENOTYPE_INPUT_CONTRACT_VALIDATOR",
+            "BROAD_PHENOTYPE_CPA_STAGE_SCRIPT",
+            "BROAD_PHENOTYPE_MODEL_ACCEPT_SCRIPT",
+            "BROAD_PHENOTYPE_SHARD_PREDICT_SCRIPT",
+            "BROAD_PHENOTYPE_FINALIZE_SCRIPT",
+            "BROAD_PHENOTYPE_SHARDED_FINALIZE_SCRIPT",
+        ):
+            self.assertIn(forbidden_code_override, text)
         self.assertIn('compare_frozen hpc_container_identity_file_sha256', text)
         self.assertIn('compare_frozen execution_scope', text)
         self.assertIn('compare_frozen split_mode', text)
@@ -136,9 +299,14 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
         self.assertIn('Formal Slurm runs require the complete 27200-field universe', text)
         self.assertIn('Formal Slurm runs forbid TASK_LIST_INPUT', text)
         self.assertIn('Formal Slurm runs forbid the TEST_CPA_STAGE_MODE override', text)
-        self.assertIn('--export=ALL,CPA_STAGE=validate,CPA_VALIDATE_STAGE=umap,CPA_STAGE_MODE=', text)
-        self.assertIn('--export=ALL,CPA_STAGE=umap,CPA_STAGE_MODE=', text)
-        self.assertIn('--export=ALL,CPA_STAGE=annotate,CPA_STAGE_MODE=', text)
+        self.assertNotIn("--export=ALL", text)
+        self.assertNotIn("--export=NONE", text)
+        self.assertIn('slurm_export_spec "CPA_STAGE CPA_VALIDATE_STAGE CPA_STAGE_MODE"', text)
+        self.assertIn('slurm_export_spec "CPA_STAGE CPA_STAGE_MODE"', text)
+        self.assertIn("/usr/bin/env -i PATH=/usr/bin:/bin", text)
+        self.assertIn("SYSTEM_BASH_BIN=/usr/bin/bash", text)
+        self.assertIn("SYSTEM_BASH_BIN=/bin/bash", text)
+        self.assertIn("export PATH=/usr/bin:/bin; exec %q %q", text)
         self.assertIn('Formal Slurm runs forbid HELDOUT_WELLS', text)
         self.assertIn('compare_frozen plate_map_sha256', text)
         self.assertIn('MAX_UMAP_FIELDS_PER_WELL="${MAX_UMAP_FIELDS_PER_WELL:-20}"', text)
@@ -150,6 +318,24 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
         self.assertIn("Requested wall-time exceeds QOS MaxWall before any job was submitted", text)
         self.assertIn("qos_max_wall\\t$QOS_MAX_WALL", text)
         self.assertIn('compare_frozen qos_max_wall "$QOS_MAX_WALL"', text)
+        self.assertIn("broad_phenotype_code_snapshot_v1", text)
+        self.assertIn('git -C "$SOURCE_PROJECT_DIR" archive --format=tar', text)
+        self.assertIn('append_bind "$CODE_SNAPSHOT_ROOT:$CODE_SNAPSHOT_ROOT:ro"', text)
+        self.assertIn("verify_code_snapshot", text)
+        self.assertIn('"$SYSTEM_BASH_BIN" "$snapshot_submitter" "$@"', text)
+        self.assertIn("Code snapshot archive hash differs before resume re-exec", text)
+        self.assertIn("Extracted code snapshot differs from its frozen archive before resume re-exec", text)
+        self.assertIn("-u SLURM_CLUSTERS -u SLURM_CONF -u SLURM_CONF_SERVER", text)
+        slurm_worker_submissions = [
+            line
+            for line in text.splitlines()
+            if "submit_job" in line and "--wrap=" in line
+        ]
+        self.assertGreaterEqual(len(slurm_worker_submissions), 10)
+        self.assertTrue(
+            all("--wrap=" in line for line in slurm_worker_submissions),
+            slurm_worker_submissions,
+        )
         self.assertIn('human_barrier=annotation_region_submission_required', text)
         self.assertIn('legacy_no_go_enforcement\\tinformational_only', text)
         self.assertIn('RESUME_STAGE" == "predict-sharded"', text)
@@ -158,14 +344,7 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
         self.assertNotIn("--node=", text)
         self.assertNotIn("--gres=", text)
         self.assertNotIn("--gpus=", text)
-        for inherited_pin in (
-            "SBATCH_NODELIST",
-            "SBATCH_NODES",
-            "SBATCH_CONSTRAINT",
-            "SBATCH_EXCLUDE",
-            "SBATCH_HOSTLIST",
-        ):
-            self.assertIn(f"-u {inherited_pin}", text)
+        self.assertIn('/usr/bin/env -i PATH=/usr/bin:/bin "$SBATCH_BIN"', text)
 
         phase_a = text[text.index('if [[ "$RESUME_STAGE" == "phase-a" ]]', text.index("base_args=")) :]
         phase_a = phase_a[: phase_a.index("if [[ \"$RESUME_STAGE\" == \"predict-sharded\" ]]")]
@@ -311,7 +490,7 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
             "[[ \"${1:-}\" == exec ]] && shift\n"
             "while (($#)); do\n"
             "  case \"$1\" in\n"
-            "    --cleanenv|--nv) shift ;;\n"
+            "    --cleanenv|--no-eval|--nv) shift ;;\n"
             "    --home|--env|--bind|--pwd) shift 2 ;;\n"
             f"    *.sif) shift; [[ \"${{1:-}}\" == python ]] && shift && exec {sys.executable!s} \"$@\"; exec \"$@\" ;;\n"
             "    *) echo \"unexpected apptainer argument: $1\" >&2; exit 2 ;;\n"
@@ -768,6 +947,15 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
             self.assertEqual(preflight["split_mode"], "plate_map_preregistered")
             self.assertEqual(preflight["heldout_wells"], "plate_map_preregistered")
             self.assertEqual(preflight["cpa_stage_mode"], "")
+            self.assertEqual(preflight["project_dir"], str(
+                shadow / "workflow_status" / "code_snapshot"
+            ))
+            self.assertEqual(preflight["source_project_dir"], str(REPO_ROOT))
+            snapshot_archive = shadow / "workflow_status" / "code_snapshot.tar"
+            self.assertEqual(
+                preflight["code_snapshot_archive_sha256"],
+                hashlib.sha256(snapshot_archive.read_bytes()).hexdigest(),
+            )
             identity_path = Path(preflight["hpc_container_identity_file"])
             self.assertEqual(identity_path, shadow / "workflow_status" / "hpc_container_identity.json")
             self.assertEqual(
@@ -810,6 +998,75 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
                 "host-only bootstrap failure must remove only the owned shadow root",
             )
 
+            sbatch_log = root / "sbatch.log"
+            fake_sacctmgr = fake_bin / "sacctmgr"
+            fake_sacctmgr.write_text(
+                "#!/bin/sh\n"
+                "if [ -n \"${SLURM_CLUSTERS-}${SLURM_CONF-}${SLURM_CONF_SERVER-}\" ]; then\n"
+                "  echo 'unsafe Slurm configuration reached fake sacctmgr' >&2\n"
+                "  exit 92\n"
+                "fi\n"
+                "printf 'xxlarge|12:00:00|\\n'\n",
+                encoding="utf-8",
+            )
+            fake_sacctmgr.chmod(0o755)
+            fake_sbatch = fake_bin / "sbatch"
+            fake_sbatch.write_text(
+                "#!/bin/sh\n"
+                "if env | grep -E '^(BASH_ENV|ENV|SBATCH_.*|BASH_FUNC_.*|LD_.*|PYTHONHOME|PYTHONPATH|R_ENVIRON_USER|R_LIBS|R_LIBS_USER|R_PROFILE_USER|SLURM_CLUSTERS|SLURM_CONF|SLURM_CONF_SERVER)=' >/dev/null; then\n"
+                "  echo 'unsafe environment reached fake sbatch' >&2\n"
+                "  exit 91\n"
+                "fi\n"
+                f'printf "%s\\n" "$*" >> "{sbatch_log}"\n'
+                f'count=$(wc -l < "{sbatch_log}")\n'
+                "printf '%s\\n' \"$((91000 + count))\"\n",
+                encoding="utf-8",
+            )
+            fake_sbatch.chmod(0o755)
+            real_submit_env = {
+                **env,
+                "RUN_STAMP": "20990101_000010",
+                "DRY_RUN_SUBMIT": "0",
+                "BASH_ENV": "/dev/null",
+                "ENV": "/dev/null",
+                "SBATCH_GET_USER_ENV": "1",
+                "SBATCH_ARRAY_INX": "1-2",
+                "SBATCH_EXPORT_FILE": "/does/not/exist",
+                "LD_LIBRARY_PATH": "/injected/ld",
+                "PYTHONPATH": "/injected/python",
+                "R_LIBS_USER": "/injected/R",
+                "SLURM_CLUSTERS": "injected-cluster",
+                "SLURM_CONF": "/injected/slurm.conf",
+                "SLURM_CONF_SERVER": "injected-config-server",
+                "BASH_FUNC_evil%%": "() { printf injected > /tmp/should-never-run; }",
+            }
+            real_submit = subprocess.run(
+                [str(DOCKER_HPC / "submit_broad_phenotype_shadow_full.sh")],
+                env=real_submit_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(real_submit.returncode, 0, real_submit.stderr)
+            submitted = sbatch_log.read_text().splitlines()
+            self.assertEqual(len(submitted), 6)
+            system_bash = "/usr/bin/bash" if Path("/usr/bin/bash").is_file() else "/bin/bash"
+            self.assertTrue(
+                all(
+                    f"--wrap=export PATH=/usr/bin:/bin; exec {system_bash} " in row
+                    for row in submitted
+                ),
+                submitted,
+            )
+            self.assertTrue(all("--export=PROJECT_DIR," in row for row in submitted))
+            self.assertFalse(
+                any("--export=ALL" in row or "--export=NONE" in row for row in submitted),
+                submitted,
+            )
+            self.assertTrue(all("/workflow_status/code_snapshot/" in row for row in submitted))
+            self.assertFalse(any(row.rstrip().endswith(".sh") and "--wrap=" not in row for row in submitted))
+
             resolved_stage06 = shadow / "workflow_status" / "resolved_stage06_manifest"
             resolved_stage06.mkdir(parents=True)
             (resolved_stage06 / "field_manifest.tsv").write_text(
@@ -848,14 +1105,59 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
             self.assertEqual(len(retry_receipts), 1)
             self.assertIn(str(retry_list), retry_receipts[0].read_text())
 
-            drift_config = root / "drift_feature_config.json"
-            drift_config.write_text('{"drift":true}\n', encoding="utf-8")
+            snapshot_submitter = (
+                shadow
+                / "workflow_status"
+                / "code_snapshot"
+                / "cellpose_pipeline"
+                / "Docker"
+                / "hpc"
+                / "submit_broad_phenotype_shadow_full.sh"
+            )
+            snapshot_submitter_bytes = snapshot_submitter.read_bytes()
+            execution_marker = root / "tampered_snapshot_submitter_executed"
+            snapshot_submitter.write_text(
+                "#!/bin/sh\n"
+                f'printf executed > "{execution_marker}"\n'
+                "exit 88\n",
+                encoding="utf-8",
+            )
+            tampered_submitter_env = {
+                **env,
+                "RUN_STAMP": "20990101_000011",
+                "SHADOW_ROOT": str(shadow),
+                "RESUME_STAGE": "adapter",
+            }
+            tampered_submitter = subprocess.run(
+                [str(DOCKER_HPC / "submit_broad_phenotype_shadow_full.sh")],
+                env=tampered_submitter_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(tampered_submitter.returncode, 0)
+            self.assertIn(
+                "differs from its frozen archive before resume re-exec",
+                tampered_submitter.stderr,
+            )
+            self.assertFalse(execution_marker.exists())
+            snapshot_submitter.write_bytes(snapshot_submitter_bytes)
+
+            snapshot_config = (
+                shadow
+                / "workflow_status"
+                / "code_snapshot"
+                / "cellpose_pipeline"
+                / "configs"
+                / "broad_phenotype_features_v1.json"
+            )
+            snapshot_config.write_text('{"drift":true}\n', encoding="utf-8")
             drift_env = {
                 **env,
                 "RUN_STAMP": "20990101_000002",
                 "SHADOW_ROOT": str(shadow),
                 "RESUME_STAGE": "adapter",
-                "FEATURE_CONFIG": str(drift_config),
             }
             drift = subprocess.run(
                 [str(DOCKER_HPC / "submit_broad_phenotype_shadow_full.sh")],
@@ -866,7 +1168,7 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
                 check=False,
             )
             self.assertNotEqual(drift.returncode, 0)
-            self.assertIn("Resume provenance drift for feature_config_sha256", drift.stderr)
+            self.assertIn("Extracted code snapshot differs from its frozen archive", drift.stderr)
 
 
 if __name__ == "__main__":
