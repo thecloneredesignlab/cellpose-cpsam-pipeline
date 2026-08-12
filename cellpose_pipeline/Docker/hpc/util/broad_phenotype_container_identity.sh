@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 
 # Freeze one full-file SIF digest at submission time, then let every Slurm
-# worker verify the immutable file identity with metadata and the digest of
-# this small receipt.  Worker verification deliberately never re-reads the
-# multi-gigabyte SIF.
+# worker verify the immutable file identity with portable metadata and the
+# digest of this small receipt.  st_dev is retained as diagnostic provenance,
+# but is not an identity key because one shared file can have different device
+# numbers in login-node and compute-node mount namespaces.  Worker verification
+# deliberately never re-reads the multi-gigabyte SIF.
 
 broad_phenotype_container_stat_fingerprint() {
   local image="$1"
@@ -165,10 +167,25 @@ observed = {
     "mtime_ns": st.st_mtime_ns,
     "ctime_ns": st.st_ctime_ns,
 }
-if payload.get("stat") != observed:
+frozen = payload.get("stat")
+required_stat_keys = {"dev", "inode", "size", "mtime_ns", "ctime_ns"}
+if not isinstance(frozen, dict) or set(frozen) != required_stat_keys:
+    raise SystemExit("HPC container identity stat schema mismatch")
+for key in required_stat_keys:
+    if not isinstance(frozen[key], int) or isinstance(frozen[key], bool):
+        raise SystemExit(f"HPC container identity stat value is invalid: {key}")
+portable_identity_keys = ("inode", "size", "mtime_ns", "ctime_ns")
+frozen_portable = {key: frozen[key] for key in portable_identity_keys}
+observed_portable = {key: observed[key] for key in portable_identity_keys}
+if frozen_portable != observed_portable:
     raise SystemExit(
         "HPC container identity metadata mismatch: "
-        f"frozen={payload.get('stat')} observed={observed}"
+        f"frozen={frozen_portable} observed={observed_portable}"
+    )
+if frozen["dev"] != observed["dev"]:
+    print(
+        "sif_identity_device_translation=accepted "
+        f"frozen_dev={frozen['dev']} observed_dev={observed['dev']}"
     )
 PY
 

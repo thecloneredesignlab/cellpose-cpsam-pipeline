@@ -433,7 +433,7 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
         self.assertIn('HELDOUT_WELLS="$(awk', text)
         self.assertIn('export RUN_STAMP SHADOW_ROOT TASK_LIST_INPUT EXPECTED_FIELDS HELDOUT_WELLS', text)
 
-    def test_frozen_container_identity_rejects_metadata_drift_without_worker_sif_hash(self) -> None:
+    def test_frozen_container_identity_accepts_device_translation_but_rejects_metadata_drift_without_worker_sif_hash(self) -> None:
         helper = DOCKER_HPC / "util" / "broad_phenotype_container_identity.sh"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -480,13 +480,27 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
                 verify_command, text=True, capture_output=True, check=False
             )
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            payload["stat"]["dev"] += 1
+            receipt.write_text(
+                json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+            )
+            translated_receipt_sha = hashlib.sha256(receipt.read_bytes()).hexdigest()
+            translated_verify_command = verify_command[:-1] + [translated_receipt_sha]
+            translated = subprocess.run(
+                translated_verify_command,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(translated.returncode, 0, translated.stderr)
+            self.assertIn("sif_identity_device_translation=accepted", translated.stdout)
             stat_before = image.stat()
             os.utime(
                 image,
                 ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns + 1_000_000_000),
             )
             rejected = subprocess.run(
-                verify_command, text=True, capture_output=True, check=False
+                translated_verify_command, text=True, capture_output=True, check=False
             )
             self.assertNotEqual(rejected.returncode, 0)
             self.assertIn("identity metadata mismatch", rejected.stderr)
