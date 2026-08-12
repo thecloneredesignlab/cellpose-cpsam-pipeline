@@ -32,6 +32,10 @@ for tool_name in sbatch sacctmgr; do
   fi
 done
 CONTROLLED_TOOL_PATH="$CONTROLLED_TOOL_PATH:/usr/bin:/bin"
+snapshot_has_writable_mode_bits() {
+  local snapshot_root="$1"
+  find "$snapshot_root" \( -perm -0200 -o -perm -0020 -o -perm -0002 \) -print -quit | grep -q .
+}
 PROJECT_DIR="${PROJECT_DIR:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 SOURCE_PROJECT_DIR="$PROJECT_DIR"
 HPC_CONTAINER_IMAGE="${HPC_CONTAINER_IMAGE:-$DEFAULT_HPC_CONTAINER_IMAGE}"
@@ -235,6 +239,18 @@ if [[ "$RESUME_STAGE" != "phase-a" ]]; then
       echo "Code snapshot receipt header changed before resume re-exec" >&2
       exit 2
     }
+    early_snapshot_schema="$(awk -F '\t' '$1=="schema_version" && $2!="" {print $2; n++} END {if(n!=1) exit 2}' "$CODE_SNAPSHOT_RECEIPT")" || {
+      echo "Code snapshot receipt must contain one schema_version before resume re-exec" >&2
+      exit 2
+    }
+    [[ "$early_snapshot_schema" == "broad_phenotype_code_snapshot_v2" ]] || {
+      echo "Code snapshot receipt schema changed before resume re-exec" >&2
+      exit 2
+    }
+    early_host_permission_mode="$(awk -F '\t' '$1=="host_permission_mode" && $2!="" {print $2; n++} END {if(n!=1) exit 2}' "$CODE_SNAPSHOT_RECEIPT")" || {
+      echo "Code snapshot receipt must contain one host_permission_mode before resume re-exec" >&2
+      exit 2
+    }
     early_archive_sha="$(awk -F '\t' '$1=="archive_sha256" && $2 ~ /^[0-9a-f]{64}$/ {print $2; n++} END {if(n!=1) exit 2}' "$CODE_SNAPSHOT_RECEIPT")" || {
       echo "Code snapshot receipt must contain one valid archive_sha256 before resume re-exec" >&2
       exit 2
@@ -245,10 +261,16 @@ if [[ "$RESUME_STAGE" != "phase-a" ]]; then
       echo "Code snapshot archive hash differs before resume re-exec" >&2
       exit 2
     }
-    if find "$CODE_SNAPSHOT_ROOT" \( -perm -0200 -o -perm -0020 -o -perm -0002 \) -print -quit | grep -q .; then
-      echo "Frozen code snapshot contains a writable path before resume re-exec" >&2
-      exit 2
-    fi
+    case "$early_host_permission_mode" in
+      posix_mode_bits_read_only)
+        if snapshot_has_writable_mode_bits "$CODE_SNAPSHOT_ROOT"; then
+          echo "Frozen code snapshot contains a writable path before resume re-exec" >&2
+          exit 2
+        fi
+        ;;
+      shared_filesystem_mode_bits_unavailable) ;;
+      *) echo "Unsupported code snapshot host_permission_mode before resume re-exec: $early_host_permission_mode" >&2; exit 2 ;;
+    esac
     tar -tf "$CODE_SNAPSHOT_ARCHIVE" | awk '
       /^\// {exit 2}
       {n=split($0, parts, "/"); for(i=1;i<=n;i++) if(parts[i]=="..") exit 3}
@@ -562,23 +584,30 @@ code_snapshot_receipt_value() {
   printf '%s\n' "$value"
 }
 verify_code_snapshot() {
-  local comparison_root="$1" expected_archive_sha observed_archive_sha expected_root
+  local comparison_root="$1" expected_archive_sha observed_archive_sha expected_root host_permission_mode
   [[ -d "$CODE_SNAPSHOT_ROOT" && -s "$CODE_SNAPSHOT_ARCHIVE" && -s "$CODE_SNAPSHOT_RECEIPT" ]] || {
     echo "Code snapshot generation is incomplete" >&2
     return 2
   }
-  if find "$CODE_SNAPSHOT_ROOT" \( -perm -0200 -o -perm -0020 -o -perm -0002 \) -print -quit | grep -q .; then
-    echo "Frozen code snapshot contains a writable path" >&2
-    return 2
-  fi
   [[ "$(head -n 1 "$CODE_SNAPSHOT_RECEIPT")" == $'property\tvalue' ]] || {
     echo "Code snapshot receipt header changed" >&2
     return 2
   }
-  [[ "$(code_snapshot_receipt_value schema_version)" == "broad_phenotype_code_snapshot_v1" ]] || {
+  [[ "$(code_snapshot_receipt_value schema_version)" == "broad_phenotype_code_snapshot_v2" ]] || {
     echo "Code snapshot receipt schema changed" >&2
     return 2
   }
+  host_permission_mode="$(code_snapshot_receipt_value host_permission_mode)"
+  case "$host_permission_mode" in
+    posix_mode_bits_read_only)
+      if snapshot_has_writable_mode_bits "$CODE_SNAPSHOT_ROOT"; then
+        echo "Frozen code snapshot contains a writable path" >&2
+        return 2
+      fi
+      ;;
+    shared_filesystem_mode_bits_unavailable) ;;
+    *) echo "Unsupported code snapshot host_permission_mode: $host_permission_mode" >&2; return 2 ;;
+  esac
   expected_root="$(code_snapshot_receipt_value snapshot_root)"
   [[ "$expected_root" == "$CODE_SNAPSHOT_ROOT" ]] || {
     echo "Code snapshot root differs from its receipt" >&2
@@ -661,6 +690,7 @@ else
   project_git_tree="$(code_snapshot_receipt_value project_git_tree)"
   project_git_status="clean_snapshot"
   code_snapshot_archive_sha256="$(code_snapshot_receipt_value archive_sha256)"
+  snapshot_host_permission_mode="$(code_snapshot_receipt_value host_permission_mode)"
   SOURCE_PROJECT_DIR="$(code_snapshot_receipt_value source_project_dir)"
   snapshot_submitter="$CODE_SNAPSHOT_ROOT/cellpose_pipeline/Docker/hpc/submit_broad_phenotype_shadow_full.sh"
   [[ -f "$snapshot_submitter" ]] || {
@@ -709,23 +739,25 @@ if [[ "$RESUME_STAGE" == "phase-a" ]]; then
   mkdir "$CODE_SNAPSHOT_ROOT"
   tar -xf "$CODE_SNAPSHOT_ARCHIVE" -C "$CODE_SNAPSHOT_ROOT"
   chmod -R a-w "$CODE_SNAPSHOT_ROOT"
+  if snapshot_has_writable_mode_bits "$CODE_SNAPSHOT_ROOT"; then
+    snapshot_host_permission_mode=shared_filesystem_mode_bits_unavailable
+  else
+    snapshot_host_permission_mode=posix_mode_bits_read_only
+  fi
   code_snapshot_receipt_tmp="$SHADOW_ROOT/workflow_status/.code_snapshot_receipt.tmp.$$"
   sed $'s/\\\\t/\t/g' > "$code_snapshot_receipt_tmp" <<EOF
 property\tvalue
-schema_version\tbroad_phenotype_code_snapshot_v1
+schema_version\tbroad_phenotype_code_snapshot_v2
 source_project_dir\t$SOURCE_PROJECT_DIR
 project_git_sha\t$project_git_sha
 project_git_tree\t$project_git_tree
 snapshot_root\t$CODE_SNAPSHOT_ROOT
 archive_path\t$CODE_SNAPSHOT_ARCHIVE
 archive_sha256\t$code_snapshot_archive_sha256
+host_permission_mode\t$snapshot_host_permission_mode
 EOF
   mv "$code_snapshot_receipt_tmp" "$CODE_SNAPSHOT_RECEIPT"
   verify_code_snapshot "$submission_staging_dir/snapshot_compare"
-  if find "$CODE_SNAPSHOT_ROOT" \( -perm -0200 -o -perm -0020 -o -perm -0002 \) -print -quit | grep -q .; then
-    echo "Frozen code snapshot contains a writable path" >&2
-    exit 2
-  fi
   PROJECT_DIR="$CODE_SNAPSHOT_ROOT"
   DEPENDENCY_LOCK="$PROJECT_DIR/cellpose_pipeline/configs/cellphenotypeannotator_dependency.lock.tsv"
   FEATURE_CONFIG="$PROJECT_DIR/cellpose_pipeline/configs/broad_phenotype_features_v1.json"
@@ -805,6 +837,7 @@ if [[ "$RESUME_STAGE" != "phase-a" ]]; then
   compare_frozen source_project_dir "$SOURCE_PROJECT_DIR"
   compare_frozen code_snapshot_root "$CODE_SNAPSHOT_ROOT"
   compare_frozen code_snapshot_archive_sha256 "$code_snapshot_archive_sha256"
+  compare_frozen code_snapshot_host_permission_mode "$snapshot_host_permission_mode"
   compare_frozen hpc_container_sha256 "$observed_sif_sha256"
   compare_frozen hpc_container_identity_file "$HPC_CONTAINER_IDENTITY_FILE"
   compare_frozen hpc_container_identity_file_sha256 "$HPC_CONTAINER_IDENTITY_FILE_SHA256"
@@ -866,6 +899,7 @@ source_project_dir\t$SOURCE_PROJECT_DIR
 code_snapshot_root\t$CODE_SNAPSHOT_ROOT
 code_snapshot_archive\t$CODE_SNAPSHOT_ARCHIVE
 code_snapshot_archive_sha256\t$code_snapshot_archive_sha256
+code_snapshot_host_permission_mode\t$snapshot_host_permission_mode
 results_root\t$RESULTS_ROOT
 dataset_root\t$DATASET_ROOT
 source_segmentation_root\t$SOURCE_SEGMENTATION_ROOT

@@ -319,7 +319,8 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
         self.assertIn("Requested wall-time exceeds QOS MaxWall before any job was submitted", text)
         self.assertIn("qos_max_wall\\t$QOS_MAX_WALL", text)
         self.assertIn('compare_frozen qos_max_wall "$QOS_MAX_WALL"', text)
-        self.assertIn("broad_phenotype_code_snapshot_v1", text)
+        self.assertIn("broad_phenotype_code_snapshot_v2", text)
+        self.assertIn("shared_filesystem_mode_bits_unavailable", text)
         self.assertIn('git -C "$SOURCE_PROJECT_DIR" archive --format=tar', text)
         self.assertIn('append_bind "$CODE_SNAPSHOT_ROOT:$CODE_SNAPSHOT_ROOT:ro"', text)
         self.assertIn("verify_code_snapshot", text)
@@ -965,6 +966,10 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
                 shadow / "workflow_status" / "code_snapshot"
             ))
             self.assertEqual(preflight["source_project_dir"], str(REPO_ROOT))
+            self.assertEqual(
+                preflight["code_snapshot_host_permission_mode"],
+                "posix_mode_bits_read_only",
+            )
             snapshot_root = shadow / "workflow_status" / "code_snapshot"
             writable_snapshot_paths = [
                 path

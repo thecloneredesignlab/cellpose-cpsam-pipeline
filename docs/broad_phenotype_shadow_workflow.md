@@ -135,7 +135,11 @@ submitted with `--wrap` pointing to that absolute snapshot, so Slurm spool
 relocation and later pulls of the deployment checkout cannot change queued or
 resumed code. The snapshot receives its own read-only nested SIF bind, and every
 resume re-extracts the frozen archive in temporary storage to verify bytewise
-identity.
+identity. On filesystems that honor POSIX mode changes, every host snapshot
+write bit is also removed. RED's shared filesystem reports success while
+preserving its managed mode bits; that capability is recorded as
+`shared_filesystem_mode_bits_unavailable`, while the immutable archive hash,
+bytewise archive comparison, and nested read-only SIF bind remain enforced.
 Slurm jobs receive an explicit stage-specific environment allowlist; host
 `SBATCH_*`, shell startup, language-runtime, loader and Apptainer/Singularity
 injection variables are not inherited by the worker process.
