@@ -7,6 +7,23 @@ dependency graph and submits the production workers retained in this directory.
 `submit_classification_only_full.sh` is the public full-time-course
 classification-only entry point. It treats the existing Combined, Brightfield,
 Dead, Nuclei, nucleus-core, and nucleated-only segmentation masks as immutable.
+
+`submit_broad_phenotype_shadow_full.sh` creates a sibling
+`results/broad_phenotype_shadow_<timestamp>/` workflow without changing those
+segmentation masks or the current viability/trajectory outputs. Its first DAG
+ends at region-annotation HTML and cannot cross the human-review barrier. The
+host entry points are thin counterparts of the SIF-backed implementations under
+`cellpose_pipeline/Docker/hpc/`; all scientific Python and R work uses the
+pinned SIF. See the
+[broad-phenotype shadow workflow](../../docs/broad_phenotype_shadow_workflow.md)
+for its object, feature, model, sharded-inference and promotion contracts.
+Formal CPU stages default to the `xxlarge` QOS with requests no longer than
+12 hours. The submitter reads the live QOS `MaxWall` and rejects an incompatible
+request before creating or submitting any job.
+
+`Parameter_calibration/29_run_broad_phenotype_shadow_test.sh` is restricted to
+`hpctpa3pc0009` and writes only below
+`results/Tests_and_Parameters_calibration/`.
 It creates a new `results/classification_<timestamp>/` root and submits only:
 
 ```text

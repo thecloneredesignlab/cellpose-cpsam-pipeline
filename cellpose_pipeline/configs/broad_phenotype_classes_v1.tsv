@@ -1,0 +1,8 @@
+class_id	display_name	color	description	shortcut	trainable	role	order
+irregular_fragmented	Irregular fragmented	#e41a1c	Priority 1: grossly fragmented, discontinuous, or severely irregular anchored object; assign before every other phenotype and independently of viability signal	i	true	phenotype	1
+multinucleated	Multinucleated	#ff7f00	Priority 2: at least two distinct nuclei within the anchored object, only when Priority 1 is absent; use the Nuclei display as review evidence	m	true	phenotype	2
+enlarged_flat	Enlarged flat	#984ea3	Priority 3: dominantly enlarged, spread, or flattened morphology, only when Priorities 1-2 are absent	e	true	phenotype	3
+rounded_compact	Rounded compact	#377eb8	Priority 4: dominantly rounded and compact morphology, only when Priorities 1-3 are absent	r	true	phenotype	4
+typical_mononuclear	Typical mononuclear	#4daf4a	Priority 5: exactly one evident nucleus and no morphology defined by Priorities 1-4	t	true	phenotype	5
+other_morphology	Other morphology	#a65628	Priority 6: countable anchored morphology that is reviewable but matches none of Priorities 1-5	o	true	phenotype	6
+phenotype_uncertain	Phenotype uncertain	#999999	Nontrainable: insufficient image or mask evidence to apply the priority tree; do not infer a viability class	u	false	uncertainty	7

@@ -3,3 +3,4 @@ python	--version	TRUE
 node	--version	TRUE
 npm	--version	TRUE
 pdftoppm	-v	TRUE
+Rscript	--version	TRUE

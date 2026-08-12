@@ -41,6 +41,16 @@ Runtime command requirements are recorded in `sif_runtime_commands.tsv`.
 `SIF_PROVENANCE.md` records the verified immutable SIF checksum without
 committing its deployment path.
 
+`submit_broad_phenotype_shadow_full.sh` is the SIF-backed broad-morphology
+shadow entry point. It consumes frozen Stage 06 outputs without invoking
+segmentation or changing the existing viability/trajectory products. Phase A
+stops after annotation HTML generation; later human-reviewed stages are
+resumed explicitly. The complete write, model-identity, sharded-inference and
+scientific-interpretation contract is documented in
+[`docs/broad_phenotype_shadow_workflow.md`](../../../docs/broad_phenotype_shadow_workflow.md).
+Formal stages default to the 12-hour `xxlarge` contract, and the entry point
+checks the live QOS `MaxWall` before any Slurm submission.
+
 `submit_full_fusion_production.sh` is the public full-production entry point. It
 calls `orchestrate_cellpose_cpsam_full_array.sh`, which constructs the Slurm
 dependency graph and submits the production workers retained in this directory.
