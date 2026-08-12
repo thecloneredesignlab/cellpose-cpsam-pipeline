@@ -345,7 +345,11 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
         self.assertNotIn("--node=", text)
         self.assertNotIn("--gres=", text)
         self.assertNotIn("--gpus=", text)
-        self.assertIn('/usr/bin/env -i PATH=/usr/bin:/bin "$SBATCH_BIN"', text)
+        self.assertIn(
+            'local -a clean_environment=(/usr/bin/env -i "PATH=$CONTROLLED_TOOL_PATH")',
+            text,
+        )
+        self.assertIn('"${clean_environment[@]}" "$SBATCH_BIN"', text)
 
         phase_a = text[text.index('if [[ "$RESUME_STAGE" == "phase-a" ]]', text.index("base_args=")) :]
         phase_a = phase_a[: phase_a.index("if [[ \"$RESUME_STAGE\" == \"predict-sharded\" ]]")]
@@ -1138,6 +1142,7 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
                 "exit 88\n",
                 encoding="utf-8",
             )
+            snapshot_submitter.chmod(snapshot_submitter.stat().st_mode & ~0o222)
             tampered_submitter_env = {
                 **env,
                 "RUN_STAMP": "20990101_000011",
@@ -1158,6 +1163,7 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
                 tampered_submitter.stderr,
             )
             self.assertFalse(execution_marker.exists())
+            snapshot_submitter.chmod(snapshot_submitter.stat().st_mode | 0o200)
             snapshot_submitter.write_bytes(snapshot_submitter_bytes)
             snapshot_submitter.chmod(snapshot_submitter.stat().st_mode & ~0o222)
 

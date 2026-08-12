@@ -204,6 +204,16 @@ else
   }
 fi
 
+direct_concurrency="${DIRECT_TEST_CONCURRENCY:-4}"
+if [[ "$EXECUTION_MODE" == "direct_test" ]]; then
+  [[ "$direct_concurrency" =~ ^[1-9][0-9]*$ && "$direct_concurrency" -le 32 ]] || {
+    echo "DIRECT_TEST_CONCURRENCY must be an integer in [1, 32]: $direct_concurrency" >&2
+    exit 2
+  }
+elif [[ -n "${DEPENDENCY_JOB_ID:-}" ]]; then
+  [[ "$DEPENDENCY_JOB_ID" =~ ^[0-9]+$ ]] || { echo "DEPENDENCY_JOB_ID must be numeric" >&2; exit 2; }
+fi
+
 CODE_SNAPSHOT_ROOT="$SHADOW_ROOT/workflow_status/code_snapshot"
 CODE_SNAPSHOT_ARCHIVE="$SHADOW_ROOT/workflow_status/code_snapshot.tar"
 CODE_SNAPSHOT_RECEIPT="$SHADOW_ROOT/workflow_status/code_snapshot_receipt.tsv"
@@ -235,7 +245,7 @@ if [[ "$RESUME_STAGE" != "phase-a" ]]; then
       echo "Code snapshot archive hash differs before resume re-exec" >&2
       exit 2
     }
-    if find "$CODE_SNAPSHOT_ROOT" -perm /222 -print -quit | grep -q .; then
+    if find "$CODE_SNAPSHOT_ROOT" \( -perm -0200 -o -perm -0020 -o -perm -0002 \) -print -quit | grep -q .; then
       echo "Frozen code snapshot contains a writable path before resume re-exec" >&2
       exit 2
     fi
@@ -527,6 +537,10 @@ submission_exit_cleanup() {
     fi
     marker_value="$(<"$bootstrap_marker")"
     if [[ "$marker_value" == "pid=$$" ]]; then
+      if [[ "$CODE_SNAPSHOT_ROOT" == "$SHADOW_ROOT/workflow_status/code_snapshot" \
+         && -d "$CODE_SNAPSHOT_ROOT" && ! -L "$CODE_SNAPSHOT_ROOT" ]]; then
+        chmod -R u+w -- "$CODE_SNAPSHOT_ROOT" 2>/dev/null || true
+      fi
       rm -rf -- "$SHADOW_ROOT"
     fi
   fi
@@ -553,7 +567,7 @@ verify_code_snapshot() {
     echo "Code snapshot generation is incomplete" >&2
     return 2
   }
-  if find "$CODE_SNAPSHOT_ROOT" -perm /222 -print -quit | grep -q .; then
+  if find "$CODE_SNAPSHOT_ROOT" \( -perm -0200 -o -perm -0020 -o -perm -0002 \) -print -quit | grep -q .; then
     echo "Frozen code snapshot contains a writable path" >&2
     return 2
   fi
@@ -708,7 +722,7 @@ archive_sha256\t$code_snapshot_archive_sha256
 EOF
   mv "$code_snapshot_receipt_tmp" "$CODE_SNAPSHOT_RECEIPT"
   verify_code_snapshot "$submission_staging_dir/snapshot_compare"
-  if find "$CODE_SNAPSHOT_ROOT" -perm /222 -print -quit | grep -q .; then
+  if find "$CODE_SNAPSHOT_ROOT" \( -perm -0200 -o -perm -0020 -o -perm -0002 \) -print -quit | grep -q .; then
     echo "Frozen code snapshot contains a writable path" >&2
     exit 2
   fi
@@ -921,16 +935,6 @@ echo "cpa_reference_root=$CPA_REFERENCE_ROOT"
 echo "cpa_reference_bind_mode=read_only"
 echo "task_count=$N_TASKS"
 
-direct_concurrency="${DIRECT_TEST_CONCURRENCY:-4}"
-if [[ "$EXECUTION_MODE" == "direct_test" ]]; then
-  [[ "$direct_concurrency" =~ ^[1-9][0-9]*$ && "$direct_concurrency" -le 32 ]] || {
-    echo "DIRECT_TEST_CONCURRENCY must be an integer in [1, 32]: $direct_concurrency" >&2
-    exit 2
-  }
-elif [[ -n "${DEPENDENCY_JOB_ID:-}" ]]; then
-  [[ "$DEPENDENCY_JOB_ID" =~ ^[0-9]+$ ]] || { echo "DEPENDENCY_JOB_ID must be numeric" >&2; exit 2; }
-fi
-
 run_direct_phase_a() {
   "$PREFLIGHT_WORKER"
   local feature_cpus="${FEATURE_CPUS:-2}"
@@ -1037,16 +1041,6 @@ slurm_export_spec() {
   done
   printf '%s\n' "$spec"
 }
-dependency_args=( )
-if [[ -n "${DEPENDENCY_JOB_ID:-}" ]]; then
-  dependency_args+=(--dependency "afterok:$DEPENDENCY_JOB_ID")
-fi
-append_dependency_args() {
-  local -n destination="$1"
-  if [[ -n "${DEPENDENCY_JOB_ID:-}" ]]; then
-    destination+=(--dependency "afterok:$DEPENDENCY_JOB_ID")
-  fi
-}
 base_args=(--chdir "$PROJECT_DIR" --output "$SHADOW_ROOT/logs/%x.%A_%a.out" --error "$SHADOW_ROOT/logs/%x.%A_%a.err")
 if [[ -n "$BROAD_PHENOTYPE_QOS" ]]; then
   base_args+=(--qos "$BROAD_PHENOTYPE_QOS")
@@ -1066,12 +1060,13 @@ if [[ "$RESUME_STAGE" == "phase-a" ]]; then
   validate_export="$(slurm_export_spec "CPA_STAGE CPA_VALIDATE_STAGE CPA_STAGE_MODE")"
   umap_export="$(slurm_export_spec "CPA_STAGE CPA_STAGE_MODE")"
   annotate_export="$umap_export"
-  printf 'stage\tjob_id\tdependency\n' > "$phase_a_dag"
-  disarm_bootstrap_cleanup
   preflight_submit_args=(--job-name bp_input_preflight --cpus-per-task "$PREFLIGHT_CPUS" --mem "$PREFLIGHT_MEM" --time "$PREFLIGHT_TIME" "${base_args[@]}")
-  append_dependency_args preflight_submit_args
+  if [[ -n "${DEPENDENCY_JOB_ID:-}" ]]; then
+    preflight_submit_args+=(--dependency "afterok:$DEPENDENCY_JOB_ID")
+  fi
   preflight_job="$(submit_job input-preflight "${preflight_submit_args[@]}" --export="$preflight_export" --wrap="$preflight_wrap")"
-  printf 'input_preflight\t%s\t%s\n' "$preflight_job" "${DEPENDENCY_JOB_ID:-none}" >> "$phase_a_dag"
+  disarm_bootstrap_cleanup
+  printf 'stage\tjob_id\tdependency\ninput_preflight\t%s\t%s\n' "$preflight_job" "${DEPENDENCY_JOB_ID:-none}" > "$phase_a_dag"
   feature_job="$(submit_job feature --job-name bp_feature --cpus-per-task "$FEATURE_CPUS" --mem "$FEATURE_MEM" --time "$FEATURE_TIME" --array "1-${N_TASKS}%${FEATURE_MAX_CONCURRENT}" "${base_args[@]}" --dependency "afterok:$preflight_job" --export="$feature_export" --wrap="$feature_wrap")"
   printf 'feature\t%s\t%s\n' "$feature_job" "$preflight_job" >> "$phase_a_dag"
   adapter_job="$(submit_job adapter --job-name bp_adapter --cpus-per-task "$ADAPTER_CPUS" --mem "$ADAPTER_MEM" --time "$ADAPTER_TIME" "${base_args[@]}" --dependency "afterok:$feature_job" --export="$adapter_export" --wrap="$adapter_wrap")"
@@ -1140,7 +1135,9 @@ if [[ "$RESUME_STAGE" == "predict-sharded" ]]; then
   [[ ! -e "$prediction_submission" ]] || { echo "Immutable resume submission already exists: $prediction_submission" >&2; exit 2; }
   prediction_export="$(slurm_export_spec "FEATURE_MANIFEST PREDICTION_ROOT CPA_MODEL_DIR CPA_TRAIN_RECEIPT MODEL_ACCEPTANCE_RECEIPT MODEL_ACCEPTANCE_SHA256_FILE")"
   acceptance_submit_args=(--job-name bp_model_acceptance --cpus-per-task "$MODEL_ACCEPTANCE_CPUS" --mem "$MODEL_ACCEPTANCE_MEM" --time "$MODEL_ACCEPTANCE_TIME" "${base_args[@]}")
-  append_dependency_args acceptance_submit_args
+  if [[ -n "${DEPENDENCY_JOB_ID:-}" ]]; then
+    acceptance_submit_args+=(--dependency "afterok:$DEPENDENCY_JOB_ID")
+  fi
   acceptance_job="$(submit_job model-acceptance "${acceptance_submit_args[@]}" --export="$prediction_export" --wrap="$(worker_wrap_command "$MODEL_ACCEPTANCE_WORKER")")"
   prediction_job="$(submit_job predict-sharded --job-name bp_predict_sharded --cpus-per-task "$PREDICT_CPUS" --mem "$PREDICT_MEM" --time "$PREDICT_TIME" --array "1-${prediction_tasks}%${PREDICT_MAX_CONCURRENT}" "${base_args[@]}" --dependency "afterok:$acceptance_job" --export="$prediction_export" --wrap="$(worker_wrap_command "$PREDICT_WORKER")")"
   printf 'stage\tjob_id\tdependency\nmodel-acceptance\t%s\t%s\npredict-sharded\t%s\t%s\n' "$acceptance_job" "${DEPENDENCY_JOB_ID:-none}" "$prediction_job" "$acceptance_job" > "$prediction_submission"
@@ -1155,7 +1152,9 @@ if [[ "$RESUME_STAGE" == "input-preflight" ]]; then
   resume_submission="$SHADOW_ROOT/workflow_status/resume_submission_input-preflight_${RUN_STAMP}.tsv"
   [[ ! -e "$resume_submission" ]] || { echo "Immutable resume submission already exists: $resume_submission" >&2; exit 2; }
   resume_submit_args=(--job-name bp_input_preflight --cpus-per-task "$PREFLIGHT_CPUS" --mem "$PREFLIGHT_MEM" --time "$PREFLIGHT_TIME" "${base_args[@]}")
-  append_dependency_args resume_submit_args
+  if [[ -n "${DEPENDENCY_JOB_ID:-}" ]]; then
+    resume_submit_args+=(--dependency "afterok:$DEPENDENCY_JOB_ID")
+  fi
   resume_job="$(submit_job input-preflight "${resume_submit_args[@]}" --export="$(slurm_export_spec "RESOLVED_FIELD_MANIFEST_DIR")" --wrap="$(worker_wrap_command "$PREFLIGHT_WORKER")")"
   echo -e "stage\tjob_id\tdependency\ninput-preflight\t$resume_job\t${DEPENDENCY_JOB_ID:-none}" > "$resume_submission"
   echo "resume_stage=input-preflight"
@@ -1189,7 +1188,9 @@ if [[ "$RESUME_STAGE" == "feature-retry" ]]; then
   resume_submission="$SHADOW_ROOT/workflow_status/resume_submission_feature-retry_${RUN_STAMP}_${retry_sha:0:12}.tsv"
   [[ ! -e "$resume_submission" ]] || { echo "Immutable resume submission already exists: $resume_submission" >&2; exit 2; }
   resume_submit_args=(--job-name bp_feature_retry --cpus-per-task "$FEATURE_CPUS" --mem "$FEATURE_MEM" --time "$FEATURE_TIME" --array "1-${retry_task_count}%${FEATURE_MAX_CONCURRENT}" "${base_args[@]}")
-  append_dependency_args resume_submit_args
+  if [[ -n "${DEPENDENCY_JOB_ID:-}" ]]; then
+    resume_submit_args+=(--dependency "afterok:$DEPENDENCY_JOB_ID")
+  fi
   resume_job="$(submit_job feature-retry "${resume_submit_args[@]}" --export="$(slurm_export_spec)" --wrap="$(worker_wrap_command "$FEATURE_WORKER")")"
   echo -e "stage\tjob_id\tdependency\tretry_task_list\tfrozen_retry_task_list\tretry_task_list_sha256\nfeature-retry\t$resume_job\t${DEPENDENCY_JOB_ID:-none}\t$RETRY_TASK_LIST\t$retry_frozen_list\t$retry_sha" > "$resume_submission"
   echo "resume_stage=feature-retry"
@@ -1261,7 +1262,9 @@ resume_export="$(slurm_export_spec "$resume_extra_names")"
 resume_submission="$SHADOW_ROOT/workflow_status/resume_submission_${RESUME_STAGE}_${RUN_STAMP}.tsv"
 [[ ! -e "$resume_submission" ]] || { echo "Immutable resume submission already exists: $resume_submission" >&2; exit 2; }
 resume_submit_args=(--job-name "bp_${RESUME_STAGE//-/_}" --cpus-per-task "$resume_cpus" --mem "$resume_mem" --time "$resume_time" "${base_args[@]}")
-append_dependency_args resume_submit_args
+if [[ -n "${DEPENDENCY_JOB_ID:-}" ]]; then
+  resume_submit_args+=(--dependency "afterok:$DEPENDENCY_JOB_ID")
+fi
 resume_job="$(submit_job "$RESUME_STAGE" "${resume_submit_args[@]}" --export="$resume_export" --wrap="$(worker_wrap_command "$resume_worker")")"
 echo -e "stage\tjob_id\tdependency\n$RESUME_STAGE\t$resume_job\t${DEPENDENCY_JOB_ID:-none}" > "$resume_submission"
 echo "resume_stage=$RESUME_STAGE"
