@@ -896,7 +896,10 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
             )
             fake_git.chmod(0o755)
             reference_root = Path(
-                "/Users/4482173/Documents/GitHub/cell-phenotype-annotator"
+                os.environ.get(
+                    "CPA_REFERENCE_ROOT",
+                    "/Users/4482173/Documents/GitHub/cell-phenotype-annotator",
+                )
             )
             self.assertTrue(reference_root.is_dir())
             run_stamp = "20990101_000000"
