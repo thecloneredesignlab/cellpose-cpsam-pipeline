@@ -1177,6 +1177,7 @@ class BroadPhenotypeHpcContractTests(unittest.TestCase):
             )
             snapshot_config.chmod(snapshot_config.stat().st_mode | 0o200)
             snapshot_config.write_text('{"drift":true}\n', encoding="utf-8")
+            snapshot_config.chmod(snapshot_config.stat().st_mode & ~0o222)
             drift_env = {
                 **env,
                 "RUN_STAMP": "20990101_000002",
