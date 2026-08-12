@@ -1,8 +1,11 @@
 **
 
 !Dockerfile
+!Dockerfile.r
 !.dockerignore
 !build.sh
+!build-r.sh
+!prepare-r-artifacts.sh
 !locks/
 !locks/**
 !scripts/

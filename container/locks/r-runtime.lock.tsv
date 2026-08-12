@@ -1,0 +1,2 @@
+package	version	architecture	filename	bytes	sha256	url
+r-4.2.3	1	amd64	r-4.2.3_1_amd64.deb	60355082	d2c1316527b21211d2802f123c8b5dca7265f6c69df8ce39c8b0aacc79260952	https://cdn.posit.co/r/debian-13/pkgs/r-4.2.3_1_amd64.deb

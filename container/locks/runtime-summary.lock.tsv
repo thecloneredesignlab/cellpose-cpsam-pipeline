@@ -14,3 +14,12 @@ nccl	2.30.7.1	HPC Conda package
 hpc_gpu	NVIDIA A30	HPC compute capture
 hpc_gpu_compute_capability	8.0	HPC compute capture
 hpc_driver	580.105.08	HPC compute capture
+r	4.2.3	Posit Debian 13 amd64 build 1
+r_home	/opt/R/4.2.3/lib/R	Posit R runtime
+r_package_snapshot	2025-11-11	Posit Package Manager trixie-x86_64/R-4.2 binary repository
+r_debian_base_snapshot	2025-10-20	Debian snapshot matching the immutable base system ABI
+r_debian_security_snapshot	2026-08-11	Debian snapshot for security builds already present in the immutable base
+r_locked_system_deb_count	122	r-system-debs.lock.tsv; no installed base packages replaced
+r_locked_package_count	43	r-packages.lock.tsv
+r_glmnet	4.1-10	Posit Package Manager binary lock
+r_uwot	0.2.4	Posit Package Manager binary lock
