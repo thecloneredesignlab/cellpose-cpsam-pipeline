@@ -848,6 +848,9 @@ class ReferenceCellStateV2HpcContracts(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('observed_sif="$(reference_cell_state_v2_sha256 "$sif")"', contract)
         self.assertIn("reference_cell_state_v2_verify_container_rootfs_read_only", contract)
+        self.assertIn(
+            "hpc_apptainer_exec /usr/bin/bash --noprofile --norc -c", contract
+        )
         self.assertIn("V2 SIF root filesystem unexpectedly accepted a write", contract)
         for name in V2_NAMES[1:]:
             text = (DOCKER_HPC / name).read_text(encoding="utf-8")

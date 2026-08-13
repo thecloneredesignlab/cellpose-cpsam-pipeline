@@ -169,7 +169,11 @@ reference_cell_state_v2_verify_container_rootfs_read_only() {
     reference_cell_state_v2_abort "V2 rootfs verification requires the prepared Apptainer runtime"
     return 2
   }
-  hpc_apptainer_exec sh -c '
+  # The parity image's /usr/bin/sh exits immediately when a redirection itself
+  # fails with EROFS, even when that redirection is the condition of an `if`.
+  # Bash preserves the intended conditional semantics so a denied write is
+  # distinguishable from an unavailable/broken container invocation.
+  hpc_apptainer_exec /usr/bin/bash --noprofile --norc -c '
     probe="/.reference-cell-state-v2-rootfs-write-probe-$$"
     if : > "$probe" 2>/dev/null; then
       rm -f -- "$probe"
