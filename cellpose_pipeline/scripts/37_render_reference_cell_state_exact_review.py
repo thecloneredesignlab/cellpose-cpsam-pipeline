@@ -388,8 +388,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if manifest.get("schema_version") not in {
         "reference_cell_state_seed1_review_v2",
         "reference_cell_state_seed2_multinucleated_review_v2",
+        "multimodal_cell_state_v3_blind_review_v1",
     }:
-        raise ValueError("Review manifest is not a V2 exact preselection")
+        raise ValueError("Review manifest is not an accepted exact preselection")
     fields, selected = read_table(review_path)
     required = {"morphology_umap_row_key", "review_default_label", "review_sampling_bucket", "context_key", "source_id"}
     if not required.issubset(fields):

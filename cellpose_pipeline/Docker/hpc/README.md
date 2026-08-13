@@ -90,6 +90,13 @@ It is direct-only on `hpctpa3pc0009`, writes only beneath
 the same cells, and stops for morphology-evidence review. It cannot submit a
 formal job or put expanded39 features into the historical classifier.
 
+The dataset-adapted successor is
+`Parameter_calibration/33_run_multimodal_cell_state_v3_test.sh`. It abandons
+reference-parity as an objective, uses zero-aware Nuclei evidence and equal
+Shape/Brightfield/Nuclei distance contributions, and stops at a 500-cell blind
+image-review barrier. It is direct-only on `hpctpa3pc0009`; no V3 formal Slurm
+submission is permitted until that calibration and human-label gate pass.
+
 The continuation trust boundary is the run-owned code archive, archive
 receipt, and shared extracted snapshot. All three must agree. The public
 caller cannot assert the private frozen-reexec flag: a one-use, owner-private

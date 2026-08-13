@@ -1,0 +1,220 @@
+{
+  "schema_version": "multimodal_cell_state_v3_config_v1",
+  "method_version": "sum159_multimodal_cell_state_v3",
+  "intended_use": "independent_blinded_multimodal_cell_state_classifier",
+  "cell_universe": {
+    "branch": "original",
+    "development_split": "development",
+    "expected_development_cells": 32000,
+    "expected_development_wells": 64,
+    "heldout_wells": 16,
+    "heldout_policy_before_model_freeze": "not_read"
+  },
+  "feature_blocks": {
+    "shape": {
+      "candidate_columns": [
+        "area_px2",
+        "roundness",
+        "aspect_ratio",
+        "extent",
+        "solidity"
+      ],
+      "fixed_keep": true,
+      "reason": "retain nonredundant cell size and shape descriptors"
+    },
+    "brightfield": {
+      "candidate_columns": [
+        "bf_object_median",
+        "bf_object_iqr",
+        "bf_object_p90_minus_p10",
+        "bf_object_mean_minus_ring_background",
+        "bf_interior_minus_boundary_mean",
+        "bf_boundary_gradient_p95",
+        "bf_laplacian_variance",
+        "bf_edge_density",
+        "bf_glcm_contrast",
+        "bf_glcm_entropy",
+        "bf_glcm_correlation"
+      ],
+      "correlation_pruning": {
+        "method": "development_only_absolute_spearman_greedy_in_declared_order",
+        "threshold": 0.95
+      },
+      "reason": "retain complementary intensity contrast boundary focus edge and texture evidence while removing redundant summaries"
+    },
+    "nuclei": {
+      "candidate_columns": [
+        "nucleus_absent",
+        "nuclei_count_excess",
+        "nuclei_area_fraction_if_present",
+        "largest_nucleus_fraction",
+        "nucleus_area_cv",
+        "small_nuclear_fragment_fraction",
+        "nuclei_spatial_dispersion"
+      ],
+      "fixed_keep": true,
+      "reason": "zero-aware mask topology and cell-nucleus organization"
+    }
+  },
+  "removed_features": [
+    {
+      "feature": "nuclei_overlap_area_px2",
+      "reason": "exactly redundant with area_px2 times nuclei_area_fraction"
+    },
+    {
+      "feature": "equivalent_diameter_px",
+      "reason": "deterministic transform of area_px2"
+    },
+    {
+      "feature": "perimeter_px",
+      "reason": "strongly redundant with area and axes in this dataset"
+    },
+    {
+      "feature": "major_axis_px",
+      "reason": "redundant size descriptor after area and aspect_ratio"
+    },
+    {
+      "feature": "minor_axis_px",
+      "reason": "redundant size descriptor after area and aspect_ratio"
+    },
+    {
+      "feature": "generic_nuclei_glcm_or_texture",
+      "reason": "raw Nuclei fluorescence is used for signal support QC, not assumed chromatin texture"
+    }
+  ],
+  "nuclei_zero_aware": {
+    "mask_source_preference": [
+      "profiles.Nuclei.extent_mask",
+      "profiles.Nuclei.core_mask"
+    ],
+    "nucleus_absent_semantics": "one_only_for_absent_supported_zero_for_present_or_unreliable",
+    "conditional_feature_policy": "scale_on_present_supported_then_impute_neutral_zero_after_scaling",
+    "mask_reliability_policy": "fit_nucleus_absent_and_nuclei_count_excess_only_on_present_supported_or_absent_supported_then_map_possible_miss_and_low_quality_to_neutral_zero",
+    "nuclei_count_excess": "log1p(max(nuclei_count-1,0))",
+    "small_fragment_definition": "nuclear_overlap_area_at_most_max(4px,25pct_of_largest_overlap)",
+    "raw_signal_qc_columns": [
+      "nuclei_cell_to_ring_contrast",
+      "nuclei_signal_positive_fraction"
+    ],
+    "raw_signal_qc_role": "measurement_support_and_sensitivity_only_not_generic_texture",
+    "measurement_status_levels": [
+      "present_supported",
+      "absent_supported",
+      "possible_nuclei_mask_miss",
+      "low_quality_nuclei_signal"
+    ],
+    "possible_mask_miss_gate": {
+      "minimum_cell_to_ring_contrast_mad": 3.0,
+      "minimum_positive_fraction": 0.05
+    }
+  },
+  "preprocessing": {
+    "fit_scope": "development_only",
+    "winsor_quantiles": [0.005, 0.995],
+    "center": "median",
+    "scale": "mad_times_1.4826_with_iqr_fallback",
+    "binary_indicator_policy": "center_prevalence_scale_sqrt_p_times_one_minus_p",
+    "constant_policy": "drop_with_manifest",
+    "feature_transforms": {
+      "area_px2": "log1p",
+      "roundness": "logit_clipped",
+      "aspect_ratio": "log1p",
+      "extent": "logit_clipped",
+      "solidity": "logit_clipped",
+      "default_nonnegative": "log1p",
+      "default_signed": "asinh"
+    }
+  },
+  "block_equalization": {
+    "blocks": [
+      "shape",
+      "brightfield",
+      "nuclei"
+    ],
+    "target_fraction_each": 0.3333333333333333,
+    "normalization": "scale_each_block_to_equal_mean_squared_pairwise_distance_then_multiply_sqrt_one_third",
+    "acceptance_absolute_percentage_points": 2.0
+  },
+  "projection_profiles": [
+    "expanded39_audit",
+    "v3_zero_aware_unpruned",
+    "v3_pruned_unbalanced",
+    "v3_pruned_block_equal",
+    "v3_pruned_block_equal_plus_nuclei_signal_qc",
+    "v3_minus_shape",
+    "v3_minus_brightfield",
+    "v3_minus_nuclei"
+  ],
+  "projection_grid": {
+    "method": "pca_then_umap",
+    "pca_max_components": 64,
+    "pca_input_policy": "use_all_retained_components_so_orthogonal_rotation_preserves_block_equalized_euclidean_geometry",
+    "umap_metric": "euclidean",
+    "n_neighbors": [15, 30, 50],
+    "min_dist": [0.05, 0.1, 0.3],
+    "seeds": [20260813, 20260814, 20260815, 20260816, 20260817],
+    "selection_blinding": "no_manual_labels_current_predictions_dead_channel_or_heldout",
+    "primary_profile": "v3_pruned_block_equal"
+  },
+  "projection_audit": {
+    "known_nuisance_columns": [
+      "well",
+      "site",
+      "elapsed_hours",
+      "context_key",
+      "nuclei_measurement_status"
+    ],
+    "cluster_role": "navigation_and_review_sampling_only_not_cell_state_label",
+    "dead_island_required": false,
+    "required_outputs": [
+      "feature_retention_manifest.tsv",
+      "feature_transform_manifest.tsv",
+      "block_distance_contribution.tsv",
+      "pca_feature_contribution.tsv",
+      "umap_grid_metrics.tsv",
+      "batch_mixing_audit.tsv",
+      "ablation_summary.tsv"
+    ]
+  },
+  "classifier": {
+    "labels": [
+      "live_cell",
+      "dead_cell",
+      "multinucleated_cell"
+    ],
+    "training_evidence": "manual_blind_review_high_or_medium_confidence_only",
+    "group_column": "source_id",
+    "source_id_semantics": "well",
+    "outer_folds": 5,
+    "inner_folds": 5,
+    "alpha_grid": [0.0, 0.25, 0.5, 0.75, 1.0],
+    "lambda_rule": "lambda.1se",
+    "probability_status": "uncalibrated_ranking_and_classification_only"
+  },
+  "blinding": {
+    "allowed_before_model_freeze": [
+      "Brightfield_raw",
+      "Nuclei_raw",
+      "Combined_mask",
+      "Nuclei_mask",
+      "development_metadata"
+    ],
+    "forbidden_before_model_freeze": [
+      "Dead",
+      "Combined_RGB",
+      "current_classification",
+      "current_probabilities",
+      "trajectory",
+      "heldout_cells"
+    ],
+    "dead_channel_role_after_freeze": "external_validation_only"
+  },
+  "hpc": {
+    "calibration_host": "hpctpa3pc0009",
+    "calibration_mode": "direct_no_sbatch_no_gpu",
+    "calibration_output_namespace": "results/Tests_and_Parameters_calibration/multimodal_cell_state_v3_test_*",
+    "formal_output_namespace": "results/multimodal_cell_state_v3_*",
+    "formal_node_pinning": false,
+    "formal_gpu": false
+  }
+}
