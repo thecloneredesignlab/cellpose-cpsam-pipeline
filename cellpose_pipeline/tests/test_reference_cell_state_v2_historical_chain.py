@@ -145,6 +145,8 @@ class StaticHistoricalContracts(unittest.TestCase):
             seed1,
         )
         self.assertIn("historical_core_parity_with_sampling_adaptation", seed1)
+        self.assertIn("--expanded-labelability-decision", seed1)
+        self.assertIn("authoritative_expanded_computational_nogo", seed1)
         self.assertIn("max_per_group = 8L", seed1)
         self.assertIn("train_morphology_cell_state_classifier_workflow", trainer)
         self.assertIn('engine = "glmnet"', trainer)
@@ -640,6 +642,90 @@ class HistoricalReviewExecutionTests(unittest.TestCase):
                 self.assertNotEqual(rejected_seed1_reuse.returncode, 0, field)
                 self.assertIn(f"identity differs for {field}", rejected_seed1_reuse.stderr)
                 seed1_manifest_path.write_bytes(seed1_manifest_bytes)
+
+            # A multi-cluster projection that fails the preregistered
+            # size/stability gates must use blind review without falsely
+            # claiming a one-cluster fallback.
+            decision = historical / "labelability_decision.json"
+            expanded_manifest = historical / "expanded_projection_manifest.json"
+            decision.write_text(json.dumps({
+                "schema_version": "reference_cell_state_expanded_labelability_decision_v1",
+                "status": "COMPLETE",
+                "selected_annotation_profile": "expanded39",
+                "computational_gate": "FAIL",
+                "overall_labelability": "NO_GO_FOR_POLYGON_ANNOTATION_USE_500_CELL_BLIND_REVIEW",
+            }) + "\n")
+            expanded_manifest.write_text(json.dumps({
+                "schema_version": "reference_cell_state_expanded_projection_comparison_v1",
+                "status": "COMPLETE",
+                "selected_annotation_profile": "expanded39",
+                "classifier_boundary": {
+                    "final_classifier_feature_source": "classifier12",
+                    "expanded39_allowed_in_final_classifier": False,
+                },
+            }) + "\n")
+            standard_parent_import = (project_dir / "parent_import_manifest.json").read_bytes()
+            base_lineage = shadow / "expanded_base_lineage"
+            base_lineage.mkdir()
+            base_project = base_lineage / "project.yml"
+            base_project.write_bytes(project_path.read_bytes())
+            (base_lineage / "cells.tsv").write_bytes((project_dir / "cells.tsv").read_bytes())
+            (base_lineage / "parent_import_manifest.json").write_bytes(standard_parent_import)
+            (project_dir / "parent_import_manifest.json").write_text(json.dumps({
+                "schema_version": "reference_cell_state_expanded_annotation_parent_import_v1",
+                "status": "COMPLETE",
+                "inputs": {
+                    "base_project": {"path": str(base_project), "sha256": sha(base_project)},
+                },
+            }) + "\n")
+            one_cluster_manifest_bytes = diagnostic_manifest.read_bytes()
+            diagnostic_manifest.write_text(json.dumps({
+                "schema_version": "reference_cell_state_historical_projection_expanded_v1",
+                "status": "COMPLETE",
+                "selected_annotation_profile": "expanded39",
+                "expanded_feature_role": "annotation_geometry_and_human_morphology_evidence_only",
+                "expanded_features_allowed_in_final_classifier": False,
+                "computational_labelability_gate": "FAIL",
+                "labelability_decision_sha256": sha(decision),
+                "expanded_projection_manifest_sha256": sha(expanded_manifest),
+                "output_file_sha256": {
+                    "diagnostic_clusters.tsv": sha(clusters),
+                    "expanded_projection_manifest.json": sha(expanded_manifest),
+                    "labelability_decision.json": sha(decision),
+                },
+            }) + "\n")
+            expanded_selection = shadow / "human_review" / "seed1_expanded" / "selection"
+            expanded_command = [
+                "Rscript", str(SEED1), "--reference-root", str(REFERENCE),
+                "--dependency-lock", str(LOCK), "--project", str(project_path),
+                "--expanded-labelability-decision", str(decision),
+                "--output-dir", str(expanded_selection),
+            ]
+            expanded_selected = subprocess.run(
+                expanded_command, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(expanded_selected.returncode, 0, expanded_selected.stderr)
+            _, expanded_rows = read_tsv(expanded_selection / "seed1_review_set.tsv")
+            self.assertEqual(len(expanded_rows), 500)
+            expanded_review_manifest = json.loads(
+                (expanded_selection / "seed1_review_manifest.json").read_text()
+            )
+            self.assertEqual(
+                expanded_review_manifest["selection_input_mode"],
+                "authoritative_expanded_computational_nogo",
+            )
+            self.assertTrue(expanded_review_manifest["computational_nogo_fallback_proven"])
+            self.assertFalse(expanded_review_manifest["one_cluster_fallback_proven"])
+            self.assertFalse(
+                expanded_review_manifest["sampling_adaptation"]["reference_native_sampling_claimed"]
+            )
+            expanded_reuse = subprocess.run(
+                expanded_command, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(expanded_reuse.returncode, 0, expanded_reuse.stderr)
+            self.assertIn("seed1_review_verified_reuse=1", expanded_reuse.stdout)
+            diagnostic_manifest.write_bytes(one_cluster_manifest_bytes)
+            (project_dir / "parent_import_manifest.json").write_bytes(standard_parent_import)
 
             fields, seed1_rows = read_tsv(seed1_selection / "seed1_review_label_template.tsv")
             classes = ("live_cell", "dead_cell", "multinucleated_cell")

@@ -120,14 +120,23 @@ distinct between-cluster cell evidence. If that human evidence gate fails, no
 further UMAP/DBSCAN tuning is permitted: the generation records
 `NO_GO_FOR_POLYGON_ANNOTATION` and transitions to a blinded, well-balanced
 500-cell individual review. Diagnostic clusters never become cell-state
-labels in either branch.
+labels in either branch. The expanded calibration launcher uses the hash-bound
+`labelability_decision.json` as fallback authority, selects at most 500
+development cells evenly across wells (maximum eight per well), and renders
+`human_review/seed1/render/exact_review.html`. It does not require or display a
+polygon, UMAP assignment, diagnostic-cluster label, or current-classifier
+result; every selected BF/Nuclei crop needs an explicit human label before it
+can become training evidence.
 
 ## Human and model stages
 
 For a multi-cluster outcome, export the polygon submission and run
 `V2_STAGE=post-region`. This imports the exact polygon result, selects the
 historical Seed1 set, and renders the exact BF/Nuclei review HTML. For a
-one-cluster fallback, Phase A already renders Seed1.
+one-cluster fallback, Phase A already renders Seed1. An expanded multi-cluster
+projection that fails the preregistered size/stability gate uses the same
+disclosed all-unassigned Seed1 sampling adaptation, but its authority is the
+expanded computational-NO_GO decision rather than a false one-cluster claim.
 
 After Seed1 manual submission, run `V2_STAGE=post-seed1` for the polygon path
 or `V2_STAGE=post-fallback-seed1` for the fallback path. The worker imports the
@@ -240,4 +249,6 @@ generation and cluster-aware morphology workspace, and stops with
 `morphology_overlay_labelability_review_required` after a computational PASS.
 Only a combined computational plus morphology-evidence GO authorizes a new
 formal Slurm Phase A. A FAIL instead authorizes the 500-cell blind-review
-branch, not another parameter search.
+branch, not another parameter search; the same direct calibration run creates
+the exact 500-cell review workspace and a separate immutable blind-review
+receipt.

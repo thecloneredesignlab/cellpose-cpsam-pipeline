@@ -64,6 +64,8 @@ PROJECT_BUILDER="$PROJECT_DIR/cellpose_pipeline/scripts/40_prepare_reference_cel
 HISTORICAL_ADAPTER="$PROJECT_DIR/cellpose_pipeline/scripts/28_build_reference_cell_state_historical_projection.R"
 CPA_STAGE_SCRIPT="$PROJECT_DIR/cellpose_pipeline/scripts/20_run_cellphenotypeannotator_stage.py"
 MORPHOLOGY_WORKSPACE_SCRIPT="$PROJECT_DIR/cellpose_pipeline/scripts/27_build_reference_morphology_workspace.py"
+SEED1_SCRIPT="$PROJECT_DIR/cellpose_pipeline/scripts/33_build_reference_cell_state_seed1_review.R"
+RENDER_SCRIPT="$PROJECT_DIR/cellpose_pipeline/scripts/37_render_reference_cell_state_exact_review.py"
 DEPENDENCY_LOCK="$PROJECT_DIR/cellpose_pipeline/configs/cellphenotypeannotator_dependency.lock.tsv"
 EXPANDED_OUTPUT="$REFERENCE_SHADOW_ROOT/workflow_status/expanded_projection_comparison"
 PROJECT_FILE="$REFERENCE_SHADOW_ROOT/projection_input/representative_umap_v2/project.yml"
@@ -73,7 +75,8 @@ RECEIPT="$REFERENCE_SHADOW_ROOT/workflow_status/EXPANDED_CALIBRATION_COMPLETE.ts
 for file in \
   "$BASE_PROJECT" "$BROAD_FEATURES" "$EXPANDED_CONFIG" "$EXPANDED_SCRIPT" \
   "$PROJECT_BUILDER" "$HISTORICAL_ADAPTER" "$CPA_STAGE_SCRIPT" \
-  "$MORPHOLOGY_WORKSPACE_SCRIPT" "$DEPENDENCY_LOCK" \
+  "$MORPHOLOGY_WORKSPACE_SCRIPT" "$SEED1_SCRIPT" "$RENDER_SCRIPT" \
+  "$DEPENDENCY_LOCK" \
   "$REFERENCE_SNAPSHOT_ROOT/code/lib/Utils.R"; do
   [[ -f "$file" && ! -L "$file" ]] || {
     echo "Required expanded calibration file is unavailable: $file" >&2
@@ -224,6 +227,93 @@ overall_labelability="${decision_values[1]}"
 human_barrier="morphology_overlay_labelability_review_required"
 [[ "$computational_gate" == PASS ]] || human_barrier="blind_500_cell_review_required_no_polygon"
 
+if [[ "$computational_gate" == FAIL ]]; then
+  seed1_selection="$REFERENCE_SHADOW_ROOT/human_review/seed1/selection"
+  seed1_render="$REFERENCE_SHADOW_ROOT/human_review/seed1/render"
+  hpc_apptainer_exec Rscript "$SEED1_SCRIPT" \
+    --reference-root "$CPA_REFERENCE_ROOT" \
+    --dependency-lock "$DEPENDENCY_LOCK" \
+    --project "$PROJECT_FILE" \
+    --expanded-labelability-decision "$REFERENCE_SHADOW_ROOT/projection_input/representative_umap_v2/historical_projection/labelability_decision.json" \
+    --output-dir "$seed1_selection"
+  hpc_apptainer_exec python -I "$RENDER_SCRIPT" \
+    --project "$PROJECT_FILE" \
+    --review-set "$seed1_selection/seed1_review_set.tsv" \
+    --review-manifest "$seed1_selection/seed1_review_manifest.json" \
+    --output-dir "$seed1_render" \
+    --padding 12
+  for output in \
+    "$seed1_selection/seed1_review_manifest.json" \
+    "$seed1_selection/seed1_review_set.tsv" \
+    "$seed1_render/exact_review_render_manifest.json" \
+    "$seed1_render/exact_review.html" \
+    "$seed1_render/crop_manifest.tsv"; do
+    [[ -s "$output" && ! -L "$output" ]] || {
+      echo "Expanded NO_GO blind-review evidence is unavailable: $output" >&2
+      exit 2
+    }
+  done
+  mapfile -t blind_review_stats < <(
+    hpc_apptainer_exec python -I - "$seed1_selection/seed1_review_set.tsv" <<'PY'
+import csv
+import sys
+from collections import Counter
+
+with open(sys.argv[1], encoding="utf-8", newline="") as handle:
+    rows = list(csv.DictReader(handle, delimiter="\t"))
+if len(rows) != 500:
+    raise SystemExit(f"Expanded blind review must contain exactly 500 rows; observed={len(rows)}")
+if any(row.get("review_default_label") != "uncertain" for row in rows):
+    raise SystemExit("Expanded blind review contains a non-uncertain default label")
+if any(row.get("suggested_cell_state_label") for row in rows):
+    raise SystemExit("Expanded blind review leaked a suggested cell-state label")
+counts = Counter(row.get("source_id", "") for row in rows)
+if "" in counts or max(counts.values()) > 8:
+    raise SystemExit("Expanded blind review violates the maximum-eight-per-well contract")
+print(len(rows))
+print(max(counts.values()))
+print(len(counts))
+PY
+  )
+  [[ "${#blind_review_stats[@]}" -eq 3 ]] || {
+    echo "Expanded blind-review statistics are incomplete" >&2
+    exit 2
+  }
+  blind_row_count="${blind_review_stats[0]}"
+  blind_max_per_well="${blind_review_stats[1]}"
+  blind_well_count="${blind_review_stats[2]}"
+  blind_receipt="$REFERENCE_SHADOW_ROOT/workflow_status/EXPANDED_BLIND_REVIEW_COMPLETE.tsv"
+  blind_candidate="$REFERENCE_SHADOW_ROOT/workflow_status/.EXPANDED_BLIND_REVIEW_COMPLETE.tmp.$$"
+  {
+    printf 'property\tvalue\n'
+    printf 'status\tHUMAN_REVIEW_REQUIRED\n'
+    printf 'schema_version\treference_cell_state_expanded_blind_review_v1\n'
+    printf 'selection_mode\tauthoritative_expanded_computational_nogo_all_unassigned\n'
+    printf 'row_count\t%s\n' "$blind_row_count"
+    printf 'observed_max_per_well\t%s\n' "$blind_max_per_well"
+    printf 'well_count\t%s\n' "$blind_well_count"
+    printf 'umap_or_cluster_labels_displayed\tfalse\n'
+    printf 'current_classifier_displayed\tfalse\n'
+    printf 'image_evidence\tbrightfield+nuclei_support+combined_mask_outline\n'
+    printf 'seed1_review_manifest\t%s\n' "$seed1_selection/seed1_review_manifest.json"
+    printf 'seed1_review_manifest_sha256\t%s\n' "$(reference_cell_state_v2_sha256 "$seed1_selection/seed1_review_manifest.json")"
+    printf 'seed1_review_set_sha256\t%s\n' "$(reference_cell_state_v2_sha256 "$seed1_selection/seed1_review_set.tsv")"
+    printf 'render_manifest_sha256\t%s\n' "$(reference_cell_state_v2_sha256 "$seed1_render/exact_review_render_manifest.json")"
+    printf 'crop_manifest_sha256\t%s\n' "$(reference_cell_state_v2_sha256 "$seed1_render/crop_manifest.tsv")"
+    printf 'human_workspace\t%s\n' "$seed1_render/exact_review.html"
+    printf 'human_submission_expected_path\t%s\n' "$seed1_render/exact_review_submission.json"
+  } > "$blind_candidate"
+  if [[ -e "$blind_receipt" ]]; then
+    cmp -s "$blind_candidate" "$blind_receipt" || {
+      echo "Existing expanded blind-review receipt differs" >&2
+      exit 2
+    }
+    rm -f "$blind_candidate"
+  else
+    mv "$blind_candidate" "$blind_receipt"
+  fi
+fi
+
 sha256_value() { reference_cell_state_v2_sha256 "$1"; }
 receipt_candidate="$REFERENCE_SHADOW_ROOT/workflow_status/.EXPANDED_CALIBRATION_COMPLETE.tmp.$$"
 [[ -n "$ended_utc" ]] || ended_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -279,4 +369,8 @@ echo "expanded_calibration_complete=1"
 echo "reference_shadow_root=$REFERENCE_SHADOW_ROOT"
 echo "computational_labelability_gate=$computational_gate"
 echo "morphology_workspace=$MORPHOLOGY_OUTPUT/annotation_workspace.html"
+if [[ "$computational_gate" == FAIL ]]; then
+  echo "blind_review_workspace=$REFERENCE_SHADOW_ROOT/human_review/seed1/render/exact_review.html"
+  echo "blind_review_submission_expected_path=$REFERENCE_SHADOW_ROOT/human_review/seed1/render/exact_review_submission.json"
+fi
 echo "human_barrier=$human_barrier"

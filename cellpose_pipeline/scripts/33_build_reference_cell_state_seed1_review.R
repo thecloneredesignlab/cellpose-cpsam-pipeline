@@ -23,7 +23,8 @@ abort <- function(format, ...) stop(sprintf(format, ...), call. = FALSE)
 parse_args <- function(arguments) {
   allowed <- c(
     "--reference-root", "--dependency-lock", "--project",
-    "--annotation-import-dir", "--diagnostic-cluster-manifest", "--output-dir"
+    "--annotation-import-dir", "--diagnostic-cluster-manifest",
+    "--expanded-labelability-decision", "--output-dir"
   )
   result <- list()
   i <- 1L
@@ -42,9 +43,16 @@ parse_args <- function(arguments) {
     !is.null(result[[name]]) && nzchar(result[[name]])
   }, logical(1))]
   if (length(missing)) abort("Missing required arguments: %s", paste(missing, collapse = ", "))
-  branches <- c(!is.null(result$annotation_import_dir), !is.null(result$diagnostic_cluster_manifest))
+  branches <- c(
+    !is.null(result$annotation_import_dir),
+    !is.null(result$diagnostic_cluster_manifest),
+    !is.null(result$expanded_labelability_decision)
+  )
   if (sum(branches) != 1L) {
-    abort("Supply exactly one of --annotation-import-dir or --diagnostic-cluster-manifest")
+    abort(paste(
+      "Supply exactly one of --annotation-import-dir, --diagnostic-cluster-manifest,",
+      "or --expanded-labelability-decision"
+    ))
   }
   result
 }
@@ -119,6 +127,33 @@ read_project <- function(path) {
   }
   if (!is.list(payload) || is.null(payload$cells_file)) abort("Project lacks cells_file")
   payload
+}
+
+resolve_plate_contract_project <- function(project_path) {
+  project_dir <- dirname(project_path)
+  parent_import_path <- normalize_input(
+    file.path(project_dir, "parent_import_manifest.json"), "project parent import"
+  )
+  parent_import <- jsonlite::fromJSON(parent_import_path, simplifyVector = FALSE)
+  if (!is.null(parent_import$parent)) {
+    return(reference_cell_state_v2_resolve_plate_contract(project_path))
+  }
+  if (!identical(as.character(parent_import$schema_version),
+                 "reference_cell_state_expanded_annotation_parent_import_v1") ||
+      !identical(as.character(parent_import$status), "COMPLETE")) {
+    abort("Project parent import lacks a supported frozen plate-contract lineage")
+  }
+  base_binding <- parent_import$inputs$base_project
+  if (!is.list(base_binding) ||
+      !all(c("path", "sha256") %in% names(base_binding))) {
+    abort("Expanded project parent import lacks its frozen base-project binding")
+  }
+  base_project <- normalize_input(as.character(base_binding$path), "expanded base project")
+  if (nzchar(Sys.readlink(base_project)) ||
+      !identical(sha256_file(base_project), as.character(base_binding$sha256))) {
+    abort("Expanded base project differs from its parent-import binding")
+  }
+  reference_cell_state_v2_resolve_plate_contract(base_project)
 }
 
 read_table <- function(path, label) {
@@ -317,7 +352,101 @@ read_fallback_labels <- function(manifest_path, project_dir, cells) {
       cell_id = as.character(cells$cell_id), assignment_state = "unreviewed",
       class_id = "", region_id = "", stringsAsFactors = FALSE
     ),
-    manifest = manifest, cluster_path = cluster_path
+    manifest = manifest, cluster_path = cluster_path,
+    mode = "authoritative_one_cluster_fallback",
+    authority_path = manifest_path,
+    authority_schema_version = as.character(manifest$schema_version)
+  )
+}
+
+read_expanded_nogo_labels <- function(decision_path, project_dir, cells) {
+  expected_decision <- normalizePath(
+    file.path(project_dir, "historical_projection", "labelability_decision.json"),
+    winslash = "/", mustWork = TRUE
+  )
+  if (!identical(decision_path, expected_decision)) {
+    abort("Expanded fallback decision must be the canonical project labelability decision")
+  }
+  historical_path <- normalizePath(
+    file.path(project_dir, "historical_projection", "historical_projection_manifest.json"),
+    winslash = "/", mustWork = TRUE
+  )
+  expanded_path <- normalizePath(
+    file.path(project_dir, "historical_projection", "expanded_projection_manifest.json"),
+    winslash = "/", mustWork = TRUE
+  )
+  cluster_path <- normalizePath(
+    file.path(project_dir, "historical_projection", "diagnostic_clusters.tsv"),
+    winslash = "/", mustWork = TRUE
+  )
+  decision <- jsonlite::fromJSON(decision_path, simplifyVector = FALSE)
+  historical <- jsonlite::fromJSON(historical_path, simplifyVector = FALSE)
+  expanded <- jsonlite::fromJSON(expanded_path, simplifyVector = FALSE)
+  if (!identical(as.character(decision$schema_version),
+                 "reference_cell_state_expanded_labelability_decision_v1") ||
+      !identical(as.character(decision$status), "COMPLETE") ||
+      !identical(as.character(decision$selected_annotation_profile), "expanded39") ||
+      !identical(as.character(decision$computational_gate), "FAIL") ||
+      !identical(as.character(decision$overall_labelability),
+                 "NO_GO_FOR_POLYGON_ANNOTATION_USE_500_CELL_BLIND_REVIEW")) {
+    abort("Expanded fallback requires an authoritative computational-labelability NO_GO")
+  }
+  if (!identical(as.character(historical$schema_version),
+                 "reference_cell_state_historical_projection_expanded_v1") ||
+      !identical(as.character(historical$status), "COMPLETE") ||
+      !identical(as.character(historical$selected_annotation_profile), "expanded39") ||
+      !identical(as.character(historical$computational_labelability_gate), "FAIL") ||
+      !identical(as.character(historical$expanded_feature_role),
+                 "annotation_geometry_and_human_morphology_evidence_only") ||
+      !identical(historical$expanded_features_allowed_in_final_classifier, FALSE) ||
+      !identical(as.character(historical$labelability_decision_sha256),
+                 sha256_file(decision_path)) ||
+      !identical(as.character(historical$expanded_projection_manifest_sha256),
+                 sha256_file(expanded_path))) {
+    abort("Expanded project historical manifest does not bind the NO_GO decision")
+  }
+  if (!identical(as.character(expanded$schema_version),
+                 "reference_cell_state_expanded_projection_comparison_v1") ||
+      !identical(as.character(expanded$status), "COMPLETE") ||
+      !identical(as.character(expanded$selected_annotation_profile), "expanded39") ||
+      !identical(as.character(expanded$classifier_boundary$final_classifier_feature_source),
+                 "classifier12") ||
+      !identical(expanded$classifier_boundary$expanded39_allowed_in_final_classifier, FALSE)) {
+    abort("Expanded projection manifest violates the frozen classifier boundary")
+  }
+  historical_hashes <- unlist(historical$output_file_sha256, use.names = TRUE)
+  required_hashes <- c(
+    "diagnostic_clusters.tsv", "expanded_projection_manifest.json",
+    "labelability_decision.json"
+  )
+  if (!all(required_hashes %in% names(historical_hashes)) ||
+      !identical(as.character(historical_hashes[["diagnostic_clusters.tsv"]]),
+                 sha256_file(cluster_path)) ||
+      !identical(as.character(historical_hashes[["expanded_projection_manifest.json"]]),
+                 sha256_file(expanded_path)) ||
+      !identical(as.character(historical_hashes[["labelability_decision.json"]]),
+                 sha256_file(decision_path))) {
+    abort("Expanded fallback artifacts differ from the project historical manifest")
+  }
+  clusters <- read_table(cluster_path, "expanded diagnostic clusters")
+  require_columns(clusters, c("cell_id", "cluster"), "expanded diagnostic clusters")
+  if (anyDuplicated(clusters$cell_id) || !setequal(clusters$cell_id, cells$cell_id)) {
+    abort("Expanded diagnostic clusters do not cover canonical cells exactly")
+  }
+  clusters <- clusters[match(cells$cell_id, clusters$cell_id), , drop = FALSE]
+  if (any(!grepl("^-?[0-9]+$", as.character(clusters$cluster))) ||
+      !identical(as.character(clusters$cluster), as.character(cells$cluster))) {
+    abort("Canonical cells differ from expanded diagnostic clusters")
+  }
+  list(
+    labels = data.frame(
+      cell_id = as.character(cells$cell_id), assignment_state = "unreviewed",
+      class_id = "", region_id = "", stringsAsFactors = FALSE
+    ),
+    manifest = historical, cluster_path = cluster_path,
+    mode = "authoritative_expanded_computational_nogo",
+    authority_path = decision_path,
+    authority_schema_version = as.character(decision$schema_version)
   )
 }
 
@@ -357,6 +486,8 @@ verify_existing_seed1 <- function(output, expected, selection) {
     "all_unassigned_fallback", "project_sha256", "selection_input_mode",
     "historical_parity_scope", "annotation_manifest_sha256", "provisional_labels_sha256",
     "diagnostic_cluster_manifest_sha256", "one_cluster_fallback_proven",
+    "expanded_labelability_decision_sha256", "computational_nogo_fallback_proven",
+    "fallback_authority_schema_version",
     "row_count", "stable_id_sha256", "implementation", "implementation_sha256",
     "shared_implementation", "shared_implementation_sha256"
   )
@@ -424,7 +555,13 @@ main <- function() {
   diagnostic_manifest <- if (is.null(args$diagnostic_cluster_manifest)) NULL else {
     normalize_input(args$diagnostic_cluster_manifest, "--diagnostic-cluster-manifest")
   }
-  scoped <- c(output, if (!is.null(annotation_dir)) annotation_dir else diagnostic_manifest)
+  expanded_decision <- if (is.null(args$expanded_labelability_decision)) NULL else {
+    normalize_input(args$expanded_labelability_decision, "--expanded-labelability-decision")
+  }
+  authority_input <- if (!is.null(annotation_dir)) annotation_dir else {
+    if (!is.null(diagnostic_manifest)) diagnostic_manifest else expanded_decision
+  }
+  scoped <- c(output, authority_input)
   if (any(!vapply(scoped, is_within, logical(1), root = shadow_root))) {
     abort("Seed1 input/output must remain inside the V2 reference shadow root")
   }
@@ -432,7 +569,7 @@ main <- function() {
   review_source_identity <- source_reference_review(root)
   classifier_source <- reference_cell_state_v2_load_historical_classifier(root)
   project <- read_project(project_path)
-  plate_contract <- reference_cell_state_v2_resolve_plate_contract(project_path)
+  plate_contract <- resolve_plate_contract_project(project_path)
   cells_path <- normalize_input(file.path(project_dir, project$cells_file), "project cells")
   cells <- read_table(cells_path, "cells.tsv")
   fallback <- NULL
@@ -441,18 +578,23 @@ main <- function() {
     labels_path <- polygon$labels_path
     annotation_manifest <- polygon$manifest_path
     labels <- polygon$labels
-  } else {
+  } else if (!is.null(diagnostic_manifest)) {
     fallback <- read_fallback_labels(diagnostic_manifest, project_dir, cells)
     labels <- fallback$labels
     labels_path <- fallback$cluster_path
-    annotation_manifest <- diagnostic_manifest
+    annotation_manifest <- fallback$authority_path
+  } else {
+    fallback <- read_expanded_nogo_labels(expanded_decision, project_dir, cells)
+    labels <- fallback$labels
+    labels_path <- fallback$cluster_path
+    annotation_manifest <- fallback$authority_path
   }
   rows <- make_annotation_rows(cells, labels, plate_contract)
   rows$suggested_cell_state_label <- as.character(rows$suggested_cell_state_label)
   all_unassigned <- !any(nzchar(rows$suggested_cell_state_label))
   if (!is.null(fallback) && !all_unassigned) abort("Fallback branch unexpectedly contains assigned labels")
   if (is.null(fallback) && all_unassigned) {
-    abort("All-unassigned sampling may only be triggered by the authoritative one-cluster fallback manifest")
+    abort("All-unassigned sampling may only be triggered by an authoritative fallback manifest")
   }
   selection <- if (all_unassigned) {
     result <- all_unassigned_fallback(rows, seed = 1L, max_total = 500L, max_per_group = 8L)
@@ -487,13 +629,17 @@ main <- function() {
     frozen_well_split_manifest = plate_contract$path,
     frozen_well_split_manifest_sha256 = plate_contract$sha256,
     project = project_path, project_sha256 = sha256_file(project_path),
-    selection_input_mode = if (is.null(fallback)) "accepted_polygon_annotation" else "authoritative_one_cluster_fallback",
+    selection_input_mode = if (is.null(fallback)) "accepted_polygon_annotation" else fallback$mode,
     historical_parity_scope = if (is.null(fallback)) {
       "pinned_reference_native_seed1_sampling"
     } else "historical_core_parity_with_sampling_adaptation",
     sampling_adaptation = if (is.null(fallback)) NULL else list(
       name = "disclosed_no_stable_cluster_adapter",
-      reason = "pinned_seed1_sampler_requires_stable_polygon_assignments_but_projection_has_one_cluster_and_no_regions",
+      reason = if (identical(fallback$mode, "authoritative_one_cluster_fallback")) {
+        "pinned_seed1_sampler_requires_stable_polygon_assignments_but_projection_has_one_cluster_and_no_regions"
+      } else {
+        "expanded39_projection_failed_preregistered_cluster_size_and_stability_gates_so_polygon_regions_are_not_scientifically_supported"
+      },
       rule = "global_max500_balanced_across_context_and_source_id_max8_per_well",
       reference_native_sampling_claimed = FALSE,
       manual_review_required_for_every_selected_row = TRUE
@@ -503,7 +649,13 @@ main <- function() {
     provisional_labels_sha256 = sha256_file(labels_path),
     diagnostic_cluster_manifest = diagnostic_manifest,
     diagnostic_cluster_manifest_sha256 = if (is.null(diagnostic_manifest)) NULL else sha256_file(diagnostic_manifest),
-    one_cluster_fallback_proven = !is.null(fallback),
+    expanded_labelability_decision = expanded_decision,
+    expanded_labelability_decision_sha256 = if (is.null(expanded_decision)) NULL else sha256_file(expanded_decision),
+    one_cluster_fallback_proven = !is.null(fallback) &&
+      identical(fallback$mode, "authoritative_one_cluster_fallback"),
+    computational_nogo_fallback_proven = !is.null(fallback) &&
+      identical(fallback$mode, "authoritative_expanded_computational_nogo"),
+    fallback_authority_schema_version = if (is.null(fallback)) NULL else fallback$authority_schema_version,
     dependency = dependency,
     historical_review_source_identity = review_source_identity,
     historical_classifier_source_identity = classifier_source$identity,
