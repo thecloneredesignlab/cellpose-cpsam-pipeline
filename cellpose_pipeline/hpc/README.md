@@ -53,6 +53,10 @@ on `hpctpa3pc0009`; the V2 entry is locked to the separately versioned,
 66-package, A30-verified parity SIF. If DBSCAN has no stable
 cluster, receipts explicitly disclose the user-approved Seed1/Seed2 sampling
 adaptation; that branch is not described as exact historical sampling.
+The separate expanded-labelability calibration is
+`Parameter_calibration/32_run_reference_cell_state_expanded_projection_test.sh`;
+it runs only on `hpctpa3pc0009`, compares three feature geometries, and cannot
+authorize formal polygon annotation until its morphology overlay is reviewed.
 It creates a new `results/classification_<timestamp>/` root and submits only:
 
 ```text

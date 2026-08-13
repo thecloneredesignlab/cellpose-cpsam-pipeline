@@ -637,7 +637,9 @@ main <- function() {
   invisible(0L)
 }
 
-tryCatch(main(), error = function(error) {
-  message("ERROR: ", conditionMessage(error))
-  quit(save = "no", status = 1L, runLast = FALSE)
-})
+if (!identical(Sys.getenv("REFERENCE_CELL_STATE_HISTORICAL_PROJECTION_LIBRARY"), "1")) {
+  tryCatch(main(), error = function(error) {
+    message("ERROR: ", conditionMessage(error))
+    quit(save = "no", status = 1L, runLast = FALSE)
+  })
+}

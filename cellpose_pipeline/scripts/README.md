@@ -69,6 +69,13 @@ without a second sample; 38 performs authoritative human-label import. Scripts
 Every immutable generation supports full identity/hash verified reuse after an
 interruption.
 
+Scripts 39 and 40 implement the pre-annotation expanded-labelability branch.
+Script 39 compares the historical preprocessing on the exact same 32,000 cells
+using shape9, classifier12, and expanded39 evidence, freezes stability/PCA/data
+quality audits, and never changes the classifier12 training contract. Script
+40 imports only the selected expanded coordinates, diagnostic cluster metadata,
+and pinned representative list into a new independent CPA annotation project.
+
 Stable polygon regions use pinned reference sampling. If the optimizer returns
 no stable clusters, receipts instead disclose
 `historical_core_parity_with_disclosed_no_stable_cluster_sampling_adaptation`:

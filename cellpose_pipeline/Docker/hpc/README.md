@@ -82,6 +82,14 @@ full array (`%64`); already-published shard generations are independently
 verified and reused by each task before the new finalize attempt runs. The
 initial ledger and original summary are never deleted or rewritten.
 
+Before a new formal polygon run, the independent expanded-labelability
+calibration entry is
+`Parameter_calibration/32_run_reference_cell_state_expanded_projection_test.sh`.
+It is direct-only on `hpctpa3pc0009`, writes only beneath
+`Tests_and_Parameters_calibration`, compares shape9/classifier12/expanded39 on
+the same cells, and stops for morphology-evidence review. It cannot submit a
+formal job or put expanded39 features into the historical classifier.
+
 The continuation trust boundary is the run-owned code archive, archive
 receipt, and shared extracted snapshot. All three must agree. The public
 caller cannot assert the private frozen-reexec flag: a one-use, owner-private

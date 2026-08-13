@@ -71,6 +71,57 @@ at most 8 per well, and Seed2 uses an initial-model probability surrogate only
 to populate review buckets. Neither adapted sampling step is called pinned
 reference-exact, and no surrogate label enters training.
 
+## UMAP input data and expanded labelability generation
+
+The completed shape-only V2 generation is retained as an immutable audit
+record. Its UMAP was computed from exactly these nine Combined-mask object
+shape measurements for the 32,000 development cells:
+
+```text
+area_px2, perimeter_px, roundness, aspect_ratio, extent, solidity,
+equivalent_diameter_px, major_axis_px, minor_axis_px
+```
+
+It did **not** use raw image pixels, BF intensity/texture, nuclei support, Dead,
+current classifier outputs or heldout cells. The historical preprocessing was
+case-sensitive size dispatch, non-size `log1p`, z-score, reference kNN
+imputation (`k=5`), PCA (up to 10 PCs), and UMAP (`n_neighbors=15`, seed 42,
+Euclidean). Therefore a continuous shape cloud is a property of that feature
+representation, not a hidden browser clustering option.
+
+Before asking a reviewer to draw regions, the independent expanded generation
+compares three geometries on the exact same ordered cell IDs:
+
+- `shape9`: the audit baseline above;
+- `classifier12`: shape9 plus BF boundary mean, BF interior mean, and the
+  interior-minus-boundary contrast used by the historical promoted classifier;
+- `expanded39`: shape9 plus finite BF intensity, local-background contrast,
+  boundary/gradient, GLCM texture, Tenengrad/Laplacian/Sobel/edge evidence, and
+  nuclei count/overlap support.
+
+`bf_object_robust_z_global_background` and
+`bf_object_iqr_over_background_iqr` are excluded because a near-zero background
+MAD/IQR creates unbounded ratio outliers. The expanded profile is a disclosed
+annotation-geometry adaptation. It cannot enter the final model: model fitting
+remains the historical `classifier12` multinomial glmnet contract.
+
+Every profile uses the same selected reference preprocessing and exact DBSCAN
+optimizer. `expanded39` is eligible for a morphology workspace only after the
+pre-registered computational checks are recorded: at least two non-noise
+clusters, every cluster at least 1% of the 32,000 cells, noise at most 25%,
+20-times 80% resampling median adjusted Rand index at least 0.7, and stable
+neighboring `eps/minPts` solutions (median ARI at least 0.7, minimum ARI at
+least 0.5, and no one-cluster collapse). PCA feature/block contributions and
+all raw ranges are emitted for domination and outlier review.
+
+A computational PASS is still not a labeling GO. The cluster-colored BF
+morphology overlay and BF/Nuclei atlas must show coherent within-cluster and
+distinct between-cluster cell evidence. If that human evidence gate fails, no
+further UMAP/DBSCAN tuning is permitted: the generation records
+`NO_GO_FOR_POLYGON_ANNOTATION` and transitions to a blinded, well-balanced
+500-cell individual review. Diagnostic clusters never become cell-state
+labels in either branch.
+
 ## Human and model stages
 
 For a multi-cluster outcome, export the polygon submission and run
@@ -176,3 +227,17 @@ It is direct execution, never `sbatch`, and may write only below
 audit the frozen full 80-well split; only the V2 calibration output is written
 under the calibration namespace. It uses the same frozen archive, container
 identity and human barriers as formal execution.
+
+Expanded labelability calibration is a separate new generation and never
+modifies the completed shape-only V2 root:
+
+```bash
+bash cellpose_pipeline/hpc/Parameter_calibration/32_run_reference_cell_state_expanded_projection_test.sh
+```
+
+It compares `shape9/classifier12/expanded39`, creates a new CPA annotation
+generation and cluster-aware morphology workspace, and stops with
+`morphology_overlay_labelability_review_required` after a computational PASS.
+Only a combined computational plus morphology-evidence GO authorizes a new
+formal Slurm Phase A. A FAIL instead authorizes the 500-cell blind-review
+branch, not another parameter search.

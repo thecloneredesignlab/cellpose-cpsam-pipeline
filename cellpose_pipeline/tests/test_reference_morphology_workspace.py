@@ -459,6 +459,77 @@ class ReferenceMorphologyWorkspaceTests(unittest.TestCase):
             self.assertEqual(WORKSPACE.main([*argv, "--overwrite"]), 0)
             self.assertEqual(first_hashes, WORKSPACE.directory_hashes(output))
 
+    def test_expanded_v2_manifest_is_accepted_only_with_classifier_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.make_fixture(Path(temporary), v2=True)
+            manifest_path = (
+                fixture["project"].parent
+                / "historical_projection"
+                / "historical_projection_manifest.json"
+            )
+            manifest = json.loads(manifest_path.read_text())
+            manifest.update(
+                {
+                    "schema_version": "reference_cell_state_historical_projection_expanded_v1",
+                    "selected_annotation_profile": "expanded39",
+                    "expanded_feature_role": "annotation_geometry_and_human_morphology_evidence_only",
+                    "expanded_features_allowed_in_final_classifier": False,
+                }
+            )
+            manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n")
+            output = fixture["shadow"] / "expanded_workspace"
+            argv = self.argv(fixture, output)
+            argv[argv.index("--seed") + 1] = "1"
+            argv[argv.index("--max-representatives") + 1] = "300"
+            argv.extend(
+                [
+                    "--cluster-balance",
+                    "0.2",
+                    "--minimum-cluster-representatives",
+                    "2",
+                ]
+            )
+            self.assertEqual(WORKSPACE.main(argv), 0)
+            workspace_manifest = json.loads((output / "overlay_manifest.json").read_text())
+            provenance = workspace_manifest["inputs"]["historical_representatives"]
+            self.assertEqual(
+                provenance["historical_projection_manifest_schema_version"],
+                "reference_cell_state_historical_projection_expanded_v1",
+            )
+            self.assertEqual(provenance["selected_annotation_profile"], "expanded39")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.make_fixture(Path(temporary), v2=True)
+            manifest_path = (
+                fixture["project"].parent
+                / "historical_projection"
+                / "historical_projection_manifest.json"
+            )
+            manifest = json.loads(manifest_path.read_text())
+            manifest.update(
+                {
+                    "schema_version": "reference_cell_state_historical_projection_expanded_v1",
+                    "selected_annotation_profile": "expanded39",
+                    "expanded_feature_role": "annotation_geometry_and_human_morphology_evidence_only",
+                    "expanded_features_allowed_in_final_classifier": True,
+                }
+            )
+            manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n")
+            output = fixture["shadow"] / "bad_expanded_workspace"
+            argv = self.argv(fixture, output)
+            argv[argv.index("--seed") + 1] = "1"
+            argv[argv.index("--max-representatives") + 1] = "300"
+            argv.extend(
+                [
+                    "--cluster-balance",
+                    "0.2",
+                    "--minimum-cluster-representatives",
+                    "2",
+                ]
+            )
+            with self.assertRaisesRegex(ValueError, "method boundary drifted"):
+                WORKSPACE.main(argv)
+
 
 if __name__ == "__main__":
     unittest.main()

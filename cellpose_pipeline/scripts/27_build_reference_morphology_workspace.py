@@ -435,12 +435,20 @@ def load_reference_v2_representatives(
             "V2 rendering requires the frozen historical representative generation"
         )
     manifest = load_mapping(manifest_path)
-    if (
-        manifest.get("schema_version")
-        != "reference_cell_state_historical_projection_v2"
-        or manifest.get("status") != "COMPLETE"
-    ):
-        raise ValueError("Historical projection manifest is not complete V2")
+    manifest_schema = manifest.get("schema_version")
+    if manifest_schema not in {
+        "reference_cell_state_historical_projection_v2",
+        "reference_cell_state_historical_projection_expanded_v1",
+    } or manifest.get("status") != "COMPLETE":
+        raise ValueError("Historical projection manifest is not complete supported V2")
+    if manifest_schema == "reference_cell_state_historical_projection_expanded_v1":
+        if (
+            manifest.get("selected_annotation_profile") != "expanded39"
+            or manifest.get("expanded_feature_role")
+            != "annotation_geometry_and_human_morphology_evidence_only"
+            or manifest.get("expanded_features_allowed_in_final_classifier") is not False
+        ):
+            raise ValueError("Expanded historical projection method boundary drifted")
     selection = manifest.get("representative_selection")
     expected_selection = {
         "role": "authoritative_rendering_cell_list",
@@ -537,6 +545,12 @@ def load_reference_v2_representatives(
         "sha256": representatives_sha256,
         "historical_projection_manifest": str(manifest_path),
         "historical_projection_manifest_sha256": sha256_file(manifest_path),
+        "historical_projection_manifest_schema_version": manifest_schema,
+        "selected_annotation_profile": (
+            "expanded39"
+            if manifest_schema == "reference_cell_state_historical_projection_expanded_v1"
+            else "shape9"
+        ),
     }
     return selected, audit, provenance
 

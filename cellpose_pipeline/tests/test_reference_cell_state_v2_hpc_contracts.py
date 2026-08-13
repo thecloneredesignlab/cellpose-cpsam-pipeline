@@ -23,9 +23,48 @@ V2_NAMES = (
     "run_reference_cell_state_finalize_v2.sh",
     "run_reference_cell_state_compare_v2.sh",
 )
+EXPANDED_CALIBRATION = (
+    DOCKER_HPC
+    / "Parameter_calibration"
+    / "32_run_reference_cell_state_expanded_projection_test.sh"
+)
 
 
 class ReferenceCellStateV2HpcContracts(unittest.TestCase):
+    def test_expanded_calibration_is_direct_blind_latest_sif_and_test_root_only(self) -> None:
+        self.assertTrue(EXPANDED_CALIBRATION.is_file())
+        self.assertTrue(EXPANDED_CALIBRATION.stat().st_mode & 0o111)
+        host_delegate = (
+            HOST_HPC
+            / "Parameter_calibration"
+            / "32_run_reference_cell_state_expanded_projection_test.sh"
+        )
+        for path in (EXPANDED_CALIBRATION, host_delegate):
+            self.assertTrue(path.is_file())
+            self.assertTrue(path.stat().st_mode & 0o111)
+            parsed = subprocess.run(
+                ["bash", "-n", str(path)], capture_output=True, text=True
+            )
+            self.assertEqual(parsed.returncode, 0, parsed.stderr)
+        text = EXPANDED_CALIBRATION.read_text(encoding="utf-8")
+        for required in (
+            "required_host=hpctpa3pc0009",
+            "direct and cannot run inside Slurm",
+            "Tests_and_Parameters_calibration/reference_cell_state_shadow_v2_test_",
+            "39_build_reference_cell_state_expanded_projection.R",
+            "40_prepare_reference_cell_state_expanded_annotation_project.py",
+            "shape9,classifier12,expanded39",
+            "expanded_features_allowed_in_final_classifier\\tfalse",
+            "HPC_CONTAINER_NO_MOUNT=/share",
+            "reference_cell_state_v2_require_runtime_identity",
+            "Dead",
+            "classification_",
+            "heldout_read\\tfalse",
+        ):
+            self.assertIn(required, text)
+        for forbidden in ("sbatch ", "--nodelist", "--constraint", "--gres"):
+            self.assertNotIn(forbidden, text)
+
     def _make_single_job_submitter_fixture(self, temporary: str) -> dict[str, Path]:
         # macOS exposes TemporaryDirectory paths through both /var and
         # /private/var; freeze the canonical spelling because the submitter
