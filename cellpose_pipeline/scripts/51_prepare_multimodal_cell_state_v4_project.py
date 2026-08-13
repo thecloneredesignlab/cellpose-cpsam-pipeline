@@ -432,12 +432,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 {
                     "class_id": "non_dead", "display_name": "Non-dead",
                     "color": "#16875b", "description": "Provisional broad non-death region; image review is authoritative",
-                    "shortcut": "n", "trainable": "true", "role": "death_primary", "order": "1",
+                    "shortcut": "n", "trainable": "true", "role": "phenotype", "order": "1",
                 },
                 {
                     "class_id": "dead", "display_name": "Dead (all stages)",
                     "color": "#d43d51", "description": "Provisional broad death region including marker-positive and quenched late-death-like states",
-                    "shortcut": "d", "trainable": "true", "role": "death_primary", "order": "2",
+                    "shortcut": "d", "trainable": "true", "role": "phenotype", "order": "2",
                 },
             ],
         )

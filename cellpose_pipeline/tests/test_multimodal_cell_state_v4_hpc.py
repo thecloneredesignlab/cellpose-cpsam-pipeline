@@ -69,6 +69,8 @@ class MultimodalCellStateV4HpcTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('"group_column": "source_id"', builder)
         self.assertIn('"allow_ungrouped": False', builder)
+        self.assertEqual(builder.count('"role": "phenotype"'), 2)
+        self.assertNotIn('"role": "death_primary"', builder)
 
 
 if __name__ == "__main__":
