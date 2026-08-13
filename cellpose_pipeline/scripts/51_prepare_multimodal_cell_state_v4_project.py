@@ -504,7 +504,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "point_radius": 1.5,
                 "boundary_tolerance": 1e-10,
             },
-            "classifier": {"feature_columns": selected},
+            # CPA requires an explicit grouping boundary even for validate/UMAP
+            # stages.  V4 uses wells as independent sources via source_id; the
+            # separate post-review trainer owns the predeclared alpha grid.
+            "classifier": {
+                "feature_columns": selected,
+                "group_column": "source_id",
+                "allow_ungrouped": False,
+            },
         }
         write_json(staging / "project.yml", project)
         outputs = artifact_hashes(staging)

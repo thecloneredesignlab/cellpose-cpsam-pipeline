@@ -64,6 +64,11 @@ class MultimodalCellStateV4HpcTests(unittest.TestCase):
         self.assertIn("broad_dead_region_submission_required", posthuman)
         self.assertIn("broad_region_three_channel_review_submission_required", posthuman)
         self.assertIn("model_training_requires_separate_technical_acceptance", posthuman)
+        builder = (
+            ROOT / "cellpose_pipeline/scripts/51_prepare_multimodal_cell_state_v4_project.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"group_column": "source_id"', builder)
+        self.assertIn('"allow_ungrouped": False', builder)
 
 
 if __name__ == "__main__":

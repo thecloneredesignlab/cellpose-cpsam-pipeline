@@ -109,7 +109,11 @@ class MultimodalCellStateV4WorkflowTests(unittest.TestCase):
             "images_file": "images.tsv", "classes_file": "classes.tsv", "runs_dir": "runs",
             "projection": {"mode": "existing_umap", "coordinate_file": "projection/umap.tsv", "allow_subset": False},
             "annotation": {"title": "fixture", "direct_class_limit": 8, "point_radius": 1.5, "boundary_tolerance": 1e-10},
-            "classifier": {"feature_columns": ["feature1"]},
+            "classifier": {
+                "feature_columns": ["feature1"],
+                "group_column": "source_id",
+                "allow_ungrouped": False,
+            },
         }
         (project_dir / "project.yml").write_text(json.dumps(project) + "\n")
         projection = shadow / "workflow_status/projection"
@@ -168,6 +172,8 @@ class MultimodalCellStateV4WorkflowTests(unittest.TestCase):
             self.assertFalse((death_project / "runs").exists())
             project_value = json.loads((death_project / "project.yml").read_text())
             self.assertEqual(project_value["project_id"], "multimodal_cell_state_v4_death_resolution")
+            self.assertEqual(project_value["classifier"]["group_column"], "source_id")
+            self.assertFalse(project_value["classifier"]["allow_ungrouped"])
 
             annotation = shadow / "annotation_import"
             annotation.mkdir()
