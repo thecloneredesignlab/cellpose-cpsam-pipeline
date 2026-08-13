@@ -78,6 +78,9 @@ class MultimodalCellStateV3HpcTests(unittest.TestCase):
         self.assertIn('"heldout": "not_read"', driver)
         self.assertNotIn("region_submission.json", driver)
         self.assertIn("ThreadPoolExecutor", driver)
+        projection_call = driver.split('"V3 projection",', 1)[0].rsplit("run(", 1)[1]
+        self.assertIn('"--config",\n            str(config)', projection_call)
+        self.assertNotIn('"--feature-config"', projection_call)
 
 
 if __name__ == "__main__":

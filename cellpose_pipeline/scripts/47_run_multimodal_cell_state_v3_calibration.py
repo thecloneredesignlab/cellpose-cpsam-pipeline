@@ -260,7 +260,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             str(merge_root / "features.tsv"),
             "--expanded-projection",
             str(expanded),
-            "--feature-config",
+            "--config",
             str(config),
             "--output-dir",
             str(projection_root),
