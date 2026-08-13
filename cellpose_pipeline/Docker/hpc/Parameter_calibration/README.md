@@ -29,3 +29,12 @@ historical-reference calibration. It is fail-closed unless the host is exactly
 `hpctpa3pc0009`, execution is outside Slurm, the output is below
 `results/Tests_and_Parameters_calibration/`, and the final parity SIF identity
 is verified.
+
+`34_run_multimodal_cell_state_v4_test.sh` runs the independent V4 four-block
+Shape/Brightfield/Nuclei/raw-Dead calibration. It is direct-only on
+`hpctpa3pc0009`, requests no GPU, disables the site `/share` mount, and restores
+only the explicit read-only evidence roots. It stops at the blinded 300-cell
+three-channel anchor-review barrier; it does not consume the existing Dead
+segmentation or current classifier. `V4_ACTION=post-anchor`, `post-region`, and
+`post-review` resume exactly one completed human barrier in the same V4 root;
+each requires its corresponding submission path inside that root.
