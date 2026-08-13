@@ -123,10 +123,13 @@ further UMAP/DBSCAN tuning is permitted: the generation records
 labels in either branch. The expanded calibration launcher uses the hash-bound
 `labelability_decision.json` as fallback authority, selects at most 500
 development cells evenly across wells (maximum eight per well), and renders
-`human_review/seed1/render/exact_review.html`. It does not require or display a
+`human_review/seed1/render_guided_v1/exact_review.html`. It does not require or display a
 polygon, UMAP assignment, diagnostic-cluster label, or current-classifier
-result; every selected BF/Nuclei crop needs an explicit human label before it
-can become training evidence.
+result. The page shows a morphology-only label guide, keeps a browser-local
+draft keyed to the immutable render generation, reports reviewed/class counts,
+and requires the reviewer to explicitly mark all 500 BF/Nuclei cells as
+inspected before export. Only that exported submission can become training
+evidence.
 
 ## Human and model stages
 
@@ -250,5 +253,5 @@ generation and cluster-aware morphology workspace, and stops with
 Only a combined computational plus morphology-evidence GO authorizes a new
 formal Slurm Phase A. A FAIL instead authorizes the 500-cell blind-review
 branch, not another parameter search; the same direct calibration run creates
-the exact 500-cell review workspace and a separate immutable blind-review
+the guided exact 500-cell review workspace and a separate immutable blind-review
 receipt.

@@ -229,7 +229,7 @@ human_barrier="morphology_overlay_labelability_review_required"
 
 if [[ "$computational_gate" == FAIL ]]; then
   seed1_selection="$REFERENCE_SHADOW_ROOT/human_review/seed1/selection"
-  seed1_render="$REFERENCE_SHADOW_ROOT/human_review/seed1/render"
+  seed1_render="$REFERENCE_SHADOW_ROOT/human_review/seed1/render_guided_v1"
   hpc_apptainer_exec Rscript "$SEED1_SCRIPT" \
     --reference-root "$CPA_REFERENCE_ROOT" \
     --dependency-lock "$DEPENDENCY_LOCK" \
@@ -282,12 +282,12 @@ PY
   blind_row_count="${blind_review_stats[0]}"
   blind_max_per_well="${blind_review_stats[1]}"
   blind_well_count="${blind_review_stats[2]}"
-  blind_receipt="$REFERENCE_SHADOW_ROOT/workflow_status/EXPANDED_BLIND_REVIEW_COMPLETE.tsv"
-  blind_candidate="$REFERENCE_SHADOW_ROOT/workflow_status/.EXPANDED_BLIND_REVIEW_COMPLETE.tmp.$$"
+  blind_receipt="$REFERENCE_SHADOW_ROOT/workflow_status/EXPANDED_GUIDED_BLIND_REVIEW_COMPLETE.tsv"
+  blind_candidate="$REFERENCE_SHADOW_ROOT/workflow_status/.EXPANDED_GUIDED_BLIND_REVIEW_COMPLETE.tmp.$$"
   {
     printf 'property\tvalue\n'
     printf 'status\tHUMAN_REVIEW_REQUIRED\n'
-    printf 'schema_version\treference_cell_state_expanded_blind_review_v1\n'
+    printf 'schema_version\treference_cell_state_expanded_guided_blind_review_v1\n'
     printf 'selection_mode\tauthoritative_expanded_computational_nogo_all_unassigned\n'
     printf 'row_count\t%s\n' "$blind_row_count"
     printf 'observed_max_per_well\t%s\n' "$blind_max_per_well"
@@ -370,7 +370,7 @@ echo "reference_shadow_root=$REFERENCE_SHADOW_ROOT"
 echo "computational_labelability_gate=$computational_gate"
 echo "morphology_workspace=$MORPHOLOGY_OUTPUT/annotation_workspace.html"
 if [[ "$computational_gate" == FAIL ]]; then
-  echo "blind_review_workspace=$REFERENCE_SHADOW_ROOT/human_review/seed1/render/exact_review.html"
-  echo "blind_review_submission_expected_path=$REFERENCE_SHADOW_ROOT/human_review/seed1/render/exact_review_submission.json"
+  echo "blind_review_workspace=$REFERENCE_SHADOW_ROOT/human_review/seed1/render_guided_v1/exact_review.html"
+  echo "blind_review_submission_expected_path=$REFERENCE_SHADOW_ROOT/human_review/seed1/render_guided_v1/exact_review_submission.json"
 fi
 echo "human_barrier=$human_barrier"

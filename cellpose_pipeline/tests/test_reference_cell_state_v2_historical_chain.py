@@ -252,6 +252,15 @@ class ExactReviewRendererTests(unittest.TestCase):
             self.assertEqual(render_manifest["channels"], ["brightfield", "nuclei_support"])
             self.assertTrue(render_manifest["all_crops_available"])
             self.assertEqual(len(list((output / "crops").glob("*.png"))), 2)
+            review_html = (output / "exact_review.html").read_text(encoding="utf-8")
+            for expected in (
+                "localStorage",
+                "I inspected this cell",
+                "cells still require explicit inspection",
+                "reference-cell-state-v2-exact-review-guided",
+                "multinucleated_cell</b> only when at least two distinct nuclei",
+            ):
+                self.assertIn(expected, review_html)
 
             reason = r_prerequisites()
             if reason:
