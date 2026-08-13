@@ -108,6 +108,21 @@ source "$HPC_ROOT/util/hpc_container_apptainer_runtime.sh"
 hpc_container_prepare
 reference_cell_state_v2_verify_container_rootfs_read_only
 source "$HPC_ROOT/util/broad_phenotype_container_identity.sh"
+mkdir -p "$REFERENCE_SHADOW_ROOT/workflow_status"
+HPC_CONTAINER_IDENTITY_FILE="$REFERENCE_SHADOW_ROOT/workflow_status/hpc_container_identity.json"
+if [[ -e "$HPC_CONTAINER_IDENTITY_FILE" || -L "$HPC_CONTAINER_IDENTITY_FILE" ]]; then
+  [[ -s "$HPC_CONTAINER_IDENTITY_FILE" && ! -L "$HPC_CONTAINER_IDENTITY_FILE" ]] || {
+    echo "Existing expanded calibration SIF identity receipt is invalid" >&2
+    exit 2
+  }
+else
+  broad_phenotype_capture_container_identity \
+    "$HPC_CONTAINER_IMAGE" \
+    "$REFERENCE_CELL_STATE_V2_EXPECTED_SIF_SHA256" \
+    "$HPC_CONTAINER_IDENTITY_FILE"
+fi
+HPC_CONTAINER_IDENTITY_FILE_SHA256="$(reference_cell_state_v2_sha256 "$HPC_CONTAINER_IDENTITY_FILE")"
+export HPC_CONTAINER_IDENTITY_FILE HPC_CONTAINER_IDENTITY_FILE_SHA256
 broad_phenotype_worker_verify_container_identity \
   "$HPC_CONTAINER_IMAGE" "$REFERENCE_CELL_STATE_V2_EXPECTED_SIF_SHA256"
 

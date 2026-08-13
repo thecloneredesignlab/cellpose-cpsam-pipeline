@@ -57,6 +57,8 @@ class ReferenceCellStateV2HpcContracts(unittest.TestCase):
             "expanded_features_allowed_in_final_classifier\\tfalse",
             "HPC_CONTAINER_NO_MOUNT=/share",
             "reference_cell_state_v2_require_runtime_identity",
+            "broad_phenotype_capture_container_identity",
+            "HPC_CONTAINER_IDENTITY_FILE_SHA256",
             "Dead",
             "classification_",
             "heldout_read\\tfalse",
