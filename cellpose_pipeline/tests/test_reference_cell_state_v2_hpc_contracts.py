@@ -988,6 +988,11 @@ class ReferenceCellStateV2HpcContracts(unittest.TestCase):
         self.assertIn("required_host=hpctpa3pc0009", text)
         self.assertIn("Tests_and_Parameters_calibration", text)
         self.assertIn("EXECUTION_MODE=direct_test", text)
+        self.assertIn("$RESULTS_ROOT/broad_phenotype_shadow_20260812_075437", text)
+        self.assertIn(
+            'EXPECTED_PARENT_CELL_COUNT="${EXPECTED_PARENT_CELL_COUNT:-32000}"', text
+        )
+        self.assertNotIn("broad_phenotype_shadow_test_20260812_073844", text)
         self.assertIn("resume_existing_through_frozen_archive", text)
         self.assertNotIn("will not be resumed or overwritten", text)
         self.assertNotIn("sbatch", text.lower())

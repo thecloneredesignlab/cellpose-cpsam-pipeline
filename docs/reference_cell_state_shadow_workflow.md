@@ -171,5 +171,8 @@ bash cellpose_pipeline/hpc/Parameter_calibration/31_run_reference_cell_state_sha
 ```
 
 It is direct execution, never `sbatch`, and may write only below
-`results/Tests_and_Parameters_calibration/`. It uses the same frozen archive,
-container identity and human barriers as formal execution.
+`results/Tests_and_Parameters_calibration/`. It reads the completed formal
+32,000-cell broad-phenotype parent read-only because V2 source grouping must
+audit the frozen full 80-well split; only the V2 calibration output is written
+under the calibration namespace. It uses the same frozen archive, container
+identity and human barriers as formal execution.
