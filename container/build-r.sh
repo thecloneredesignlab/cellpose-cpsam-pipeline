@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-image_tag="${IMAGE_TAG:-cellpose-cpsam-pipeline:hpc-cellpose-4.2.1.1-models}"
+image_tag="${IMAGE_TAG:-zafiro/cellpose-cpsam-pipeline:hpc-cellpose-4.2.1.1-models-reference-v2-parity}"
 r_artifacts_context="${R_ARTIFACTS_CONTEXT:?Set R_ARTIFACTS_CONTEXT to the prepared offline R artifact directory}"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

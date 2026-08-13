@@ -23,3 +23,9 @@ The wrapper requires `HPC_CONTAINER_IMAGE`, the explicit data bind root, and
 Analytics report package is explicitly bound at runtime. It validates 7,360 completed feature shards,
 zero failed shards, zero d0 objects changed by the late-stage method, and at
 least eight embedded high-resolution figures before reporting success.
+
+`31_run_reference_cell_state_shadow_v2_test.sh` delegates the V2
+historical-reference calibration. It is fail-closed unless the host is exactly
+`hpctpa3pc0009`, execution is outside Slurm, the output is below
+`results/Tests_and_Parameters_calibration/`, and the final parity SIF identity
+is verified.

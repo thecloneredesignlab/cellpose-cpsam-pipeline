@@ -19,6 +19,7 @@ REPO = Path(__file__).resolve().parents[2]
 ACCEPT = REPO / "cellpose_pipeline" / "scripts" / "30_accept_reference_cell_state_model.R"
 PREDICT = REPO / "cellpose_pipeline" / "scripts" / "31_predict_reference_cell_state_shard.R"
 MERGE = REPO / "cellpose_pipeline" / "scripts" / "32_merge_reference_cell_state_predictions.py"
+SHARED = REPO / "cellpose_pipeline" / "scripts" / "_shared" / "reference_cell_state_v2.R"
 LOCK = REPO / "cellpose_pipeline" / "configs" / "cellphenotypeannotator_dependency.lock.tsv"
 REFERENCE = Path(
     os.environ.get(
@@ -35,8 +36,11 @@ FEATURES = (
     "equivalent_diameter_px",
     "major_axis_px",
     "minor_axis_px",
+    "bf_boundary_mean",
+    "bf_interior_mean",
+    "bf_interior_minus_boundary_mean",
 )
-CLASSES = ("dead_cell", "live_cell", "multinucleated_cell")
+CLASSES = ("live_cell", "dead_cell", "multinucleated_cell")
 
 
 def sha256(path: Path) -> str:
@@ -117,7 +121,7 @@ class ReferenceMergeTests(unittest.TestCase):
         parent_import.write_text(
             json.dumps(
                 {
-                    "schema_version": "reference_cell_state_parent_import_v1",
+                    "schema_version": "reference_cell_state_parent_import_v2",
                     "parent": {"shadow_root": str(parent.resolve())},
                 }
             )
@@ -126,13 +130,16 @@ class ReferenceMergeTests(unittest.TestCase):
         acceptance = shadow / "workflow_status" / "model_acceptance" / "model_acceptance.json"
         acceptance.parent.mkdir(parents=True)
         acceptance_payload = {
-            "schema_version": "reference_cell_state_model_acceptance_v1",
+                    "schema_version": "reference_cell_state_model_acceptance_v2",
             "status": "ACCEPTED",
             "accepted": True,
             "shadow_root": str(shadow.resolve()),
             "model": {
                 "model_id": "model_reference",
                 "manifest_sha256": "b" * 64,
+                "feature_profile": "promoted_shape_plus_rfs_boundary",
+                "engine": "historical_glmnet_multinomial",
+                "calibration_status": "uncalibrated_stratified_review_sample",
             },
             "dependency": {"lock_sha256": "c" * 64},
             "frozen_inputs": {
@@ -140,11 +147,21 @@ class ReferenceMergeTests(unittest.TestCase):
                 "parent_import_manifest_sha256": sha256(parent_import),
                 "parent_shadow_root": str(parent.resolve()),
             },
+            "isolation_contract": {
+                "generic_cpa_classifier_used": False,
+                "diagnostic_cluster_used_for_training": False,
+                "umap_or_pseudo_label_used_for_training": False,
+            },
+            "implementation": str(ACCEPT.resolve()),
+            "implementation_sha256": sha256(ACCEPT),
+            "shared_implementation": str(SHARED.resolve()),
+            "shared_implementation_sha256": sha256(SHARED),
         }
         acceptance.write_text(json.dumps(acceptance_payload) + "\n")
 
         prediction_root = shadow / "prediction_shards"
-        prediction = prediction_root / "shards" / well / f"{key}__{branch}_reference_cell_state_predictions.tsv"
+        generation = prediction_root / "shards" / well / f"{key}__{branch}"
+        prediction = generation / "reference_cell_state_predictions.tsv"
         prediction_columns = [
             "model_id", "cell_id", "predicted_class_id", "prediction_status",
             *[f"probability__{class_id}" for class_id in CLASSES],
@@ -153,16 +170,15 @@ class ReferenceMergeTests(unittest.TestCase):
             prediction,
             prediction_columns,
             [
-                ["model_reference", cell_ids[0], "dead_cell", "ok", ".8", ".1", ".1"],
+                ["model_reference", cell_ids[0], "dead_cell", "ok", ".1", ".8", ".1"],
                 ["model_reference", cell_ids[1], "", "unavailable_missing_features", "", "", ""],
             ],
         )
-        prediction_receipt = prediction_root / "receipts" / well / f"{key}__{branch}.json"
-        prediction_receipt.parent.mkdir(parents=True)
+        prediction_receipt = generation / "prediction_receipt.json"
         prediction_receipt.write_text(
             json.dumps(
                 {
-                    "schema_version": "reference_cell_state_shard_prediction_v1",
+                    "schema_version": "reference_cell_state_shard_prediction_v2",
                     "status": "COMPLETE",
                     "key": key,
                     "well": well,
@@ -177,7 +193,10 @@ class ReferenceMergeTests(unittest.TestCase):
                     "model_acceptance_sha256": sha256(acceptance),
                     "parent_import_manifest_sha256": sha256(parent_import),
                     "dependency_lock_sha256": "c" * 64,
-                    "implementation_sha256": "d" * 64,
+                    "implementation": str(PREDICT.resolve()),
+                    "implementation_sha256": sha256(PREDICT),
+                    "shared_implementation": str(SHARED.resolve()),
+                    "shared_implementation_sha256": sha256(SHARED),
                     "source_identity": {"mode": "fixture"},
                     "runtime_identity": {"r_version": "fixture"},
                     "row_count": 2,
@@ -234,19 +253,35 @@ class ReferenceMergeTests(unittest.TestCase):
             self.assertEqual(rows[0]["reference_cell_state_class_id"], "dead_cell")
             self.assertEqual(rows[1]["prediction_status"], "unavailable_missing_features")
             receipt = json.loads(
-                (fixture["shadow"] / "REFERENCE_CELL_STATE_SHADOW_GO_NO_GO.json").read_text()
+                (fixture["shadow"] / "predictions" / "REFERENCE_CELL_STATE_SHADOW_GO_NO_GO.json").read_text()
             )
             self.assertEqual(receipt["published_shadow_axis"]["semantic_axis"], "reference_cell_state")
             self.assertFalse(receipt["isolation_contract"]["current_classification_read"])
+            self.assertEqual(receipt["implementation"], str(MERGE.resolve()))
+            self.assertEqual(receipt["implementation_sha256"], sha256(MERGE))
             repeated = self.run_merge(fixture)
             self.assertEqual(repeated.returncode, 0, repeated.stderr)
             self.assertIn("already_complete=1", repeated.stdout)
+
+            receipt_path = (
+                fixture["shadow"] / "predictions" /
+                "REFERENCE_CELL_STATE_SHADOW_GO_NO_GO.json"
+            )
+            tampered = json.loads(receipt_path.read_text())
+            tampered["implementation_sha256"] = "0" * 64
+            receipt_path.write_text(json.dumps(tampered) + "\n")
+            rejected = self.run_merge(fixture)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("receipt differs", rejected.stderr)
+            self.assertEqual(
+                json.loads(receipt_path.read_text())["implementation_sha256"], "0" * 64
+            )
 
     def test_merge_rejects_wrong_class_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = self.make_fixture(Path(directory))
             receipt = json.loads(fixture["prediction_receipt"].read_text())
-            receipt["class_ids"] = ["live_cell", "dead_cell", "multinucleated_cell"]
+            receipt["class_ids"] = ["dead_cell", "live_cell", "multinucleated_cell"]
             fixture["prediction_receipt"].write_text(json.dumps(receipt) + "\n")
             completed = self.run_merge(fixture)
             self.assertNotEqual(completed.returncode, 0)
@@ -269,10 +304,10 @@ class StaticIsolationContractTests(unittest.TestCase):
         predict_text = PREDICT.read_text()
         merge_text = MERGE.read_text()
         self.assertIn('classifier_feature_columns', accept_text)
-        self.assertIn('REFERENCE_FEATURES <- c(', accept_text)
+        self.assertIn('reference_cell_state_v2_current_features()', accept_text)
         self.assertIn('31_predict_reference_cell_state_shard.R', predict_text)
         self.assertNotIn('21_predict_broad_phenotype_shard.R', predict_text)
-        self.assertIn('REFERENCE_CLASS_IDS <- c("dead_cell", "live_cell", "multinucleated_cell")', predict_text)
+        self.assertIn('REFERENCE_CLASS_IDS <- c("live_cell", "dead_cell", "multinucleated_cell")', predict_text)
         self.assertNotIn('--legacy-no-go', merge_text)
         self.assertIn('reference_cell_state_predictions.tsv', merge_text)
         self.assertIn('current_classification_read', merge_text)
@@ -304,7 +339,7 @@ class ReferencePredictionRuntimeTests(unittest.TestCase):
             return "pinned reference checkout is absent or dirty"
         return None
 
-    def test_reference_predictor_enforces_and_applies_exact_three_class_model(self) -> None:
+    def test_reference_predictor_rejects_generic_cpa_v1_model(self) -> None:
         reason = self.prerequisites()
         if reason:
             self.skipTest(reason)
@@ -412,12 +447,19 @@ class ReferencePredictionRuntimeTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(made.returncode, 0, made.stderr)
+            # A generic CPA RDS must not be accepted merely because it is placed
+            # at the historical artifact name.  V2 inference validates the
+            # native historical bundle before it reads any feature rows.
+            shutil.copy2(
+                model_dir / "model.rds",
+                model_dir / "morphology_cell_state_classifier_uncalibrated_model.rds",
+            )
             parent_import = shadow / "projection_input" / "representative_umap" / "parent_import_manifest.json"
             parent_import.parent.mkdir(parents=True)
             parent_import.write_text(
                 json.dumps(
                     {
-                        "schema_version": "reference_cell_state_parent_import_v1",
+                        "schema_version": "reference_cell_state_parent_import_v2",
                         "parent": {"shadow_root": str(parent.resolve())},
                     }
                 )
@@ -449,10 +491,9 @@ class ReferencePredictionRuntimeTests(unittest.TestCase):
                 )
                 + "\n"
             )
-            output = shadow / "prediction_shards" / "shards" / well / f"{key}__{branch}_reference_cell_state_predictions.tsv"
-            receipt = shadow / "prediction_shards" / "receipts" / well / f"{key}__{branch}.json"
-            output.parent.mkdir(parents=True)
-            receipt.parent.mkdir(parents=True)
+            generation = shadow / "prediction_shards" / "shards" / well / f"{key}__{branch}"
+            output = generation / "reference_cell_state_predictions.tsv"
+            receipt = generation / "prediction_receipt.json"
             command = [
                 "Rscript", str(PREDICT),
                 "--reference-root", str(REFERENCE),
@@ -466,14 +507,13 @@ class ReferencePredictionRuntimeTests(unittest.TestCase):
                 "--output-receipt", str(receipt.resolve()),
             ]
             predicted = subprocess.run(command, text=True, capture_output=True, check=False)
-            self.assertEqual(predicted.returncode, 0, predicted.stderr)
-            rows = read_tsv(output)
-            self.assertEqual(list(rows[0])[:4], ["model_id", "cell_id", "predicted_class_id", "prediction_status"])
-            self.assertEqual(list(rows[0])[4:], [f"probability__{class_id}" for class_id in CLASSES])
-            self.assertEqual(rows[-1]["prediction_status"], "ok")
-            repeated = subprocess.run(command, text=True, capture_output=True, check=False)
-            self.assertEqual(repeated.returncode, 0, repeated.stderr)
-            self.assertIn("already_complete=1", repeated.stdout)
+            self.assertNotEqual(predicted.returncode, 0)
+            self.assertRegex(
+                predicted.stderr,
+                r"(?i)(historical|classifier bundle|feature profile|model bundle)",
+            )
+            self.assertFalse(output.exists())
+            self.assertFalse(receipt.exists())
 
 
 if __name__ == "__main__":

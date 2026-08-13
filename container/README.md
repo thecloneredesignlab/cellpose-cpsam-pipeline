@@ -23,8 +23,10 @@ already present in that base.
 - Model directory: `/opt/cellpose/models`
 - R: 4.2.3, Posit Debian 13 amd64 build 1
 - R home: `/opt/R/4.2.3/lib/R`
-- R packages: 43 exact Posit Package Manager binaries
-- Classifier packages: `glmnet` 4.1-10 and `uwot` 0.2.4
+- R packages: 66 exact Posit Package Manager binaries
+- Classifier/projection packages: `glmnet` 4.1-10, `uwot` 0.2.4,
+  `dbscan` 1.2.3, `dplyr` 1.1.4, `tidyr` 1.3.1, `purrr` 1.2.0,
+  `stringr` 1.6.0, and `ggplot2` 4.0.0
 - R package snapshot: 2025-11-11, trixie-x86_64/R 4.2
 - Debian package snapshots: 2025-10-20 base-compatible packages plus
   2026-08-11 security builds already represented in the base image
@@ -52,7 +54,7 @@ The build requires an external R artifact context with this layout:
 r-artifacts/
   runtime/r-4.2.3_1_amd64.deb
   system/<122 locked Debian archives>
-  packages/<43 locked R binary archives>
+  packages/<66 locked R binary archives>
 ```
 
 Prepare and verify it from the committed URL, byte-size, and SHA-256 locks:
@@ -72,7 +74,7 @@ bash container/build-r.sh
 For a candidate tag that does not replace the local deployment alias:
 
 ```bash
-IMAGE_TAG=cellpose-cpsam-pipeline:hpc-cellpose-4.2.1.1-models-r4.2.3 \
+IMAGE_TAG=zafiro/cellpose-cpsam-pipeline:hpc-cellpose-4.2.1.1-models-reference-v2-parity \
   R_ARTIFACTS_CONTEXT=/absolute/path/to/r-artifacts \
   bash container/build-r.sh
 ```
@@ -136,9 +138,10 @@ docker run --rm --network none --platform linux/amd64 \
   python /opt/hpc-environment/scripts/verify_environment.py
 ```
 
-The R verifier checks all 43 exact package versions, PNG/JPEG/TIFF I/O,
+The R verifier checks all 66 exact package versions, PNG/JPEG/TIFF I/O,
 JSON/YAML/digest round trips, grouped multinomial `glmnet`, deterministic
-single-threaded `uwot`, and every installed R shared-library dependency.
+single-threaded `uwot`, a deterministic reference-style `dbscan` fixture, and
+every installed R shared-library dependency.
 
 Run repository tests against a read-only checkout:
 

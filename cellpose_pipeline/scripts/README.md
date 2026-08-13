@@ -51,17 +51,30 @@ generation is frozen as history for each queue.
 
 ## Independent historical reference cell-state axis
 
-`26_prepare_reference_cell_state_project.py` imports a completed,
-development-only representative project into a new root, keeps the exact cell
-universe, selects the historical nine promoted-shape features, installs the
-ordered `multinucleated_cell`, `dead_cell`, and `live_cell` ontology, and
-configures a new UMAP plus grouped nested-CV lasso. It never imports parent
-UMAP coordinates or broad-phenotype classes.
+The V1 result is audit-only. In V2,
+`26_prepare_reference_cell_state_project.py --method-version v2` imports the
+development universe, freezes plate-derived context/source/suffix metadata,
+and invokes `28_build_reference_cell_state_historical_projection.R` inside one
+atomic project generation. The historical class order is `live_cell`,
+`dead_cell`, `multinucleated_cell`; projection uses the nine promoted-shape
+features, while the classifier uses twelve features including BF boundary and
+interior evidence.
 
-`27_build_reference_morphology_workspace.py` generates the missing historical
-morphology reference beside an immutable CPA annotation page: deterministic
-real-cell BF cutouts at their UMAP coordinates, a Nuclei review atlas, and an
-outer annotation workspace bound to the original annotation hashes.
+`27_build_reference_morphology_workspace.py` consumes the pinned historical
+representative list and renders BF/Nuclei support around Combined-mask objects.
+Scripts 33 and 35 freeze the two review sets; 37 renders those exact cells
+without a second sample; 38 performs authoritative human-label import. Scripts
+34 and 36 train the historical model and merge/adjudicate reviews. Scripts
+30–32 accept, predict, and atomically merge the independent full-universe axis.
+Every immutable generation supports full identity/hash verified reuse after an
+interruption.
+
+Stable polygon regions use pinned reference sampling. If the optimizer returns
+no stable clusters, receipts instead disclose
+`historical_core_parity_with_disclosed_no_stable_cluster_sampling_adaptation`:
+the all-unassigned Seed1 design and Seed2 probability surrogate affect review
+sampling only and are not claimed as exact historical sampling or used as
+training labels.
 
 After both classifiers are frozen,
 `29_compare_current_vs_reference_cell_state.py` performs a read-only stable-ID

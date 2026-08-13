@@ -65,6 +65,31 @@ not container binds. Its compute-node calibration entry is
 contract is in
 [`docs/reference_cell_state_shadow_workflow.md`](../../../docs/reference_cell_state_shadow_workflow.md).
 
+`submit_reference_cell_state_shadow_v2.sh` adds the V2 historical projection,
+exact-review, historical-model and sharded-prediction chain. Stable-polygon
+runs use pinned reference sampling. A no-stable-cluster run instead records
+`historical_core_parity_with_disclosed_no_stable_cluster_sampling_adaptation`;
+its well-balanced Seed1 and sampling-only Seed2 surrogate are disclosed V2
+adaptations and are never claimed as historical-production reproduction.
+Each formal V2 stage keeps its original immutable submission ledger plus an
+append-only attempt ledger. On an explicit resume, the frozen-archive
+submitter queries the latest allocation with `sacct`: PENDING/RUNNING jobs are
+reported without duplication, COMPLETED jobs are reused only after full
+product/hash validation, and FAILED/CANCELLED/TIMEOUT-class states create a
+new attempt against the latest upstream job. A COMPLETED job with absent or
+changed products fails closed. Prediction recovery may resubmit the frozen
+full array (`%64`); already-published shard generations are independently
+verified and reused by each task before the new finalize attempt runs. The
+initial ledger and original summary are never deleted or rewritten.
+
+The continuation trust boundary is the run-owned code archive, archive
+receipt, and shared extracted snapshot. All three must agree. The public
+caller cannot assert the private frozen-reexec flag: a one-use, owner-private
+token binds the verified archive, canonical V2 root, extracted project, and
+submitter before any frozen child can run. This detects checkout drift and
+single-artifact tampering; it does not protect against an actor who can
+coherently replace every run-owned trust artifact under the same Unix account.
+
 `submit_full_fusion_production.sh` is the public full-production entry point. It
 calls `orchestrate_cellpose_cpsam_full_array.sh`, which constructs the Slurm
 dependency graph and submits the production workers retained in this directory.

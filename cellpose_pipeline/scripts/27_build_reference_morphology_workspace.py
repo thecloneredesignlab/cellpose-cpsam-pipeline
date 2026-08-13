@@ -34,6 +34,7 @@ from PIL import Image, ImageDraw
 
 
 SCHEMA_VERSION = "reference_morphology_workspace_v1"
+SCHEMA_VERSION_V2 = "reference_morphology_workspace_v2"
 PROJECT_SCHEMA_VERSION = "cell_phenotype_annotator_project_v1"
 ALLOWED_CHANNELS = {"brightfield", "nuclei"}
 FORBIDDEN_COLUMN_RE = re.compile(
@@ -64,6 +65,11 @@ REPRESENTATIVE_FIELDS = [
     "nuclei_source_sha256",
     "combined_mask_source_sha256",
 ]
+REPRESENTATIVE_FIELDS_V2 = [
+    *REPRESENTATIVE_FIELDS[:8],
+    "cluster",
+    *REPRESENTATIVE_FIELDS[8:],
+]
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -88,7 +94,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--shadow-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--max-representatives", type=int, default=300)
-    parser.add_argument("--seed", type=int, default=20260812)
+    parser.add_argument("--seed", type=int)
     parser.add_argument(
         "--context-column",
         help="Optional metadata column balanced before well; defaults to well.",
@@ -96,6 +102,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--mask-padding", type=int, default=6)
     parser.add_argument("--overlay-width", type=int, default=2400)
     parser.add_argument("--overlay-height", type=int, default=1800)
+    parser.add_argument("--cluster-balance", type=float, default=0.2)
+    parser.add_argument("--minimum-cluster-representatives", type=int, default=2)
     parser.add_argument(
         "--overlay-tile-px",
         type=int,
@@ -406,6 +414,133 @@ def spatial_real_cells(
     return [rows[index] for index in selected]
 
 
+def load_reference_v2_representatives(
+    project_path: Path,
+    shadow_root: Path,
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    projection_root = project_path.parent / "historical_projection"
+    representatives_path = require_inside(
+        projection_root / "historical_representatives.tsv",
+        shadow_root,
+        "Historical representative list",
+    )
+    manifest_path = require_inside(
+        projection_root / "historical_projection_manifest.json",
+        shadow_root,
+        "Historical projection manifest",
+    )
+    if not representatives_path.is_file() or not manifest_path.is_file():
+        raise FileNotFoundError(
+            "V2 rendering requires the frozen historical representative generation"
+        )
+    manifest = load_mapping(manifest_path)
+    if (
+        manifest.get("schema_version")
+        != "reference_cell_state_historical_projection_v2"
+        or manifest.get("status") != "COMPLETE"
+    ):
+        raise ValueError("Historical projection manifest is not complete V2")
+    selection = manifest.get("representative_selection")
+    expected_selection = {
+        "role": "authoritative_rendering_cell_list",
+        "outer_function_name": "get_all_cell_lines_overlay_representatives",
+        "inner_function_name": "get_spatially_uniform_representatives",
+        "seed": 1,
+        "total_n": 300,
+        "balance": 0.2,
+        "minimum_cluster_representatives": 2,
+        "output_file": "historical_representatives.tsv",
+    }
+    if not isinstance(selection, dict) or any(
+        selection.get(key) != value for key, value in expected_selection.items()
+    ):
+        raise ValueError("Historical representative selection contract drifted")
+    representatives_sha256 = sha256_file(representatives_path)
+    declared_outputs = manifest.get("output_file_sha256")
+    if (
+        not isinstance(declared_outputs, dict)
+        or declared_outputs.get("historical_representatives.tsv")
+        != representatives_sha256
+        or selection.get("output_sha256") != representatives_sha256
+    ):
+        raise ValueError("Historical representative list hash disagrees with manifest")
+    fields, frozen = read_tsv(representatives_path)
+    expected_fields = [
+        "selection_rank",
+        "cell_id",
+        "context_key",
+        "source_id",
+        "cluster",
+        "Dim1",
+        "Dim2",
+    ]
+    if fields != expected_fields:
+        raise ValueError("Historical representative list schema drifted")
+    by_id = {str(row["cell_id"]): row for row in rows}
+    if len(by_id) != len(rows):
+        raise AssertionError("Joined V2 cell universe contains duplicates")
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for rank, frozen_row in enumerate(frozen, start=1):
+        if strict_int(frozen_row["selection_rank"], "selection_rank") != rank:
+            raise ValueError("Historical representative ranks are not contiguous")
+        cell_id = frozen_row["cell_id"]
+        if cell_id in seen or cell_id not in by_id:
+            raise ValueError(f"Invalid historical representative cell_id: {cell_id}")
+        seen.add(cell_id)
+        source = by_id[cell_id]
+        for field in ("context_key", "source_id", "cluster"):
+            if str(source.get(field, "")) != frozen_row[field]:
+                raise ValueError(
+                    f"Historical representative {field} disagrees for {cell_id}"
+                )
+        for field in ("Dim1", "Dim2"):
+            if not math.isclose(
+                finite_float(source[field], field),
+                finite_float(frozen_row[field], field),
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            ):
+                raise ValueError(
+                    f"Historical representative {field} disagrees for {cell_id}"
+                )
+        selected.append(
+            {
+                **source,
+                "_selection_round": rank,
+                "_context_value": str(source["context_key"]),
+            }
+        )
+    if len(selected) != int(selection.get("selected_count", -1)):
+        raise ValueError("Historical representative count disagrees with manifest")
+    available_counts: dict[tuple[str, str], int] = defaultdict(int)
+    selected_counts: dict[tuple[str, str], int] = defaultdict(int)
+    for row in rows:
+        available_counts[(str(row["context_key"]), str(row["cluster"]))] += 1
+    for row in selected:
+        selected_counts[(str(row["context_key"]), str(row["cluster"]))] += 1
+    audit = [
+        {
+            "scope": f"context:{context}",
+            "cluster": cluster,
+            "available_n": available_counts[(context, cluster)],
+            "selected_n": selected_counts[(context, cluster)],
+            "selection_authority": "historical_representatives.tsv",
+        }
+        for context, cluster in sorted(
+            available_counts, key=lambda value: (value[0], int(value[1]))
+        )
+    ]
+    provenance = {
+        "path": str(representatives_path),
+        "sha256": representatives_sha256,
+        "historical_projection_manifest": str(manifest_path),
+        "historical_projection_manifest_sha256": sha256_file(manifest_path),
+    }
+    return selected, audit, provenance
+
+
 def choose_representatives(
     rows: list[dict[str, Any]],
     max_representatives: int,
@@ -653,6 +788,7 @@ def render_crops(
     image_rows: dict[str, dict[str, dict[str, str]]],
     output: Path,
     padding: int,
+    include_cluster: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     by_image: dict[str, list[tuple[int, dict[str, Any]]]] = defaultdict(list)
     for rank, row in enumerate(representatives, start=1):
@@ -717,6 +853,7 @@ def render_crops(
                     "well": row["well"],
                     "context_column": row["_context_column"],
                     "context_value": row["_context_value"],
+                    **({"cluster": row.get("cluster", "")} if include_cluster else {}),
                     "Dim1": format(float(row["Dim1"]), ".17g"),
                     "Dim2": format(float(row["Dim2"]), ".17g"),
                     "crop_x0_px": x0,
@@ -768,6 +905,29 @@ def coordinate_transform(
     return result, {"x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max}
 
 
+def cluster_color(value: object) -> tuple[int, int, int]:
+    cluster = str(value)
+    if cluster == "0":
+        return (170, 176, 184)
+    palette = (
+        (31, 119, 180),
+        (255, 127, 14),
+        (44, 160, 44),
+        (214, 39, 40),
+        (148, 103, 189),
+        (140, 86, 75),
+        (227, 119, 194),
+        (127, 127, 127),
+        (188, 189, 34),
+        (23, 190, 207),
+    )
+    try:
+        index = int(cluster)
+    except ValueError:
+        index = int(stable_hash("cluster-color", cluster)[:8], 16)
+    return palette[(index - 1) % len(palette)]
+
+
 def render_overlay(
     all_rows: list[dict[str, Any]],
     representatives: list[dict[str, Any]],
@@ -775,6 +935,7 @@ def render_overlay(
     width: int,
     height: int,
     tile_px: int,
+    cluster_coloring: bool = False,
 ) -> dict[str, float]:
     margin = 70
     locations, bounds = coordinate_transform(all_rows, width, height, margin)
@@ -783,7 +944,14 @@ def render_overlay(
     draw.rectangle((margin, margin, width - margin, height - margin), fill=(255, 255, 255), outline=(85, 94, 104), width=2)
     for row in all_rows:
         px, py = locations[str(row["cell_id"])]
-        draw.point((px, py), fill=(205, 211, 217))
+        draw.point(
+            (px, py),
+            fill=(
+                cluster_color(row.get("cluster", "0"))
+                if cluster_coloring
+                else (205, 211, 217)
+            ),
+        )
     resampling = getattr(Image, "Resampling", Image).LANCZOS
     source_max_dimensions = [
         max(
@@ -808,7 +976,11 @@ def render_overlay(
     draw.text((margin, 18), "Reference morphology UMAP: Brightfield objects", fill=(24, 32, 42))
     draw.text(
         (margin, 39),
-        "Constant source-pixel scale; gold = Combined-mask boundary; Nuclei excluded",
+        (
+            "Points = diagnostic cluster metadata; gold = Combined-mask boundary; Nuclei excluded"
+            if cluster_coloring
+            else "Constant source-pixel scale; gold = Combined-mask boundary; Nuclei excluded"
+        ),
         fill=(83, 92, 103),
     )
     save_png(canvas, workspace / "umap_morphology_overlay.png")
@@ -818,17 +990,24 @@ def render_overlay(
 
 
 def atlas_html(
-    representatives: list[dict[str, Any]], identity: dict[str, Any]
+    representatives: list[dict[str, Any]],
+    identity: dict[str, Any],
+    include_cluster: bool = False,
 ) -> str:
     contexts = sorted({str(row["context_value"]) for row in representatives})
     wells = sorted({str(row["well"]) for row in representatives})
     cards = []
     for row in representatives:
+        cluster_text = (
+            f'; cluster={html.escape(str(row.get("cluster", "")))}'
+            if include_cluster
+            else ""
+        )
         cards.append(
             f'''<article class="card" data-context="{html.escape(str(row["context_value"]), quote=True)}" data-well="{html.escape(str(row["well"]), quote=True)}" data-search="{html.escape((str(row["cell_id"])+" "+str(row["image_id"])).lower(), quote=True)}">
 <header><b>#{row["selection_rank"]}</b><span>{html.escape(str(row["well"]))}</span></header>
 <div class="pair"><figure><img loading="lazy" src="{quote(str(row["brightfield_crop"]), safe='/')}" alt="Brightfield cell crop"><figcaption>Brightfield + mask boundary</figcaption></figure><figure><img loading="lazy" src="{quote(str(row["nuclei_crop"]), safe='/')}" alt="Nuclei support crop"><figcaption>Nuclei (review support only)</figcaption></figure></div>
-<details><summary>Identity</summary><code>{html.escape(str(row["cell_id"]))}</code><br><small>image={html.escape(str(row["image_id"]))}; label={row["mask_label"]}; UMAP=({row["Dim1"]}, {row["Dim2"]})</small></details>
+<details><summary>Identity</summary><code>{html.escape(str(row["cell_id"]))}</code><br><small>image={html.escape(str(row["image_id"]))}; label={row["mask_label"]}{cluster_text}; UMAP=({row["Dim1"]}, {row["Dim2"]})</small></details>
 </article>'''
         )
     context_options = "".join(
@@ -890,12 +1069,18 @@ def install_generation(staging: Path, output: Path, overwrite: bool) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    implementation_path = Path(__file__).resolve()
+    implementation_sha256 = sha256_file(implementation_path)
     if args.max_representatives < 1:
         raise ValueError("--max-representatives must be positive")
     if args.mask_padding < 0:
         raise ValueError("--mask-padding must be nonnegative")
     if min(args.overlay_width, args.overlay_height) < 400 or args.overlay_tile_px < 4:
         raise ValueError("Overlay dimensions/tile size are too small")
+    if not 0 <= args.cluster_balance <= 1:
+        raise ValueError("--cluster-balance must be between zero and one")
+    if args.minimum_cluster_representatives < 1:
+        raise ValueError("--minimum-cluster-representatives must be positive")
 
     shadow_root = args.shadow_root.expanduser().resolve()
     if not shadow_root.is_dir():
@@ -910,6 +1095,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     for field in ("project_id", "cells_file", "images_file"):
         if not isinstance(project.get(field), str) or not project[field]:
             raise ValueError(f"Reference project lacks {field}")
+    v2 = project.get("project_id") == "reference_cell_state_development_v2"
+    if args.seed is None:
+        args.seed = 1 if v2 else 20260812
+    if v2 and args.seed != 1:
+        raise ValueError("V2 reference morphology sampling seed is frozen at 1")
+    if v2 and args.max_representatives != 300:
+        raise ValueError("V2 reference morphology total_n is frozen at 300")
+    if v2 and not math.isclose(args.cluster_balance, 0.2, abs_tol=1e-12):
+        raise ValueError("V2 reference morphology cluster balance is frozen at 0.2")
+    if v2 and args.minimum_cluster_representatives != 2:
+        raise ValueError("V2 reference morphology minimum cluster representatives is frozen at 2")
     cells_path = require_inside(
         resolve_project_path(project_path, project["cells_file"]), shadow_root, "cells.tsv"
     )
@@ -947,22 +1143,64 @@ def main(argv: Sequence[str] | None = None) -> int:
     joined = join_points_to_cells(points, cells)
     if int(annotation_manifest.get("row_count", -1)) != len(joined):
         raise ValueError("CPA annotation manifest row_count disagrees with verified universe")
-    context_column = args.context_column or "well"
+    context_column = args.context_column or ("context_key" if v2 else "well")
     if context_column not in fields and not all(context_column in row for row in joined):
         raise ValueError(f"Unknown context column: {context_column}")
     for row in joined:
         row["_context_column"] = context_column
-    representatives = choose_representatives(
-        joined, args.max_representatives, args.seed, context_column
-    )
+    cluster_audit: list[dict[str, Any]] = []
+    historical_representative_input: dict[str, Any] | None = None
+    if v2:
+        if context_column != "context_key":
+            raise ValueError("V2 morphology context is frozen at context_key, not wells")
+        if {str(row.get("context_key", "")) for row in joined} != {
+            "SUM-159-NLS-2N",
+            "SUM-159-NLS-4N",
+        }:
+            raise ValueError("V2 morphology requires the two frozen ploidy contexts")
+        if any("cluster" not in row for row in joined):
+            raise ValueError("V2 morphology requires diagnostic cluster metadata")
+        (
+            representatives,
+            cluster_audit,
+            historical_representative_input,
+        ) = load_reference_v2_representatives(
+            project_path,
+            shadow_root,
+            joined,
+        )
+    else:
+        representatives = choose_representatives(
+            joined, args.max_representatives, args.seed, context_column
+        )
     images = load_images(images_path)
 
     staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.staging.", dir=output.parent))
     try:
         rendered, source_assets = render_crops(
-            representatives, images, staging, args.mask_padding
+            representatives,
+            images,
+            staging,
+            args.mask_padding,
+            include_cluster=v2,
         )
-        write_tsv(staging / "representative_cells.tsv", REPRESENTATIVE_FIELDS, rendered)
+        write_tsv(
+            staging / "representative_cells.tsv",
+            REPRESENTATIVE_FIELDS_V2 if v2 else REPRESENTATIVE_FIELDS,
+            rendered,
+        )
+        if v2:
+            write_tsv(
+                staging / "cluster_selection_audit.tsv",
+                [
+                    "scope",
+                    "cluster",
+                    "available_n",
+                    "selected_n",
+                    "selection_authority",
+                ],
+                cluster_audit,
+            )
         bounds = render_overlay(
             joined,
             rendered,
@@ -970,16 +1208,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.overlay_width,
             args.overlay_height,
             args.overlay_tile_px,
+            cluster_coloring=v2,
         )
         (staging / "morphology_atlas.html").write_text(
-            atlas_html(rendered, identity), encoding="utf-8"
+            atlas_html(rendered, identity, include_cluster=v2), encoding="utf-8"
         )
         (staging / "annotation_workspace.html").write_text(
             workspace_html(annotation_html_path, output, identity), encoding="utf-8"
         )
         output_hashes = directory_hashes(staging)
         manifest = {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": SCHEMA_VERSION_V2 if v2 else SCHEMA_VERSION,
             "status": "COMPLETE",
             "identity": identity,
             "inputs": {
@@ -1007,14 +1246,52 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "path": str(payload_path),
                     "sha256": sha256_file(payload_path),
                 },
+                **(
+                    {
+                        "implementation": {
+                            "path": str(implementation_path),
+                            "sha256": implementation_sha256,
+                        },
+                        "historical_representatives": historical_representative_input,
+                    }
+                    if v2 and historical_representative_input
+                    else {}
+                ),
                 "source_assets": source_assets,
             },
             "selection": {
-                "policy": "hierarchical balanced context/well quotas; deterministic UMAP farthest-point real-cell design",
-                "inputs": ["cell_id", "well", context_column, "Dim1", "Dim2"],
+                "policy": (
+                    "render exact frozen IDs selected by pinned historical R AST: context-equal allocation; "
+                    "diagnostic-cluster convex-hull-area/count quotas; cluster-internal R k-means centers "
+                    "mapped to nearest real cells"
+                    if v2
+                    else "hierarchical balanced context/well quotas; deterministic UMAP farthest-point real-cell design"
+                ),
+                "inputs": [
+                    "cell_id",
+                    "well",
+                    context_column,
+                    *( ["cluster"] if v2 else [] ),
+                    "Dim1",
+                    "Dim2",
+                ],
                 "seed": args.seed,
                 "context_column": context_column,
                 "max_representatives": args.max_representatives,
+                **(
+                    {
+                        "cluster_balance": args.cluster_balance,
+                        "minimum_cluster_representatives": args.minimum_cluster_representatives,
+                        "context_count_expected": 2,
+                        "selection_authority": "historical_projection/historical_representatives.tsv",
+                        "selection_implementation": "pinned_reference_R_AST",
+                        "outer_function_name": "get_all_cell_lines_overlay_representatives",
+                        "inner_function_name": "get_spatially_uniform_representatives",
+                        "diagnostic_cluster_role": "sampling_and_overlay_metadata_only",
+                    }
+                    if v2
+                    else {}
+                ),
                 "selected_count": len(rendered),
                 "well_count": len({row["well"] for row in rendered}),
                 "context_count": len({row["context_value"] for row in rendered}),
@@ -1029,6 +1306,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "overlay_height_px": args.overlay_height,
                 "overlay_median_crop_target_px": args.overlay_tile_px,
                 "overlay_size_policy": "one global source-pixel scale; relative cell size preserved",
+                "background_point_color": (
+                    "diagnostic_cluster_palette_noise_zero_grey"
+                    if v2
+                    else "neutral_grey"
+                ),
                 "coordinate_bounds": bounds,
             },
             "blinding_contract": {
@@ -1040,6 +1322,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             },
             "output_artifact_sha256": output_hashes,
         }
+        if v2 and sha256_file(implementation_path) != implementation_sha256:
+            raise RuntimeError("Morphology workspace implementation changed during execution")
         (staging / "overlay_manifest.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )

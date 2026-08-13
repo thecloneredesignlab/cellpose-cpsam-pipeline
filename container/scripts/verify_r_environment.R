@@ -105,6 +105,60 @@ stopifnot(
   all(is.finite(umap_one))
 )
 
+# The historical-reference adapter calls dbscan::dbscan directly, exactly as
+# optimize_dbscan_v4() in the pinned reference Utils.R does.  Keep a small,
+# order-stable fixture here so package upgrades cannot silently change the
+# cluster/noise convention used by that source-selected function.
+dbscan_fixture <- matrix(
+  c(
+    0.00, 0.00,
+    0.02, 0.00,
+    0.00, 0.02,
+    0.02, 0.02,
+    1.00, 1.00,
+    1.02, 1.00,
+    1.00, 1.02,
+    1.02, 1.02,
+    3.00, 3.00
+  ),
+  ncol = 2L,
+  byrow = TRUE
+)
+dbscan_one <- dbscan::dbscan(dbscan_fixture, eps = 0.05, minPts = 3L)$cluster
+dbscan_two <- dbscan::dbscan(dbscan_fixture, eps = 0.05, minPts = 3L)$cluster
+stopifnot(
+  identical(dbscan_one, dbscan_two),
+  identical(as.integer(dbscan_one), c(1L, 1L, 1L, 1L, 2L, 2L, 2L, 2L, 0L))
+)
+
+# Exercise the real namespaces required by the pinned historical projection
+# and representative-selection AST.  The Phase A --check-config preflight
+# separately verifies and executes the exact selected functions from Utils.R.
+reference_rows <- data.frame(
+  context_key = rep(c("SUM-159-NLS-2N", "SUM-159-NLS-4N"), each = 3L),
+  cluster = c(1L, 1L, 0L, 1L, 2L, 2L),
+  value = seq_len(6L),
+  stringsAsFactors = FALSE
+)
+reference_summary <- reference_rows |>
+  dplyr::group_by(.data$context_key, .data$cluster) |>
+  dplyr::summarise(n = dplyr::n(), .groups = "drop") |>
+  tidyr::complete(context_key, cluster, fill = list(n = 0L)) |>
+  dplyr::arrange(.data$context_key, .data$cluster)
+stopifnot(
+  nrow(reference_summary) == 6L,
+  identical(
+    purrr::map_chr(strsplit(reference_summary$context_key, "-"), ~ .x[[1L]]),
+    rep("SUM", 6L)
+  ),
+  all(stringr::str_detect(reference_summary$context_key, "^SUM-159-NLS-[24]N$"))
+)
+reference_plot <- ggplot2::ggplot(
+  reference_summary,
+  ggplot2::aes(x = .data$cluster, y = .data$n, colour = .data$context_key)
+) + ggplot2::geom_point()
+stopifnot(inherits(reference_plot, "ggplot"))
+
 shared_libraries <- list.files(
   "/opt/R/4.2.3/lib/R/site-library",
   pattern = "\\.so$",
@@ -127,4 +181,6 @@ cat(sprintf("r_version=%s\n", R.version.string))
 cat(sprintf("r_package_count=%d\n", nrow(lock)))
 cat("glmnet_grouped_multinomial=PASS\n")
 cat("uwot_deterministic_repeat=PASS\n")
+cat("dbscan_reference_call_fixture=PASS\n")
+cat("reference_tidy_namespace_fixture=PASS\n")
 cat("r_environment_verification=PASS\n")

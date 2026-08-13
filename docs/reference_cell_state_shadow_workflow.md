@@ -1,164 +1,170 @@
-# Reference cell-state shadow workflow
+# Reference cell-state shadow workflow V2
 
-## Purpose and isolation
+## Scope
 
-This workflow reproduces the historical `cell-phenotype-annotator` method as
-an independent shadow classifier. It never replaces the production
-viability/trajectory classifier and never writes to its result root.
+V2 produces a historical three-class cell-state axis (`live_cell`,
+`dead_cell`, `multinucleated_cell`) without changing the current
+viability/trajectory classifier. V1 results and entry points remain audit
+records; no V2 command may resume, overwrite, or reinterpret a V1 root.
 
-The frozen V1 ontology is mutually exclusive and ordered:
+Formal roots are new siblings named
+`results/reference_cell_state_shadow_v2_<timestamp>/`. Calibration roots are
+new children of `results/Tests_and_Parameters_calibration/` named
+`reference_cell_state_shadow_v2_test_<timestamp>/`.
 
-1. `multinucleated_cell`: two or more distinct nuclei in the anchored Combined
-   object; this class takes precedence;
-2. `dead_cell`: when multinucleation is absent, Brightfield morphology supports
-   death;
-3. `live_cell`: neither higher-priority class applies and Brightfield morphology
-   supports a live cell.
+## What “reference-consistent” means
 
-Insufficient evidence remains unassigned or is skipped during review. It is
-not a fourth trainable class.
+Code-level parity requires all of the following:
 
-The model uses only the historical promoted-shape profile, mapped to current
-pixel-unit columns:
+- the pinned Cell Phenotype Annotator checkout and selected source-function
+  hashes;
+- the historical preprocessing, PCA/UMAP, DBSCAN optimizer and fallback;
+- the pinned `get_all_cell_lines_overlay_representatives` and
+  `get_spatially_uniform_representatives` calls with seed 1;
+- pinned Seed1/Seed2 sampling only when stable polygon regions exist;
+- exact manual-evidence import and conflict adjudication on both branches;
+- the historical 12-feature multinomial glmnet classifier, grouped by well,
+  with site plus elapsed time nested metadata and 5-by-5 grouped CV;
+- the frozen SUM-159 plate identity mapping and dependency/runtime locks.
 
-```text
-area_px2
-perimeter_px
-roundness
-aspect_ratio
-extent
-solidity
-equivalent_diameter_px
-major_axis_px
-minor_axis_px
-```
+Data-result acceptance additionally requires both human-review barriers, a
+final accepted model and exact full-universe shard coverage. A stable-polygon
+run records `historical_core_parity_with_pinned_stable_polygon_sampling`.
+When no stable cluster exists, the run instead records
+`historical_core_parity_with_disclosed_no_stable_cluster_sampling_adaptation`:
+the historical projection/classifier core remains pinned, but Seed1's
+all-unassigned 500-cell design and Seed2's sampling-only pseudo-multi
+probability surrogate are explicit V2 adaptations, not exact reference-repo
+sampling or a historical-production reproduction claim.
 
-Nuclei is review-only support. Dead, Combined RGB, current state/confidence,
-trajectory, and current predictions are neither bound nor read before the
-reference model is frozen.
+Pixel calibration is unavailable and is never inferred. Current pixel-unit
+features are adapted to historical names only; V2 makes no physical-micron
+parity claim.
 
-## Phase A
+## Phase A and diagnostic-cluster branch
 
-Formal Phase A reuses the frozen 32,000-cell development representative
-project from:
-
-```text
-results/broad_phenotype_shadow_20260812_075437
-```
-
-It verifies the parent projection, row universe, cells/features lockstep,
-split/selection manifests, and source hashes. It copies the same development
-cell universe, writes the exact nine features, installs the three new classes,
-and recomputes UMAP. Parent UMAP coordinates and broad-phenotype labels are not
-imported.
-
-The Phase A entry point is:
+The formal entry point is:
 
 ```bash
-bash cellpose_pipeline/hpc/submit_reference_cell_state_shadow.sh
+V2_STAGE=phase-a \
+  bash cellpose_pipeline/hpc/submit_reference_cell_state_shadow_v2.sh
 ```
 
-It creates a new sibling root:
+Phase A imports the frozen 32,000-cell development universe, derives the
+canonical SUM-159 plate identities, runs historical projection, imports its
+existing coordinates into CPA, creates the diagnostic cluster overlay and
+renders BF/Nuclei evidence using Combined masks for object localization.
+Diagnostic clusters are metadata only and are never classifier targets.
+
+The optimized DBSCAN outcome selects one of two human paths:
 
 ```text
-results/reference_cell_state_shadow_<timestamp>/
+valid multi-cluster candidate -> polygon region barrier
+one-cluster fallback          -> adapted all-unassigned Seed1 exact review barrier
 ```
 
-The single CPU Slurm job performs:
+The one-cluster fallback is the reference optimizer's fail-closed diagnostic
+outcome. V2 does not force a visually pleasing cluster. With user confirmation
+it can still finish an independent classification when the UMAP has no stable
+clusters: Seed1 becomes a blinded, well-balanced sample of at most 500 cells,
+at most 8 per well, and Seed2 uses an initial-model probability surrogate only
+to populate review buckets. Neither adapted sampling step is called pinned
+reference-exact, and no surrogate label enters training.
+
+## Human and model stages
+
+For a multi-cluster outcome, export the polygon submission and run
+`V2_STAGE=post-region`. This imports the exact polygon result, selects the
+historical Seed1 set, and renders the exact BF/Nuclei review HTML. For a
+one-cluster fallback, Phase A already renders Seed1.
+
+After Seed1 manual submission, run `V2_STAGE=post-seed1` for the polygon path
+or `V2_STAGE=post-fallback-seed1` for the fallback path. The worker imports the
+exact selected universe without CPA resampling, trains the initial model,
+selects the fixed Seed2 targeted buckets and renders the exact Seed2 review.
+
+After Seed2 manual submission, run `V2_STAGE=post-seed2`. Any label conflict
+stops at `HUMAN_ADJUDICATION_REQUIRED` and atomically freezes
+`human_review/merged_adjudication_barrier/`. Complete an adjudication TSV
+inside the V2 root, then run the distinct `V2_STAGE=post-adjudication` with
+`REVIEW_ADJUDICATION=/absolute/path.tsv`. Before either merge, script 38 fully
+revalidates both immutable review imports against the exact selection,
+render/crop, submission, and output hashes. The adjudicated merge still
+publishes atomically to `human_review/merged/`; it never overwrites the barrier.
+A successful merge trains the final historical model.
+
+All review pages show BF and Nuclei evidence and use Combined segmentation
+masks only for localization/cropping. UMAP/cluster/default labels are never
+accepted as manual training evidence.
+
+## Acceptance, prediction and comparison
+
+`V2_STAGE=predict` submits:
 
 ```text
-parent import -> CPA validate -> 9-feature UMAP -> CPA annotate
-              -> morphology overlay/atlas -> human region barrier
+final-model acceptance -> original-feature array (1-N%64) -> exact merge
 ```
 
-The tracked code commit is archived at submission. Slurm copies and verifies
-that archive on the compute node, executes the node-local worker, and mounts
-the node-local source read-only at the canonical snapshot path in the latest
-SIF. The parent project, raw BF/Nuclei data, source segmentation masks, and
-pinned reference checkout are read-only binds. Only the new reference root is
-writable. No GPU or node constraint is requested.
+The merged independent axis is
+`predictions/reference_cell_state_predictions.tsv`, with exact columns
+`model_id`, `cell_id`, `reference_cell_state_class_id`, and
+`prediction_status`. Its receipt is
+`predictions/REFERENCE_CELL_STATE_SHADOW_GO_NO_GO.json`. Each array task first
+atomically installs one co-located generation under
+`prediction_shards_v2/shards/<well>/<key>__original/`, containing the wide TSV
+and `prediction_receipt.json`; probability columns retain the historical
+`live_cell`, `dead_cell`, `multinucleated_cell` order.
 
-## Historical morphology reference
+Only after this result is frozen may `V2_STAGE=compare` bind a current
+classification root. Comparison writes a third independent root and is a
+descriptive cross-classification, not an accuracy table. No comparison result
+feeds back into the V2 model.
 
-The generic CPA annotation page contains only points and polygons. The
-historical LTEE workflow instead displayed real morphology beside the UMAP.
-`27_build_reference_morphology_workspace.py` restores that behavior without
-modifying the immutable CPA annotation generation:
+Formal continuation always reuses the same V2 root and stage name. The frozen
+submitter serializes concurrent orchestrators and queries the latest attempt
+with `sacct`:
 
-- at most 300 deterministic, context-balanced real cells are selected in UMAP
-  space;
-- Brightfield cutouts use the Combined mask for transparent background and a
-  visible object boundary;
-- one source-pixel scale is used across the overlay, preserving relative cell
-  size;
-- Nuclei is displayed separately in the atlas as human evidence;
-- source images, crops, coordinates, annotation identity, and output files are
-  SHA-256 bound.
+- PENDING/RUNNING-family states are reported without another submission;
+- COMPLETED is reusable only after the stage's authoritative receipts and
+  artifact hashes pass a fresh audit;
+- FAILED/CANCELLED/TIMEOUT and other classified terminal failures append a new
+  attempt while preserving the original ledger and summary;
+- missing/ambiguous/unknown scheduler state, or COMPLETED with missing output,
+  fails closed.
 
-Open `morphology_reference/annotation_workspace.html`. Its left pane is the
-unmodified CPA polygon editor and its right pane is the morphology overlay and
-atlas. Region boundaries are provisional labels only.
+For the prediction DAG, each new node depends on the latest upstream attempt.
+If an old downstream job remains active on a failed upstream dependency, V2
+waits for that job to become terminal instead of cancelling or duplicating it.
+Then a replacement full array is safe: immutable completed shards verify and
+reuse themselves, failed/missing shards publish new generations, and a new
+finalize attempt binds the replacement array job. Attempt history is retained
+in `workflow_status/submission_<stage>_attempts_v2.tsv`.
 
-## Human barriers and model
+## HPC and container contract
 
-1. Draw regions with the morphology workspace and export
-   `region_submission.json`.
-2. Run authoritative CPA `annotation-import`; CPA recomputes every polygon
-   assignment.
-3. Build the balanced image review: 50 cells per class plus 100 unassigned,
-   maximum 8 per well, shortage policy `fail`.
-4. Confirm, correct, or skip each crop and export `review_submission.json`.
-5. Run authoritative `review-import`. Only confirmed/corrected rows with
-   confidence at least 0.8 are eligible.
-6. Train grouped nested-CV multinomial glmnet: well grouping, 5 outer folds,
-   5 inner folds, fold-local preprocessing, `alpha=1`, `lambda.1se`.
-7. Accept an immutable model generation and run field-sharded full prediction.
+Formal jobs use Slurm without a node, constraint, exclusion or GPU request.
+Every submission runs through `/usr/bin/env -i`; ambient `SBATCH_*` variables
+cannot alter placement. Workers verify the full SIF SHA and its read-only
+SquashFS root, execute a node-local archive copy, hide `/share`, then restore
+only explicit binds. Before model freeze, Dead, Combined RGB and current
+classification results remain invisible. Legacy/current `NO_GO` is not read;
+all V2-specific gates remain mandatory.
 
-The merged reference result is:
-
-```text
-predictions/reference_cell_state_predictions.tsv
-```
-
-with exact columns:
-
-```text
-model_id
-cell_id
-reference_cell_state_class_id
-prediction_status
-```
-
-It does not contain or overwrite `state`, `final_state`, or current classifier
-probabilities.
-
-## Comparison boundary
-
-`29_compare_current_vs_reference_cell_state.py` runs only after both axes are
-frozen and writes a third, independent comparison root. The 4-by-3 table is a
-cross-classification/association table, not an accuracy table. For the shared
-dead endpoint, current `uncertain`/`artifact` and unavailable reference rows are
-abstentions. `multinucleated_cell` remains its own reference prediction and is
-never silently renamed `live`.
-
-True sensitivity, specificity, or method superiority requires a later blinded
-heldout gold review. The precomparison receipt therefore records
-`PRECOMPARISON_NO_GOLD_STANDARD` and `accuracy_claimed=false`.
+The final parity image is versioned separately as
+`cellpose-cpsam-pipeline_hpc-cellpose-4.2.1.1-models-reference-v2-parity.sif`.
+It locks 66 R binaries, including the real dplyr/tidyr/purrr/stringr/ggplot2
+namespaces required by selected reference functions. The identity file is
+`BUILD_REQUIRED` until that new image is built, converted, and verified on the
+A30 node; while pending, every V2 entry point fails closed.
 
 ## Calibration
 
-Calibration runs only after login-node SSH to `hpctpa3pc0009` and only below:
-
-```text
-results/Tests_and_Parameters_calibration/
-```
-
-Use:
+Calibration must be launched only after SSH to `hpctpa3pc0009`:
 
 ```bash
-bash cellpose_pipeline/hpc/Parameter_calibration/30_run_reference_cell_state_shadow_test.sh
+bash cellpose_pipeline/hpc/Parameter_calibration/31_run_reference_cell_state_shadow_v2_test.sh
 ```
 
-It consumes the completed 100-cell broad calibration parent
-`broad_phenotype_shadow_test_20260812_073844`, uses the same latest SIF, and
-does not call `sbatch`.
+It is direct execution, never `sbatch`, and may write only below
+`results/Tests_and_Parameters_calibration/`. It uses the same frozen archive,
+container identity and human barriers as formal execution.

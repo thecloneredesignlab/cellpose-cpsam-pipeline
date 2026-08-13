@@ -23,13 +23,13 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence, TextIO
 
 
-SCHEMA_VERSION = "reference_cell_state_shard_merge_v1"
+SCHEMA_VERSION = "reference_cell_state_shard_merge_v2"
 FEATURE_RECEIPT_SCHEMA = "broad_phenotype_feature_receipt_v1"
-PREDICTION_RECEIPT_SCHEMA = "reference_cell_state_shard_prediction_v1"
-MODEL_ACCEPTANCE_SCHEMA = "reference_cell_state_model_acceptance_v1"
-PARENT_IMPORT_SCHEMA = "reference_cell_state_parent_import_v1"
+PREDICTION_RECEIPT_SCHEMA = "reference_cell_state_shard_prediction_v2"
+MODEL_ACCEPTANCE_SCHEMA = "reference_cell_state_model_acceptance_v2"
+PARENT_IMPORT_SCHEMAS = {"reference_cell_state_parent_import_v2"}
 FEATURE_MANIFEST_COLUMNS = ("key", "feature_path", "receipt_path")
-REFERENCE_CLASS_IDS = ("dead_cell", "live_cell", "multinucleated_cell")
+REFERENCE_CLASS_IDS = ("live_cell", "dead_cell", "multinucleated_cell")
 STANDARD_COLUMNS = (
     "model_id",
     "cell_id",
@@ -38,6 +38,7 @@ STANDARD_COLUMNS = (
 )
 CELL_ID_RE = re.compile(r"^(?P<branch>[^|]+)\|(?P<key>[^|]+)\|(?P<label>[1-9][0-9]*)$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+SCRIPT_PATH = Path(__file__).resolve(strict=True)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -53,7 +54,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=Path,
         help="Frozen parent CPA cells table (default: <parent-shadow-root>/cpa/cells.tsv).",
     )
-    parser.add_argument("--force", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -179,10 +179,9 @@ def prediction_paths(root: Path, feature_receipt: dict[str, Any]) -> tuple[Path,
         if not isinstance(feature_receipt.get(field), str) or not feature_receipt[field]:
             raise ValueError(f"Feature receipt lacks {field}")
     stem = f"{feature_receipt['key']}__{feature_receipt['branch']}"
-    prediction = root / "shards" / feature_receipt["well"] / (
-        stem + "_reference_cell_state_predictions.tsv"
-    )
-    receipt = root / "receipts" / feature_receipt["well"] / (stem + ".json")
+    generation = root / "shards" / feature_receipt["well"] / stem
+    prediction = generation / "reference_cell_state_predictions.tsv"
+    receipt = generation / "prediction_receipt.json"
     return prediction, receipt
 
 
@@ -256,6 +255,7 @@ def validate_prediction_receipt(
         "model_acceptance_sha256",
         "parent_import_manifest_sha256",
         "dependency_lock_sha256",
+        "shared_implementation_sha256",
         "implementation_sha256",
     ):
         if not isinstance(receipt.get(field), str) or not SHA256_RE.fullmatch(receipt[field]):
@@ -263,6 +263,20 @@ def validate_prediction_receipt(
     for field in ("source_identity", "runtime_identity"):
         if not isinstance(receipt.get(field), dict) or not receipt[field]:
             raise ValueError(f"Prediction receipt has invalid {field}: {receipt_path}")
+    for field in ("implementation", "shared_implementation"):
+        if not isinstance(receipt.get(field), str) or not receipt[field]:
+            raise ValueError(f"Prediction receipt has invalid {field}: {receipt_path}")
+    prediction_implementation = require_absolute_file(
+        Path(receipt["implementation"]), "prediction implementation"
+    )
+    prediction_shared = require_absolute_file(
+        Path(receipt["shared_implementation"]), "prediction shared implementation"
+    )
+    if (
+        receipt["implementation_sha256"] != sha256_file(prediction_implementation)
+        or receipt["shared_implementation_sha256"] != sha256_file(prediction_shared)
+    ):
+        raise ValueError(f"Prediction implementation identity changed: {receipt_path}")
     expected_columns = [
         "model_id",
         "cell_id",
@@ -314,12 +328,12 @@ def validate_parent_binding(
     acceptance_path: Path,
     acceptance_sha256: str,
     shadow_root: Path,
-) -> tuple[Path, str, dict[str, Any]]:
+) -> tuple[Path, str, dict[str, Any], Path]:
     require_inside(parent_import_path, shadow_root, "--parent-import-manifest")
     require_inside(acceptance_path, shadow_root, "--model-acceptance-receipt")
     parent_import = read_json(parent_import_path, "parent-import manifest")
     acceptance = read_json(acceptance_path, "model-acceptance receipt")
-    if parent_import.get("schema_version") != PARENT_IMPORT_SCHEMA:
+    if parent_import.get("schema_version") not in PARENT_IMPORT_SCHEMAS:
         raise ValueError("Unsupported reference parent-import manifest schema")
     if (
         acceptance.get("schema_version") != MODEL_ACCEPTANCE_SCHEMA
@@ -329,6 +343,39 @@ def validate_parent_binding(
         raise ValueError("Model-acceptance receipt is not ACCEPTED")
     if Path(str(acceptance.get("shadow_root", ""))).resolve() != shadow_root:
         raise ValueError("Model acceptance belongs to another reference shadow root")
+    accepted_model = acceptance.get("model")
+    isolation = acceptance.get("isolation_contract")
+    if not isinstance(accepted_model, dict) or not isinstance(isolation, dict):
+        raise ValueError("Model acceptance lacks historical model/isolation contract")
+    if (
+        accepted_model.get("feature_profile") != "promoted_shape_plus_rfs_boundary"
+        or accepted_model.get("engine") != "historical_glmnet_multinomial"
+        or accepted_model.get("calibration_status")
+        != "uncalibrated_stratified_review_sample"
+        or isolation.get("generic_cpa_classifier_used") is not False
+        or isolation.get("diagnostic_cluster_used_for_training") is not False
+        or isolation.get("umap_or_pseudo_label_used_for_training") is not False
+    ):
+        raise ValueError("Model acceptance is not the frozen historical V2 classifier contract")
+    acceptance_shared = require_absolute_file(
+        Path(str(acceptance.get("shared_implementation", ""))),
+        "model acceptance shared implementation",
+    )
+    if acceptance.get("shared_implementation_sha256") != sha256_file(acceptance_shared):
+        raise ValueError("Model acceptance shared implementation identity changed")
+    acceptance_implementation = require_absolute_file(
+        Path(str(acceptance.get("implementation", ""))),
+        "model acceptance implementation",
+    )
+    expected_acceptance_implementation = (
+        acceptance_shared.parent.parent / "30_accept_reference_cell_state_model.R"
+    ).resolve(strict=True)
+    if (
+        acceptance_implementation != expected_acceptance_implementation
+        or acceptance.get("implementation_sha256")
+        != sha256_file(expected_acceptance_implementation)
+    ):
+        raise ValueError("Model acceptance implementation identity changed")
     frozen = acceptance.get("frozen_inputs")
     if not isinstance(frozen, dict):
         raise ValueError("Model acceptance lacks frozen_inputs")
@@ -349,7 +396,7 @@ def validate_parent_binding(
         raise ValueError("Acceptance and parent-import manifests disagree on parent shadow root")
     if sha256_file(acceptance_path) != acceptance_sha256:
         raise ValueError("Model acceptance changed during parent-binding validation")
-    return parent_root, parent_import_sha, acceptance
+    return parent_root, parent_import_sha, acceptance, acceptance_shared
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -372,7 +419,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Model-acceptance receipt SHA mismatch: "
             f"expected={args.model_acceptance_sha256} observed={observed_acceptance_sha256}"
         )
-    parent_root, parent_import_sha256, acceptance = validate_parent_binding(
+    parent_root, parent_import_sha256, acceptance, acceptance_shared = validate_parent_binding(
         parent_import_path,
         model_acceptance_receipt,
         observed_acceptance_sha256,
@@ -389,14 +436,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     rows = load_feature_manifest(feature_manifest)
 
     output_dir = shadow_root / "predictions"
-    output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "reference_cell_state_predictions.tsv"
-    receipt_path = shadow_root / "REFERENCE_CELL_STATE_SHADOW_GO_NO_GO.json"
+    receipt_path = output_dir / "REFERENCE_CELL_STATE_SHADOW_GO_NO_GO.json"
     output_exists = output_path.exists()
     receipt_exists = receipt_path.exists()
     if output_exists != receipt_exists:
         raise RuntimeError("Incomplete existing shard-merge generation was preserved")
-    reuse_requested = output_exists and not args.force
+    reuse_requested = output_exists
+    if output_dir.exists() and not reuse_requested:
+        raise RuntimeError("Incomplete existing shard-merge generation was preserved")
+
+    staged_output_file = shadow_root / (
+        f".reference-cell-state-merged-output-staging-{os.getpid()}.tsv"
+    )
+    if os.path.lexists(staged_output_file):
+        raise RuntimeError(f"Merge staging path already exists: {staged_output_file}")
 
     aggregate = hashlib.sha256()
     total_rows = 0
@@ -408,7 +462,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     observed_branches: set[str] = set()
 
     with tempfile.TemporaryDirectory(
-        prefix=".reference-cell-state-shard-merge-", dir=output_dir
+        prefix=".reference-cell-state-shard-merge-", dir=shadow_root
     ) as temporary:
         temporary_output = Path(temporary) / output_path.name
         cells_handle, cells_reader = open_tsv(cells_path, "frozen cells table")
@@ -458,7 +512,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "model_acceptance_sha256",
                             "parent_import_manifest_sha256",
                             "dependency_lock_sha256",
+                            "implementation",
                             "implementation_sha256",
+                            "shared_implementation",
+                            "shared_implementation_sha256",
                             "source_identity",
                             "runtime_identity",
                         )
@@ -662,7 +719,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "the existing generation was preserved"
                 )
         else:
-            os.replace(temporary_output, output_path)
+            os.replace(temporary_output, staged_output_file)
 
     if common_identity is None:
         raise RuntimeError("No prediction generation identity was observed")
@@ -679,7 +736,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "model_acceptance_sha256": observed_acceptance_sha256,
         "parent_import_manifest_sha256": parent_import_sha256,
         "dependency_lock_sha256": accepted_dependency.get("lock_sha256"),
+        "implementation": common_identity.get("implementation"),
         "implementation_sha256": common_identity.get("implementation_sha256"),
+        "shared_implementation": str(acceptance_shared),
+        "shared_implementation_sha256": acceptance.get(
+            "shared_implementation_sha256"
+        ),
         "source_identity": common_identity.get("source_identity"),
         "runtime_identity": common_identity.get("runtime_identity"),
     }
@@ -687,6 +749,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise RuntimeError("Merged shard identity differs from accepted reference model")
     receipt = {
         "schema_version": SCHEMA_VERSION,
+        "implementation": str(SCRIPT_PATH),
+        "implementation_sha256": sha256_file(SCRIPT_PATH),
         "feature_manifest": str(feature_manifest),
         "feature_manifest_sha256": feature_manifest_sha,
         "prediction_root": str(prediction_root),
@@ -752,15 +816,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"reference_cell_state_shard_merge_already_complete=1 output={output_path}")
         return 0
 
-    temporary_receipt = receipt_path.with_name(f".{receipt_path.name}.tmp.{os.getpid()}")
+    staging_dir = Path(tempfile.mkdtemp(
+        prefix=".reference-cell-state-published-staging-", dir=shadow_root
+    ))
     try:
-        temporary_receipt.write_text(
+        os.replace(staged_output_file, staging_dir / output_path.name)
+        (staging_dir / receipt_path.name).write_text(
             json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-        os.replace(temporary_receipt, receipt_path)
+        if output_dir.exists():
+            raise RuntimeError("Shard-merge generation appeared during staging")
+        os.replace(staging_dir, output_dir)
     finally:
-        if temporary_receipt.exists():
-            temporary_receipt.unlink()
+        if staged_output_file.exists():
+            staged_output_file.unlink()
+        if staging_dir.exists():
+            import shutil
+            shutil.rmtree(staging_dir)
 
     print("reference_cell_state_shard_merge_technical_decision=GO")
     print("reference_cell_state_shard_merge_promotion_decision=NO_GO")

@@ -1,0 +1,192 @@
+{
+  "schema_version": "reference_cell_state_feature_config_v2",
+  "method_version": "reference_ltee_historical_projection_v2",
+  "source_feature_schema_version": "broad_phenotype_features_v1",
+  "reference_identity_contract": {
+    "plate_map_sha256": "cb8aa2fa4a47cfa83d2f5462420575af0726be7066e47d8a60770543156de2e9",
+    "cell_line_family": "SUM-159-NLS",
+    "contexts": [
+      "SUM-159-NLS-2N",
+      "SUM-159-NLS-4N"
+    ],
+    "context_column": "context_key",
+    "source_id_column": "source_id",
+    "source_id_semantics": "well",
+    "suffix_column": "suffix",
+    "condition_column": "condition"
+  },
+  "numeric_feature_columns": [
+    "area_px2",
+    "perimeter_px",
+    "roundness",
+    "aspect_ratio",
+    "extent",
+    "solidity",
+    "equivalent_diameter_px",
+    "major_axis_px",
+    "minor_axis_px",
+    "bf_boundary_mean",
+    "bf_interior_mean",
+    "bf_interior_minus_boundary_mean"
+  ],
+  "projection_feature_columns": [
+    "area_px2",
+    "perimeter_px",
+    "roundness",
+    "aspect_ratio",
+    "extent",
+    "solidity",
+    "equivalent_diameter_px",
+    "major_axis_px",
+    "minor_axis_px"
+  ],
+  "classifier_feature_columns": [
+    "area_px2",
+    "perimeter_px",
+    "roundness",
+    "aspect_ratio",
+    "extent",
+    "solidity",
+    "equivalent_diameter_px",
+    "major_axis_px",
+    "minor_axis_px",
+    "bf_boundary_mean",
+    "bf_interior_mean",
+    "bf_interior_minus_boundary_mean"
+  ],
+  "historical_reference_feature_mapping": [
+    {
+      "pipeline_feature": "area_px2",
+      "historical_feature": "Area.\u00b5m.2",
+      "historical_transform": "linear"
+    },
+    {
+      "pipeline_feature": "perimeter_px",
+      "historical_feature": "perimeter.\u00b5m",
+      "historical_transform": "log1p"
+    },
+    {
+      "pipeline_feature": "roundness",
+      "historical_feature": "roundness",
+      "historical_transform": "log1p"
+    },
+    {
+      "pipeline_feature": "aspect_ratio",
+      "historical_feature": "aspect_ratio",
+      "historical_transform": "log1p"
+    },
+    {
+      "pipeline_feature": "extent",
+      "historical_feature": "extent",
+      "historical_transform": "log1p"
+    },
+    {
+      "pipeline_feature": "solidity",
+      "historical_feature": "solidity",
+      "historical_transform": "log1p"
+    },
+    {
+      "pipeline_feature": "equivalent_diameter_px",
+      "historical_feature": "equi_diameter",
+      "historical_transform": "log1p"
+    },
+    {
+      "pipeline_feature": "major_axis_px",
+      "historical_feature": "Major_Axis",
+      "historical_transform": "linear"
+    },
+    {
+      "pipeline_feature": "minor_axis_px",
+      "historical_feature": "Minor_Axis",
+      "historical_transform": "linear"
+    }
+  ],
+  "historical_projection": {
+    "reference_source_file": "code/lib/Utils.R",
+    "reference_source_sha256": "9b913da2bce7e87de3c7e9b6f084502655fd9b6514ccff1a65478b37ea2a9828",
+    "selective_ast_loader": {
+      "policy": "parse_source_and_evaluate_only_frozen_named_function_assignments",
+      "function_sha256": {
+        "impute_missing_values_knn": "bd74036e7260d6612aa0e31515b03f7b3295fa01027a02669e5beeb8d06b3466",
+        "morphology_projection_metadata_columns": "8131192c900a53498fcc86e50b965e8d21edadc4c1cd9f2551317621fb28b68e",
+        "plot_projection_by_passage": "7714064b8719a0ee626a40deaf4767a5b962bb849d173bbcd93488664d0d3693",
+        "optimize_dbscan_v4": "b33a3551bb9e3c67ece03032d4d52c2fa49f34dd3ce9c6e4643b6c57590234c9",
+        "get_spatially_uniform_representatives": "84f029ec14db0dacf6d7a618c9ccb62792fe735872607d8956665f37ff9d5e72",
+        "get_all_cell_lines_overlay_representatives": "f46a8a203374527755996beddf1d1c86f8828d4838f7067ac17bc508f848a10e"
+      }
+    },
+    "projection_function": "plot_projection_by_passage",
+    "missing_fraction_keep_operator": "<",
+    "missing_fraction_threshold": 0.1,
+    "variance_filter_if_feature_count_gt": 100,
+    "variance_filter_quantile": 0.2,
+    "size_feature_regex": "Area|Axis|Perimeter|Diameter",
+    "size_feature_regex_ignore_case": false,
+    "size_feature_transform": "linear",
+    "non_size_feature_transform": "log1p",
+    "scaling": "zscore_R_scale",
+    "nonfinite_after_scale": "NA",
+    "imputation": "impute_missing_values_knn",
+    "knn_k": 5,
+    "pca_function": "stats::prcomp",
+    "pca_center": false,
+    "pca_scale": false,
+    "pca_max_components": 10,
+    "umap_function": "uwot::umap",
+    "umap_seed": 42,
+    "umap_n_neighbors": 15,
+    "umap_n_components": 2,
+    "umap_metric": "euclidean",
+    "diagnostic_cluster_role": "metadata_only",
+    "authoritative_dbscan": {
+      "function": "optimize_dbscan_v4",
+      "eps_start": 0.005,
+      "eps_stop": 0.7,
+      "eps_step": 0.025,
+      "min_points_start": 100,
+      "min_points_stop": 200,
+      "min_points_step": 5,
+      "max_noise_percent": 25,
+      "max_clusters": 10,
+      "silhouette_seed": 1,
+      "silhouette_max_cells": 2000,
+      "silhouette_fraction": 0.25,
+      "score": "mean_silhouette_times_one_minus_noise_fraction",
+      "tie_break": "descending_normalized_shannon_entropy",
+      "no_valid_candidate": "one_cluster_fallback"
+    },
+    "fixed_dbscan_audit": {
+      "eps": 0.5,
+      "min_points": 5,
+      "role": "audit_only_not_authoritative"
+    },
+    "representative_selection": {
+      "outer_function": "get_all_cell_lines_overlay_representatives",
+      "inner_function": "get_spatially_uniform_representatives",
+      "seed": 1,
+      "total_n": 300,
+      "balance": 0.2,
+      "minimum_cluster_representatives": 2,
+      "context_column": "context_key",
+      "cluster_role": "sampling_and_overlay_metadata_only"
+    },
+    "unit_adaptation": "pixel_units_constant_scale_adaptation",
+    "unit_adaptation_claim": "No micrometre calibration is asserted; historical names are used only to reproduce the reference transform dispatch. Constant positive unit scaling of linear size columns is removed by subsequent z-scoring.",
+    "pixel_calibration_evidence": "incucyte_tiff_generic_72_dpi_only_no_ome_imagej_or_description_and_repo_declares_no_valid_microscopy_pixel_calibration",
+    "historical_name_mapping_role": "case_sensitive_schema_dispatch_only_not_physical_unit_claim",
+    "unrecoverable_production_artifact_difference": "unknown_px_to_micrometre_scale_cannot_be_recovered_and_is_not_fully_removed_for_lowercase_perimeter.µm_and_equi_diameter_because_historical_log1p_precedes_zscore"
+  },
+  "projection_transform": "historical_non_size_log1p_then_zscore_knn5_pca10_umap",
+  "nuclei_policy": "review_display_only",
+  "viability_evidence_policy": "not_read",
+  "classifier_contract": {
+    "engine": "glmnet_multinomial",
+    "alpha": 1.0,
+    "lambda_rule": "lambda.1se",
+    "outer_folds": 5,
+    "inner_folds": 5,
+    "group_column": "source_id",
+    "source_id_semantics": "well",
+    "confidence_policy": "historical_high_or_medium_blank_as_high_low_excluded"
+  }
+}

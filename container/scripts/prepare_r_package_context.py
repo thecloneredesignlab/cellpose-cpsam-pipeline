@@ -27,45 +27,68 @@ R_DEB_SHA256 = "d2c1316527b21211d2802f123c8b5dca7265f6c69df8ce39c8b0aacc79260952
 
 EXPECTED_PACKAGE_VERSIONS = {
     "BH": "1.87.0-1",
+    "FNN": "1.1.4.1",
+    "R6": "2.6.1",
+    "RColorBrewer": "1.1-3",
+    "RSpectra": "0.16-2",
+    "Rcpp": "1.1.0",
+    "RcppAnnoy": "0.0.22",
+    "RcppEigen": "0.3.4.0.2",
+    "RcppProgress": "0.4.2",
+    "S7": "0.2.0",
     "brio": "1.1.5",
     "callr": "3.7.6",
     "cli": "3.6.5",
+    "cpp11": "0.5.2",
     "crayon": "1.5.3",
+    "dbscan": "1.2.3",
     "desc": "1.4.3",
     "diffobj": "0.3.6",
     "digest": "0.6.37",
+    "dplyr": "1.1.4",
     "dqrng": "0.4.1",
     "evaluate": "1.0.5",
-    "FNN": "1.1.4.1",
+    "farver": "2.1.2",
     "foreach": "1.5.2",
     "fs": "1.6.6",
+    "generics": "0.1.4",
+    "ggplot2": "4.0.0",
     "glmnet": "4.1-10",
     "glue": "1.8.0",
+    "gtable": "0.3.6",
     "irlba": "2.3.5.1",
+    "isoband": "0.2.7",
     "iterators": "1.0.14",
     "jpeg": "0.1-11",
     "jsonlite": "2.0.0",
+    "labeling": "0.4.3",
     "lifecycle": "1.0.4",
     "magrittr": "2.0.4",
+    "pillar": "1.11.1",
     "pkgbuild": "1.4.8",
+    "pkgconfig": "2.0.3",
     "pkgload": "1.4.1",
     "png": "0.1-8",
     "praise": "1.0.0",
     "processx": "3.8.6",
     "ps": "1.9.1",
-    "R6": "2.6.1",
-    "Rcpp": "1.1.0",
-    "RcppAnnoy": "0.0.22",
-    "RcppEigen": "0.3.4.0.2",
-    "RcppProgress": "0.4.2",
+    "purrr": "1.2.0",
     "rlang": "1.1.6",
     "rprojroot": "2.1.1",
-    "RSpectra": "0.16-2",
+    "scales": "1.4.0",
     "shape": "1.4.6.1",
     "sitmo": "2.0.2",
+    "stringi": "1.8.7",
+    "stringr": "1.6.0",
     "testthat": "3.2.3",
+    "tibble": "3.3.0",
+    "tidyr": "1.3.1",
+    "tidyselect": "1.2.1",
     "tiff": "0.1-12",
+    "utf8": "1.2.6",
     "uwot": "0.2.4",
+    "vctrs": "0.6.5",
+    "viridisLite": "0.4.2",
     "waldo": "0.6.2",
     "withr": "3.0.2",
     "yaml": "2.3.10",
@@ -82,6 +105,12 @@ ROOT_PACKAGES = (
     "pkgload",
     "testthat",
     "uwot",
+    "dbscan",
+    "dplyr",
+    "tidyr",
+    "purrr",
+    "stringr",
+    "ggplot2",
 )
 
 BASE_PACKAGES = {
@@ -259,10 +288,10 @@ def main() -> int:
         if description.get("Version") != version:
             raise SystemExit(f"Archive version mismatch for {package}")
         built = description.get("Built", "")
-        needs_compilation = records[package].get("NeedsCompilation") == "yes"
-        if not built.startswith("R 4.2.") or (
-            needs_compilation and "x86_64-pc-linux-gnu" not in built
-        ):
+        # Posit publishes both compiled and pure-R Linux binary tarballs in
+        # this repository.  Every archive must advertise the pinned R 4.2
+        # binary ABI; only compiled packages carry an architecture token.
+        if not built.startswith("R 4.2."):
             raise SystemExit(f"Unexpected binary build metadata for {package}: {built}")
         total_bytes += path.stat().st_size
         print(

@@ -1,0 +1,4 @@
+class_id	display_name	color	description	shortcut	trainable	role	order
+live_cell	Live cell	#16875b	Historical morphology cell-state label: live cell	l	true	phenotype	1
+dead_cell	Dead cell	#d43d51	Historical morphology cell-state label: dead cell	d	true	phenotype	2
+multinucleated_cell	Multinucleated cell	#7257c8	Historical morphology cell-state label: multinucleated cell	m	true	phenotype	3

@@ -34,7 +34,7 @@ def read_tsv(path: Path) -> list[dict[str, str]]:
 
 
 class ReferenceMorphologyWorkspaceTests(unittest.TestCase):
-    def make_fixture(self, root: Path) -> dict[str, Path]:
+    def make_fixture(self, root: Path, v2: bool = False) -> dict[str, Path]:
         shadow = root / "shadow"
         project_root = shadow / "reference_project"
         source = shadow / "source"
@@ -53,7 +53,16 @@ class ReferenceMorphologyWorkspaceTests(unittest.TestCase):
             "well": [],
             "split": [],
         }
-        for well_index, well in enumerate(("A01", "B01", "C01")):
+        if v2:
+            metadata["context_key"] = []
+            metadata["source_id"] = []
+            metadata["cluster"] = []
+        fixture_wells = ("A01", "B01", "C01", "D01") if v2 else (
+            "A01",
+            "B01",
+            "C01",
+        )
+        for well_index, well in enumerate(fixture_wells):
             image_id = f"{well}_1_00d00h00m"
             field = source / image_id
             field.mkdir(parents=True)
@@ -73,6 +82,14 @@ class ReferenceMorphologyWorkspaceTests(unittest.TestCase):
                 metadata["mask_label"].append(str(label))
                 metadata["well"].append(well)
                 metadata["split"].append("development")
+                context_key = (
+                    "SUM-159-NLS-2N" if well_index < 2 else "SUM-159-NLS-4N"
+                )
+                cluster = str(1 + ((label - 1) % 2))
+                if v2:
+                    metadata["context_key"].append(context_key)
+                    metadata["source_id"].append(well)
+                    metadata["cluster"].append(cluster)
                 cell_rows.append(
                     {
                         "cell_id": cell_id,
@@ -80,6 +97,15 @@ class ReferenceMorphologyWorkspaceTests(unittest.TestCase):
                         "mask_label": label,
                         "well": well,
                         "split": "development",
+                        **(
+                            {
+                                "context_key": context_key,
+                                "source_id": well,
+                                "cluster": cluster,
+                            }
+                            if v2
+                            else {}
+                        ),
                     }
                 )
             bf_path = field / "brightfield.tif"
@@ -119,7 +145,18 @@ class ReferenceMorphologyWorkspaceTests(unittest.TestCase):
 
         cells = project_root / "cells.tsv"
         images = project_root / "images.tsv"
-        write_tsv(cells, ["cell_id", "image_id", "mask_label", "well", "split"], cell_rows)
+        write_tsv(
+            cells,
+            [
+                "cell_id",
+                "image_id",
+                "mask_label",
+                "well",
+                "split",
+                *(["context_key", "source_id", "cluster"] if v2 else []),
+            ],
+            cell_rows,
+        )
         image_fields = [
             "image_id",
             "channel_id",
@@ -142,15 +179,78 @@ class ReferenceMorphologyWorkspaceTests(unittest.TestCase):
             json.dumps(
                 {
                     "schema_version": WORKSPACE.PROJECT_SCHEMA_VERSION,
-                    "project_id": "reference_development",
+                    "project_id": (
+                        "reference_cell_state_development_v2"
+                        if v2
+                        else "reference_development"
+                    ),
                     "cells_file": "cells.tsv",
                     "images_file": "images.tsv",
                 }
             )
             + "\n"
         )
+        if v2:
+            historical_root = project_root / "historical_projection"
+            historical_root.mkdir()
+            historical_representatives = historical_root / "historical_representatives.tsv"
+            frozen_rows = [
+                {
+                    "selection_rank": index,
+                    "cell_id": cell_id,
+                    "context_key": cell_rows[index - 1]["context_key"],
+                    "source_id": cell_rows[index - 1]["source_id"],
+                    "cluster": cell_rows[index - 1]["cluster"],
+                    "Dim1": dim1[index - 1],
+                    "Dim2": dim2[index - 1],
+                }
+                for index, cell_id in enumerate(cell_ids, start=1)
+            ]
+            write_tsv(
+                historical_representatives,
+                [
+                    "selection_rank",
+                    "cell_id",
+                    "context_key",
+                    "source_id",
+                    "cluster",
+                    "Dim1",
+                    "Dim2",
+                ],
+                frozen_rows,
+            )
+            representative_sha256 = WORKSPACE.sha256_file(historical_representatives)
+            (historical_root / "historical_projection_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "reference_cell_state_historical_projection_v2",
+                        "status": "COMPLETE",
+                        "representative_selection": {
+                            "role": "authoritative_rendering_cell_list",
+                            "outer_function_name": "get_all_cell_lines_overlay_representatives",
+                            "inner_function_name": "get_spatially_uniform_representatives",
+                            "seed": 1,
+                            "total_n": 300,
+                            "balance": 0.2,
+                            "minimum_cluster_representatives": 2,
+                            "selected_count": len(frozen_rows),
+                            "output_file": "historical_representatives.tsv",
+                            "output_sha256": representative_sha256,
+                        },
+                        "output_file_sha256": {
+                            "historical_representatives.tsv": representative_sha256
+                        },
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
         identity = {
-            "project_id": "reference_development",
+            "project_id": (
+                "reference_cell_state_development_v2"
+                if v2
+                else "reference_development"
+            ),
             "run_id": "run_1",
             "projection_id": "projection_1",
             "annotation_id": "annotation_1",
@@ -311,6 +411,53 @@ class ReferenceMorphologyWorkspaceTests(unittest.TestCase):
             rows = read_tsv(output / "representative_cells.tsv")
             self.assertEqual(len(rows), 2)
             self.assertEqual(len({row["well"] for row in rows}), 2)
+
+    def test_v2_uses_context_cluster_quota_kmeans_and_cluster_coloring(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.make_fixture(Path(temporary), v2=True)
+            output = fixture["shadow"] / "morphology_workspace_v2"
+            argv = self.argv(fixture, output)
+            argv[argv.index("--seed") + 1] = "1"
+            argv[argv.index("--max-representatives") + 1] = "300"
+            argv.extend(
+                [
+                    "--cluster-balance",
+                    "0.2",
+                    "--minimum-cluster-representatives",
+                    "2",
+                ]
+            )
+            self.assertEqual(WORKSPACE.main(argv), 0)
+            rows = read_tsv(output / "representative_cells.tsv")
+            self.assertEqual(len(rows), 16)
+            self.assertEqual({row["cluster"] for row in rows}, {"1", "2"})
+            self.assertTrue((output / "cluster_selection_audit.tsv").is_file())
+            audit = read_tsv(output / "cluster_selection_audit.tsv")
+            self.assertEqual(
+                {row["scope"] for row in audit},
+                {"context:SUM-159-NLS-2N", "context:SUM-159-NLS-4N"},
+            )
+            manifest = json.loads((output / "overlay_manifest.json").read_text())
+            self.assertEqual(manifest["schema_version"], WORKSPACE.SCHEMA_VERSION_V2)
+            self.assertEqual(manifest["selection"]["seed"], 1)
+            self.assertEqual(manifest["selection"]["context_count_expected"], 2)
+            self.assertEqual(manifest["selection"]["cluster_balance"], 0.2)
+            self.assertEqual(
+                manifest["selection"]["selection_implementation"],
+                "pinned_reference_R_AST",
+            )
+            self.assertNotIn("kmeans_rng_adaptation", manifest["selection"])
+            self.assertEqual(
+                manifest["inputs"]["implementation"]["sha256"],
+                WORKSPACE.sha256_file(WORKSPACE.Path(WORKSPACE.__file__).resolve()),
+            )
+            self.assertEqual(
+                manifest["render"]["background_point_color"],
+                "diagnostic_cluster_palette_noise_zero_grey",
+            )
+            first_hashes = WORKSPACE.directory_hashes(output)
+            self.assertEqual(WORKSPACE.main([*argv, "--overwrite"]), 0)
+            self.assertEqual(first_hashes, WORKSPACE.directory_hashes(output))
 
 
 if __name__ == "__main__":

@@ -40,6 +40,19 @@ classification root. The calibration counterpart
 `Parameter_calibration/30_run_reference_cell_state_shadow_test.sh` is hard
 restricted to `hpctpa3pc0009` and the calibration result tree. See the
 [reference cell-state workflow](../../docs/reference_cell_state_shadow_workflow.md).
+
+`submit_reference_cell_state_shadow_v2.sh` is the historical-core-parity
+replacement.
+It adds historical existing-UMAP projection, authoritative diagnostic DBSCAN,
+pinned representative selection on the stable-polygon branch, two exact
+manual-review barriers, the
+12-feature historical grouped glmnet model, sharded prediction, and optional
+post-freeze comparison. V1 roots remain audit-only. V2 calibration uses
+`Parameter_calibration/31_run_reference_cell_state_shadow_v2_test.sh` directly
+on `hpctpa3pc0009`; the V2 entry is fail-closed until the separately versioned
+66-package parity SIF is built and A30-verified. If DBSCAN has no stable
+cluster, receipts explicitly disclose the user-approved Seed1/Seed2 sampling
+adaptation; that branch is not described as exact historical sampling.
 It creates a new `results/classification_<timestamp>/` root and submits only:
 
 ```text

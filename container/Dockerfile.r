@@ -46,10 +46,10 @@ RUN --network=none \
 
 LABEL org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
-      org.opencontainers.image.version="hpc-cellpose-4.2.1.1-models-r4.2.3" \
+      org.opencontainers.image.version="hpc-cellpose-4.2.1.1-models-reference-v2-parity" \
       org.opencontainers.image.source-tree-state="${SOURCE_TREE_STATE}" \
       org.opencontainers.image.url="https://github.com/thecloneredesignlab/cellpose-cpsam-pipeline" \
-      org.opencontainers.image.description="Cellpose 4.2.1.1 CUDA runtime with cpsam, cpsam_v2, and Posit R 4.2.3" \
+      org.opencontainers.image.description="Cellpose 4.2.1.1 CUDA runtime with cpsam, cpsam_v2, Posit R 4.2.3, and the locked reference-V2 R closure" \
       org.opencontainers.image.licenses="NOASSERTION" \
       org.opencontainers.image.base.digest="sha256:5f398bb194993d163507494eb7b3c630aab66eb0b64455ae18cc2c80952d8f76" \
       org.opencontainers.image.base.revision="9c75b9b3f6d313d926759e768cd381686cc93bc6" \
@@ -58,7 +58,8 @@ LABEL org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.r.distribution="Posit Debian 13 amd64 build 1" \
       org.opencontainers.image.r.package-snapshot="2025-11-11" \
       org.opencontainers.image.r.debian-snapshots="2025-10-20,2026-08-11" \
-      org.opencontainers.image.r.package-count="43" \
+      org.opencontainers.image.r.package-count="66" \
+      org.opencontainers.image.r.dbscan.version="1.2.3" \
       org.opencontainers.image.r.runtime-sha256="d2c1316527b21211d2802f123c8b5dca7265f6c69df8ce39c8b0aacc79260952"
 
 WORKDIR /workspace

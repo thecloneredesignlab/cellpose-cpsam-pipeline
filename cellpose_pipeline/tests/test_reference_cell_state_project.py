@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import csv
+import contextlib
 import importlib.util
+import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -35,7 +38,9 @@ def read_tsv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
 
 
 class ReferenceCellStateProjectTests(unittest.TestCase):
-    def make_parent(self, root: Path, count: int = 4) -> dict[str, Path]:
+    def make_parent(
+        self, root: Path, count: int = 4, wells: list[str] | None = None
+    ) -> dict[str, Path]:
         parent = root / "broad_parent"
         project_dir = parent / "projection_input" / "representative_umap"
         project_dir.mkdir(parents=True)
@@ -43,7 +48,9 @@ class ReferenceCellStateProjectTests(unittest.TestCase):
         cells: list[dict[str, object]] = []
         features: list[dict[str, object]] = []
         for index in range(1, count + 1):
-            well = "A01" if index <= count // 2 else "A02"
+            well = wells[index - 1] if wells is not None else (
+                "A01" if index <= count // 2 else "A02"
+            )
             key = f"{well}_1_0d0h0m"
             cell_id = f"original|{key}|{index}"
             cells.append(
@@ -62,7 +69,13 @@ class ReferenceCellStateProjectTests(unittest.TestCase):
                     "split": "development",
                 }
             )
-            row: dict[str, object] = {"cell_id": cell_id, "bf_object_mean": index / 10}
+            row: dict[str, object] = {
+                "cell_id": cell_id,
+                "bf_object_mean": index / 10,
+                "bf_boundary_mean": index + 0.01,
+                "bf_interior_mean": index + 0.02,
+                "bf_interior_minus_boundary_mean": 0.01,
+            }
             row.update(
                 {
                     feature: index + feature_index / 10
@@ -73,7 +86,14 @@ class ReferenceCellStateProjectTests(unittest.TestCase):
         write_tsv(project_dir / "cells.tsv", list(cells[0]), cells)
         write_tsv(
             project_dir / "features.tsv",
-            ["cell_id", "bf_object_mean", *PREPARE.REFERENCE_FEATURES],
+            [
+                "cell_id",
+                "bf_object_mean",
+                *PREPARE.REFERENCE_FEATURES,
+                "bf_boundary_mean",
+                "bf_interior_mean",
+                "bf_interior_minus_boundary_mean",
+            ],
             features,
         )
         image_fields = [
@@ -138,11 +158,23 @@ class ReferenceCellStateProjectTests(unittest.TestCase):
             "runs_dir": "runs",
             "projection": {
                 "mode": "compute_umap",
-                "feature_columns": ["bf_object_mean", *PREPARE.REFERENCE_FEATURES],
+                "feature_columns": [
+                    "bf_object_mean",
+                    *PREPARE.REFERENCE_FEATURES,
+                    "bf_boundary_mean",
+                    "bf_interior_mean",
+                    "bf_interior_minus_boundary_mean",
+                ],
                 "transform": "robust",
             },
             "classifier": {
-                "feature_columns": ["bf_object_mean", *PREPARE.REFERENCE_FEATURES]
+                "feature_columns": [
+                    "bf_object_mean",
+                    *PREPARE.REFERENCE_FEATURES,
+                    "bf_boundary_mean",
+                    "bf_interior_mean",
+                    "bf_interior_minus_boundary_mean",
+                ]
             },
         }
         project_path = project_dir / "project.yml"
@@ -223,13 +255,11 @@ class ReferenceCellStateProjectTests(unittest.TestCase):
             [{"cell_id": row["cell_id"]} for row in cells],
         )
         split = parent / "projection_input" / "split_manifest.tsv"
+        selected_wells = sorted({str(row["well"]) for row in cells})
         write_tsv(
             split,
             ["well", "split"],
-            [
-                {"well": "A01", "split": "development"},
-                {"well": "A02", "split": "development"},
-            ],
+            [{"well": well, "split": "development"} for well in selected_wells],
         )
         manifest_path = parent / "projection_input" / "projection_input_manifest.json"
         manifest_path.write_text(
@@ -256,9 +286,44 @@ class ReferenceCellStateProjectTests(unittest.TestCase):
             "manifest": manifest_path,
             "cells": project_dir / "cells.tsv",
             "features": project_dir / "features.tsv",
+            "images": project_dir / "images.tsv",
             "umap_manifest": umap_manifest,
             "umap_input_manifest": input_manifest,
         }
+
+    def add_v2_split_provenance(
+        self, fixture: dict[str, Path], development_wells: set[str]
+    ) -> None:
+        plate_map = PREPARE.default_plate_map_path()
+        with plate_map.open(newline="", encoding="utf-8-sig") as handle:
+            rows = list(csv.DictReader(handle))
+        adapter_root = fixture["parent"] / "workflow_status" / "adapter"
+        well_split = adapter_root / "well_split_freeze.tsv"
+        split_rows = []
+        for row in rows:
+            split_rows.append(
+                {
+                    **row,
+                    "split": "development" if row["well"] in development_wells else "heldout",
+                    "split_strategy": "condition_balanced_paired_replicate_v1",
+                    "split_seed": "20260812",
+                    "assignment_sha256": "fixture",
+                }
+            )
+        write_tsv(well_split, list(PREPARE.WELL_SPLIT_FIELDS), split_rows)
+        condition_split = adapter_root / "condition_split_freeze.tsv"
+        write_tsv(condition_split, ["fixture"], [{"fixture": "frozen"}])
+        adapter_manifest = adapter_root / "adapter_manifest.json"
+        adapter_manifest.write_text('{"schema_version":"broad_phenotype_cpa_adapter_v1"}\n')
+        manifest = json.loads(fixture["manifest"].read_text())
+        for name, path in (
+            ("well_split_freeze", well_split),
+            ("condition_split_freeze", condition_split),
+            ("adapter_manifest", adapter_manifest),
+        ):
+            manifest[name] = str(path.resolve())
+            manifest[f"{name}_sha256"] = PREPARE.sha256_file(path)
+        fixture["manifest"].write_text(json.dumps(manifest, indent=2) + "\n")
 
     def refresh_umap_input_hash(self, fixture: dict[str, Path], role: str, path: Path) -> None:
         fields, rows = read_tsv(fixture["umap_input_manifest"])
@@ -283,6 +348,39 @@ class ReferenceCellStateProjectTests(unittest.TestCase):
             "--expected-cell-count",
             str(count),
         ]
+
+    def make_v2_case(
+        self, root: Path
+    ) -> tuple[dict[str, Path], Path, list[str], Path]:
+        with PREPARE.default_plate_map_path().open(
+            newline="", encoding="utf-8-sig"
+        ) as handle:
+            plate_rows = list(csv.DictReader(handle))
+        development = {
+            row["well"]
+            for index, row in enumerate(plate_rows, start=1)
+            if index % 5 != 0
+        }
+        self.assertEqual(len(development), 64)
+        fixture = self.make_parent(root, count=64, wells=sorted(development))
+        self.add_v2_split_provenance(fixture, development)
+        reference = root / "reference"
+        argv = [
+            *self.argv(fixture, reference, count=64),
+            "--method-version",
+            "v2",
+            "--reference-snapshot-root",
+            str(
+                ROOT.parent
+                / "cell-phenotype-annotator"
+                / "reference"
+                / "ltee-source"
+            ),
+            "--plate-map",
+            str(PREPARE.default_plate_map_path()),
+        ]
+        output = reference / "projection_input" / "representative_umap_v2"
+        return fixture, reference, argv, output
 
     def test_builds_independent_exact_nine_feature_project(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -397,6 +495,249 @@ class ReferenceCellStateProjectTests(unittest.TestCase):
             fixture["features"].symlink_to(real_features)
             with self.assertRaisesRegex(ValueError, "must not traverse a symlink"):
                 PREPARE.main(self.argv(fixture, root / "reference"))
+
+    def test_v2_builds_existing_historical_projection_and_identity_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture, _, argv, output = self.make_v2_case(root)
+            development_fields, development_rows = read_tsv(fixture["cells"])
+            self.assertIn("well", development_fields)
+            development = {row["well"] for row in development_rows}
+            self.assertEqual(PREPARE.main(argv), 0)
+            project = json.loads((output / "project.yml").read_text())
+            self.assertEqual(project["project_id"], PREPARE.PROJECT_ID_V2)
+            self.assertEqual(
+                project["projection"],
+                {
+                    "mode": "existing_umap",
+                    "coordinate_file": "historical_projection/umap.tsv",
+                    "allow_subset": False,
+                },
+            )
+            self.assertEqual(
+                project["classifier"]["feature_columns"],
+                list(PREPARE.CLASSIFIER_FEATURES_V2),
+            )
+            self.assertEqual(project["classifier"]["group_column"], "source_id")
+            self.assertNotIn("minimum_confidence", project["classifier"])
+            _, classes = read_tsv(output / "classes.tsv")
+            self.assertEqual(
+                [row["class_id"] for row in classes],
+                ["live_cell", "dead_cell", "multinucleated_cell"],
+            )
+            self.assertEqual(
+                [row["color"] for row in classes],
+                ["#16875b", "#d43d51", "#7257c8"],
+            )
+            self.assertTrue(
+                all("priority" not in row["description"].casefold() for row in classes)
+            )
+            config_check = subprocess.run(
+                [
+                    "Rscript",
+                    "-e",
+                    (
+                        "pkgload::load_all(commandArgs(TRUE)[1], quiet=TRUE);"
+                        "cellphenotypeannotator::read_project_config(commandArgs(TRUE)[2]);"
+                        'cat("project_config=PASS\\n")'
+                    ),
+                    str(ROOT.parent / "cell-phenotype-annotator"),
+                    str(output / "project.yml"),
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            self.assertEqual(config_check.returncode, 0, config_check.stdout)
+            feature_fields, feature_rows = read_tsv(output / "features.tsv")
+            self.assertEqual(
+                feature_fields, ["cell_id", *PREPARE.CLASSIFIER_FEATURES_V2]
+            )
+            self.assertEqual(len(feature_rows), 64)
+            cell_fields, cells = read_tsv(output / "cells.tsv")
+            self.assertTrue(
+                set((*PREPARE.HISTORICAL_IDENTITY_FIELDS, "cluster")).issubset(cell_fields)
+            )
+            self.assertEqual(
+                {row["context_key"] for row in cells},
+                {"SUM-159-NLS-2N", "SUM-159-NLS-4N"},
+            )
+            self.assertEqual({row["source_id"] for row in cells}, development)
+            self.assertTrue(all(row["segmentation_object_id"] == row["cell_id"] for row in cells))
+            projection_manifest = json.loads(
+                (
+                    output
+                    / "historical_projection"
+                    / "historical_projection_manifest.json"
+                ).read_text()
+            )
+            self.assertEqual(projection_manifest["status"], "COMPLETE")
+            self.assertEqual(projection_manifest["projection"]["seed"], 42)
+            self.assertEqual(
+                projection_manifest["diagnostic_cluster"]["exact_grid_count"], 588
+            )
+            self.assertEqual(
+                projection_manifest["representative_selection"]["outer_function_name"],
+                "get_all_cell_lines_overlay_representatives",
+            )
+            self.assertTrue(
+                (output / "historical_projection" / "historical_representatives.tsv").is_file()
+            )
+            receipt = json.loads((output / "parent_import_manifest.json").read_text())
+            self.assertEqual(receipt["schema_version"], PREPARE.SCHEMA_VERSION_V2)
+            self.assertEqual(receipt["identity_mapping"]["well_count"], 64)
+            self.assertEqual(receipt["identity_mapping"]["context_count"], 2)
+            self.assertEqual(
+                receipt["identity_mapping"]["plate_map"]["sha256"],
+                PREPARE.PLATE_MAP_SHA256,
+            )
+            self.assertEqual(
+                receipt["reference_contract"]["class_ids_order"],
+                ["live_cell", "dead_cell", "multinucleated_cell"],
+            )
+            self.assertEqual(
+                receipt["reference_contract"]["class_order_semantics"],
+                "historical_annotation_source_order",
+            )
+            self.assertEqual(
+                receipt["reference_contract"]["unit_adaptation"][
+                    "physical_unit_claim"
+                ],
+                "not_asserted",
+            )
+            self.assertIn(
+                "historical_log1p_precedes_zscore",
+                receipt["reference_contract"]["unit_adaptation"][
+                    "unrecoverable_production_artifact_difference"
+                ],
+            )
+            self.assertNotIn(
+                "class_ids_priority_order", receipt["reference_contract"]
+            )
+            self.assertEqual(
+                receipt["implementation"]["project_builder"]["sha256"],
+                PREPARE.sha256_file(SCRIPT),
+            )
+            self.assertEqual(
+                receipt["implementation"]["historical_projection_adapter"][
+                    "sha256"
+                ],
+                PREPARE.sha256_file(
+                    ROOT
+                    / "cellpose_pipeline"
+                    / "scripts"
+                    / "28_build_reference_cell_state_historical_projection.R"
+                ),
+            )
+            self.assertFalse(receipt["row_lock"]["cells_byte_identical_to_parent"])
+
+    def test_v2_complete_generation_is_verified_and_reused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, reference, argv, output = self.make_v2_case(root)
+            orphan = (
+                reference
+                / "projection_input"
+                / ".representative_umap_v2.tmp.interrupted"
+            )
+            orphan.mkdir(parents=True)
+            (orphan / "partial.txt").write_text("interrupted\n")
+            first_stdout = io.StringIO()
+            with contextlib.redirect_stdout(first_stdout):
+                self.assertEqual(PREPARE.main(argv), 0)
+            self.assertIn("generation_status=created", first_stdout.getvalue())
+            identity_path = output / PREPARE.GENERATION_IDENTITY_FILENAME_V2
+            self.assertTrue(identity_path.is_file())
+            identity = json.loads(identity_path.read_text())
+            self.assertEqual(identity["status"], "COMPLETE")
+            self.assertEqual(identity["method_version"], "v2")
+            self.assertRegex(identity["generation_id"], r"^[0-9a-f]{64}$")
+            before = {
+                path.relative_to(output).as_posix(): PREPARE.sha256_file(path)
+                for path in output.rglob("*")
+                if path.is_file()
+            }
+            second_stdout = io.StringIO()
+            with contextlib.redirect_stdout(second_stdout):
+                self.assertEqual(PREPARE.main(argv), 0)
+            self.assertIn("generation_status=verified_reuse", second_stdout.getvalue())
+            self.assertEqual(
+                before,
+                {
+                    path.relative_to(output).as_posix(): PREPARE.sha256_file(path)
+                    for path in output.rglob("*")
+                    if path.is_file()
+                },
+            )
+            self.assertTrue((orphan / "partial.txt").is_file())
+
+    def test_v2_reuse_rejects_project_artifact_and_manifest_drift(self) -> None:
+        mutations = {
+            "project": lambda output: (output / "project.yml").write_text(
+                (output / "project.yml").read_text() + "\n"
+            ),
+            "artifact": lambda output: (
+                output / "historical_projection" / "umap.tsv"
+            ).write_text(
+                (output / "historical_projection" / "umap.tsv").read_text()
+                + "\n"
+            ),
+            "manifest": lambda output: (
+                output / PREPARE.IMPORT_MANIFEST_FILENAME
+            ).write_text(
+                (output / PREPARE.IMPORT_MANIFEST_FILENAME).read_text() + "\n"
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                _, _, argv, output = self.make_v2_case(root)
+                self.assertEqual(PREPARE.main(argv), 0)
+                mutate(output)
+                with self.assertRaisesRegex(
+                    (ValueError, FileExistsError), "drift|conflict|identity"
+                ):
+                    PREPARE.main(argv)
+
+    def test_v2_reuse_rejects_input_and_implementation_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture, _, argv, _ = self.make_v2_case(root)
+            self.assertEqual(PREPARE.main(argv), 0)
+            fixture["images"].write_text(fixture["images"].read_text() + "\n")
+            with self.assertRaisesRegex(ValueError, "parent input identity drifted"):
+                PREPARE.main(argv)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, _, argv, _ = self.make_v2_case(root)
+            adapter_copy = root / "historical_projection_adapter.R"
+            adapter_copy.write_bytes(
+                (
+                    ROOT
+                    / "cellpose_pipeline"
+                    / "scripts"
+                    / "28_build_reference_cell_state_historical_projection.R"
+                ).read_bytes()
+            )
+            argv.extend(
+                ["--historical-projection-script", str(adapter_copy)]
+            )
+            self.assertEqual(PREPARE.main(argv), 0)
+            adapter_copy.write_bytes(adapter_copy.read_bytes() + b"\n")
+            with self.assertRaisesRegex(
+                ValueError, "generation identity|implementation"
+            ):
+                PREPARE.main(argv)
+
+    def test_v2_reuse_rejects_partial_final_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, _, argv, output = self.make_v2_case(root)
+            output.mkdir(parents=True)
+            (output / "project.yml").write_text("{}\n")
+            with self.assertRaisesRegex(FileExistsError, "partial"):
+                PREPARE.main(argv)
 
 
 if __name__ == "__main__":

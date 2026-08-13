@@ -22,3 +22,8 @@ The wrapper requires the CellPose Python environment, Node.js, and the deployed
 Data Analytics report package. It validates 7,360 completed feature shards,
 zero failed shards, zero d0 objects changed by the late-stage method, and at
 least eight embedded high-resolution figures before reporting success.
+
+`31_run_reference_cell_state_shadow_v2_test.sh` is the V2 historical-reference
+calibration entry. It must be run directly on `hpctpa3pc0009`, never through
+Slurm, and writes only under `results/Tests_and_Parameters_calibration/`. It
+uses the same frozen-code, exact-review, and parity-SIF contracts as formal V2.

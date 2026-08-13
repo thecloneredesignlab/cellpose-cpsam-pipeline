@@ -23,6 +23,9 @@ import json
 import math
 import os
 import re
+import shutil
+import stat
+import tempfile
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +45,7 @@ KEY_RE = re.compile(
     r"(?P<day>[0-9]+)d(?P<hour>[0-9]+)h(?P<minute>[0-9]+)m$"
 )
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+SCRIPT_PATH = Path(__file__).resolve(strict=True)
 
 NORMALIZED_CURRENT_COLUMNS = (
     "cell_id",
@@ -128,6 +132,15 @@ class ReferenceRow:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--current-root",
+        type=Path,
+        required=True,
+        help=(
+            "Absolute canonical root of the frozen current-classification axis. "
+            "Every current input must be a non-symlink descendant of this root."
+        ),
+    )
     current = parser.add_mutually_exclusive_group(required=True)
     current.add_argument(
         "--current-predictions",
@@ -145,11 +158,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--reference-predictions", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Replace only this stage's known output files; never remove a directory.",
-    )
     return parser.parse_args(argv)
 
 
@@ -174,6 +182,79 @@ def require_absolute_file(path: Path, label: str) -> Path:
     if not resolved.is_file():
         raise ValueError(f"{label} is not a file: {resolved}")
     return resolved
+
+
+def require_no_symlink_components(path: Path, label: str) -> None:
+    """Reject a symlink at the path itself or at any ancestor component."""
+
+    if not path.is_absolute():
+        raise ValueError(f"{label} must be an absolute path: {path}")
+    cursor = Path(path.anchor)
+    for component in path.parts[1:]:
+        cursor /= component
+        try:
+            mode = cursor.lstat().st_mode
+        except FileNotFoundError as error:
+            raise ValueError(f"{label} does not exist: {cursor}") from error
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"{label} has a symlink component: {cursor}")
+
+
+def require_absolute_canonical_directory(path: Path, label: str) -> Path:
+    if not path.is_absolute():
+        raise ValueError(f"{label} must be an absolute path: {path}")
+    require_no_symlink_components(path, label)
+    resolved = path.resolve(strict=True)
+    if path != resolved:
+        raise ValueError(
+            f"{label} must use its canonical path: supplied={path} resolved={resolved}"
+        )
+    if not resolved.is_dir():
+        raise ValueError(f"{label} is not a directory: {resolved}")
+    return resolved
+
+
+def require_confined_current_file(
+    path: Path, current_root: Path, label: str
+) -> Path:
+    """Return one canonical regular file strictly confined to current_root."""
+
+    if not path.is_absolute():
+        raise ValueError(f"{label} must be an absolute path: {path}")
+    require_no_symlink_components(path, label)
+    resolved = path.resolve(strict=True)
+    if path != resolved:
+        raise ValueError(
+            f"{label} must use its canonical path: supplied={path} resolved={resolved}"
+        )
+    if not resolved.is_file():
+        raise ValueError(f"{label} is not a file: {resolved}")
+    if not path_is_within(resolved, current_root):
+        raise ValueError(
+            f"{label} escaped the frozen current root: "
+            f"path={resolved} current_root={current_root}"
+        )
+    return resolved
+
+
+def current_root_binding_sha256(
+    current_root: Path,
+    current_path: Path,
+    current_sha256: str,
+    confined_source_files: Sequence[dict[str, str]],
+) -> str:
+    """Hash only portable paths/content, never filesystem device or inode IDs."""
+
+    payload = {
+        "current_input_path": str(current_path),
+        "current_input_sha256": current_sha256,
+        "current_root_path": str(current_root),
+        "confined_source_files": list(confined_source_files),
+    }
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def path_is_within(path: Path, parent: Path) -> bool:
@@ -447,16 +528,19 @@ def load_current_manifest(path: Path) -> list[dict[str, str]]:
 def iter_current_manifest(
     rows: Sequence[dict[str, str]],
     config: dict[str, Any],
+    current_root: Path,
 ) -> Iterator[CurrentRow]:
     global_row_number = 1
     for manifest_index, item in enumerate(rows, 2):
         key = item["key"]
-        feature_path = require_absolute_file(
+        feature_path = require_confined_current_file(
             Path(item["feature_path"]),
+            current_root,
             f"current feature file at manifest row {manifest_index}",
         )
-        prediction_path = require_absolute_file(
+        prediction_path = require_confined_current_file(
             Path(item["prediction_path"]),
+            current_root,
             f"current prediction file at manifest row {manifest_index}",
         )
         if sha256_file(feature_path) != item["feature_sha256"]:
@@ -565,7 +649,10 @@ def iter_current_manifest(
             (feature_path, feature_stat, "feature"),
             (prediction_path, prediction_stat, "prediction"),
         ):
-            after = source_path.stat()
+            after_path = require_confined_current_file(
+                source_path, current_root, f"current {label} file for key={key}"
+            )
+            after = after_path.stat()
             if (before.st_ino, before.st_size, before.st_mtime_ns) != (
                 after.st_ino,
                 after.st_size,
@@ -573,6 +660,12 @@ def iter_current_manifest(
             ):
                 raise RuntimeError(
                     f"Current {label} file changed while being compared for key={key}"
+                )
+            expected_sha256 = item[f"{label}_sha256"]
+            if sha256_file(after_path) != expected_sha256:
+                raise RuntimeError(
+                    f"Current {label} file content changed while being compared "
+                    f"for key={key}"
                 )
 
 
@@ -842,73 +935,144 @@ def write_summary_tables(
                 )
 
 
-def temporary_paths(output_root: Path) -> dict[str, Path]:
-    return {name: output_root / f".{name}.tmp.{os.getpid()}" for name in OUTPUT_NAMES}
-
-
-def install_outputs(output_root: Path, temporary: dict[str, Path]) -> None:
+def require_regular_existing_generation(output_root: Path) -> dict[str, Any] | None:
+    if not os.path.lexists(output_root):
+        return None
+    if output_root.is_symlink() or not output_root.is_dir():
+        raise RuntimeError("Existing comparison root is not a regular generation directory")
+    observed = {path.name for path in output_root.iterdir()}
+    if observed != set(OUTPUT_NAMES):
+        raise RuntimeError(
+            "Incomplete or unexpected existing comparison generation was preserved"
+        )
     for name in OUTPUT_NAMES:
-        os.replace(temporary[name], output_root / name)
+        artifact = output_root / name
+        if artifact.is_symlink() or not artifact.is_file():
+            raise RuntimeError(
+                f"Existing comparison artifact is not a regular immutable file: {name}"
+            )
+    receipt_path = output_root / "comparison_receipt.json"
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError("Existing comparison receipt is unreadable") from error
+    if not isinstance(receipt, dict):
+        raise RuntimeError("Existing comparison receipt is not an object")
+    return receipt
 
 
-def cleanup_temporaries(temporary: dict[str, Path]) -> None:
-    for path in temporary.values():
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+def verify_existing_generation(
+    output_root: Path, expected_receipt: dict[str, Any], candidate: dict[str, Path]
+) -> None:
+    observed = require_regular_existing_generation(output_root)
+    if observed is None:
+        raise RuntimeError("Comparison generation disappeared during reuse validation")
+    if observed != expected_receipt:
+        raise RuntimeError("Existing comparison generation identity differs and was preserved")
+    outputs = observed.get("outputs")
+    if not isinstance(outputs, dict) or set(outputs) != set(OUTPUT_NAMES) - {
+        "comparison_receipt.json"
+    }:
+        raise RuntimeError("Existing comparison output identity set changed")
+    for name, identity in outputs.items():
+        if not isinstance(identity, dict):
+            raise RuntimeError(f"Existing comparison artifact identity is invalid: {name}")
+        existing = output_root / name
+        if not existing.is_file() or existing.is_symlink():
+            raise RuntimeError(f"Existing comparison artifact is not a regular file: {name}")
+        if (
+            sha256_file(existing) != identity.get("sha256")
+            or existing.stat().st_size != identity.get("size_bytes")
+            or sha256_file(candidate[name]) != identity.get("sha256")
+        ):
+            raise RuntimeError(f"Existing comparison artifact changed: {name}")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    current_root = require_absolute_canonical_directory(
+        args.current_root, "current root"
+    )
+    current_root_stat = current_root.stat()
     config_path = require_absolute_file(args.config, "comparison config")
     reference_path = require_absolute_file(
         args.reference_predictions, "reference predictions"
     )
-    current_path = require_absolute_file(
+    current_path = require_confined_current_file(
         args.current_predictions or args.current_manifest,
+        current_root,
         "current predictions" if args.current_predictions else "current manifest",
     )
     config = load_config(config_path)
 
     if not args.output_root.is_absolute():
         raise ValueError(f"output root must be an absolute path: {args.output_root}")
+    if os.path.lexists(args.output_root) and args.output_root.is_symlink():
+        raise ValueError(f"output root must not be a symlink: {args.output_root}")
     output_root = args.output_root.resolve(strict=False)
+    if output_root == current_root or path_is_within(output_root, current_root):
+        raise ValueError(
+            "Output root must not write into the frozen current root: "
+            f"output={output_root} current_root={current_root}"
+        )
     require_separate_output(output_root, (config_path, current_path, reference_path))
 
     manifest_rows: list[dict[str, str]] | None = None
     manifest_input_paths: list[Path] = []
+    confined_source_files: list[dict[str, str]] = []
     if args.current_manifest:
         manifest_rows = load_current_manifest(current_path)
         for row in manifest_rows:
-            manifest_input_paths.extend(
-                [
-                    require_absolute_file(
-                        Path(row["feature_path"]), "manifest feature"
-                    ),
-                    require_absolute_file(
-                        Path(row["prediction_path"]), "manifest prediction"
-                    ),
-                ]
+            feature_path = require_confined_current_file(
+                Path(row["feature_path"]), current_root, "manifest feature"
+            )
+            prediction_path = require_confined_current_file(
+                Path(row["prediction_path"]), current_root, "manifest prediction"
+            )
+            row["feature_path"] = str(feature_path)
+            row["prediction_path"] = str(prediction_path)
+            manifest_input_paths.extend((feature_path, prediction_path))
+            confined_source_files.extend(
+                (
+                    {
+                        "path": str(feature_path),
+                        "sha256": row["feature_sha256"],
+                        "role": "feature",
+                    },
+                    {
+                        "path": str(prediction_path),
+                        "sha256": row["prediction_sha256"],
+                        "role": "prediction",
+                    },
+                )
             )
         require_separate_output(output_root, manifest_input_paths)
 
-    output_root.mkdir(parents=True, exist_ok=True)
-    if not output_root.is_dir():
-        raise ValueError(f"output root is not a directory: {output_root}")
-    existing = [name for name in OUTPUT_NAMES if (output_root / name).exists()]
-    if existing and not args.force:
-        raise FileExistsError(
-            f"Comparison outputs already exist; choose a new root or use --force: {existing}"
-        )
+    output_parent = output_root.parent.resolve(strict=True)
+    if not output_parent.is_dir():
+        raise ValueError(f"output parent is not a directory: {output_parent}")
+    reuse_requested = require_regular_existing_generation(output_root) is not None
 
     current_hash = sha256_file(current_path)
+    if args.current_predictions:
+        confined_source_files = [
+            {
+                "path": str(current_path),
+                "sha256": current_hash,
+                "role": "normalized_current_predictions",
+            }
+        ]
+    current_root_binding = current_root_binding_sha256(
+        current_root, current_path, current_hash, confined_source_files
+    )
     reference_hash = sha256_file(reference_path)
     config_hash = sha256_file(config_path)
     current_stat = current_path.stat()
     reference_stat = reference_path.stat()
-    temporary = temporary_paths(output_root)
-    cleanup_temporaries(temporary)
+    staging_root = Path(
+        tempfile.mkdtemp(prefix=f".{output_root.name}-staging-", dir=output_parent)
+    )
+    temporary = {name: staging_root / name for name in OUTPUT_NAMES}
 
     if args.current_predictions:
         current_rows: Iterator[CurrentRow] = iter_normalized_current(
@@ -918,7 +1082,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         current_file_count = 1
     else:
         assert manifest_rows is not None
-        current_rows = iter_current_manifest(manifest_rows, config)
+        current_rows = iter_current_manifest(manifest_rows, config, current_root)
         current_mode = "sha256_verified_per_field_feature_prediction_manifest"
         current_file_count = len(manifest_rows) * 2
     reference_rows = iter_reference(reference_path, config)
@@ -1064,7 +1228,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             group_reference_unavailable,
         )
 
-        current_after = current_path.stat()
+        current_root_after_path = require_absolute_canonical_directory(
+            current_root, "current root"
+        )
+        current_root_after = current_root_after_path.stat()
+        if (
+            current_root_stat.st_dev,
+            current_root_stat.st_ino,
+        ) != (
+            current_root_after.st_dev,
+            current_root_after.st_ino,
+        ):
+            raise RuntimeError("Current root identity changed while comparison was running")
+        current_after_path = require_confined_current_file(
+            current_path, current_root, "current input"
+        )
+        current_after = current_after_path.stat()
         reference_after = reference_path.stat()
         if (current_stat.st_ino, current_stat.st_size, current_stat.st_mtime_ns) != (
             current_after.st_ino,
@@ -1072,6 +1251,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             current_after.st_mtime_ns,
         ):
             raise RuntimeError("Current input changed while comparison was running")
+        if sha256_file(current_after_path) != current_hash:
+            raise RuntimeError(
+                "Current input content changed while comparison was running"
+            )
         if (
             reference_stat.st_ino,
             reference_stat.st_size,
@@ -1124,6 +1307,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         receipt = {
             "schema_version": SCHEMA_VERSION,
+            "implementation": str(SCRIPT_PATH),
+            "implementation_sha256": sha256_file(SCRIPT_PATH),
             "status": "PRECOMPARISON_COMPLETE",
             "comparison_mode": "PRECOMPARISON_NO_GOLD_STANDARD",
             "scientific_claim": "DESCRIPTIVE_ASSOCIATION_ONLY",
@@ -1149,6 +1334,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "path": str(config_path),
                     "sha256": config_hash,
                 },
+                "current_root": {
+                    "path": str(current_root),
+                    "identity_sha256": current_root_binding,
+                    "confined_input_binding_sha256": current_root_binding,
+                    "confined_source_files": confined_source_files,
+                    "symlink_components_allowed": False,
+                },
                 "current": {
                     "path": str(current_path),
                     "sha256": current_hash,
@@ -1171,17 +1363,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             ],
         }
         write_json(temporary["comparison_receipt.json"], receipt)
-        install_outputs(output_root, temporary)
+        if reuse_requested:
+            verify_existing_generation(output_root, receipt, temporary)
+        else:
+            if os.path.lexists(output_root):
+                raise RuntimeError("Comparison generation appeared during staging")
+            os.replace(staging_root, output_root)
     except Exception:
         for handle in handles:
             try:
                 handle.close()
             except Exception:
                 pass
-        cleanup_temporaries(temporary)
         raise
+    finally:
+        if staging_root.exists():
+            shutil.rmtree(staging_root)
 
-    print(f"comparison_status=PRECOMPARISON_COMPLETE rows={total_rows}", flush=True)
+    print(
+        "comparison_verified_reuse=1" if reuse_requested else
+        f"comparison_status=PRECOMPARISON_COMPLETE rows={total_rows}",
+        flush=True,
+    )
     print(f"comparison_root={output_root}", flush=True)
     return 0
 
