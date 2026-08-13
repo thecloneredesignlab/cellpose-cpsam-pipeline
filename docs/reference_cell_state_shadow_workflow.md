@@ -154,8 +154,13 @@ The final parity image is versioned separately as
 `cellpose-cpsam-pipeline_hpc-cellpose-4.2.1.1-models-reference-v2-parity.sif`.
 It locks 66 R binaries, including the real dplyr/tidyr/purrr/stringr/ggplot2
 namespaces required by selected reference functions. The identity file is
-`BUILD_REQUIRED` until that new image is built, converted, and verified on the
-A30 node; while pending, every V2 entry point fails closed.
+activated only after the image was built from commit
+`c6414c6d49046e820c1f6971f45aa405428af0fe`, converted from registry digest
+`sha256:a27b0e4367d89ec9f012a2523f800df7b3cceaf095fcdcb395039d59297b2d74`,
+and verified on `hpctpa3pc0009`. Its frozen SIF SHA-256 is
+`b3fda3cf5de4934c7533471f99b5d137d6f0431aa9dfa145b5da27d9e1687752`
+for 6,932,799,488 bytes. Any live path, SHA, byte-size, package-version, or
+read-only-rootfs mismatch remains fail-closed.
 
 ## Calibration
 

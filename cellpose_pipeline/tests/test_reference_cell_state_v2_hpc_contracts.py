@@ -806,27 +806,30 @@ class ReferenceCellStateV2HpcContracts(unittest.TestCase):
         calibration = "Parameter_calibration/31_run_reference_cell_state_shadow_v2_test.sh"
         self.assertEqual(mapping.get(calibration), calibration)
 
-    def test_new_parity_sif_identity_is_exact_and_fail_closed_until_verified(self) -> None:
+    def test_new_parity_sif_identity_is_exact_and_verified(self) -> None:
         identity = {}
         for line in (
             DOCKER_HPC / "reference_cell_state_v2_sif_identity.tsv"
         ).read_text(encoding="utf-8").splitlines()[1:]:
             key, value = line.split("\t")
             identity[key] = value
-        self.assertEqual(identity["status"], "BUILD_REQUIRED")
+        self.assertEqual(identity["status"], "VERIFIED")
         self.assertEqual(
             identity["image_path"],
             "/share/lab_crd/taoli/Docker/"
             "cellpose-cpsam-pipeline_hpc-cellpose-4.2.1.1-models-reference-v2-parity.sif",
         )
         self.assertEqual(identity["r_locked_package_count"], "66")
-        self.assertEqual(identity["image_sha256"], "PENDING_REFERENCE_V2_PARITY_SIF_SHA256")
-        self.assertEqual(identity["image_bytes"], "PENDING_REFERENCE_V2_PARITY_SIF_BYTES")
+        self.assertEqual(
+            identity["image_sha256"],
+            "b3fda3cf5de4934c7533471f99b5d137d6f0431aa9dfa145b5da27d9e1687752",
+        )
+        self.assertEqual(identity["image_bytes"], "6932799488")
         self.assertEqual(
             identity["filesystem_immutability_mode"],
             "shared_filesystem_mode_bits_unavailable",
         )
-        self.assertEqual(identity["runtime_rootfs_read_only"], "PENDING_A30_VERIFICATION")
+        self.assertEqual(identity["runtime_rootfs_read_only"], "verified")
         completed = subprocess.run(
             [
                 "bash",
@@ -837,8 +840,7 @@ class ReferenceCellStateV2HpcContracts(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual(completed.returncode, 2)
-        self.assertIn("not activated", completed.stderr)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_every_worker_rehashes_sif_and_probes_read_only_rootfs(self) -> None:
         contract = (

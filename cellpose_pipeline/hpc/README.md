@@ -49,8 +49,8 @@ manual-review barriers, the
 12-feature historical grouped glmnet model, sharded prediction, and optional
 post-freeze comparison. V1 roots remain audit-only. V2 calibration uses
 `Parameter_calibration/31_run_reference_cell_state_shadow_v2_test.sh` directly
-on `hpctpa3pc0009`; the V2 entry is fail-closed until the separately versioned
-66-package parity SIF is built and A30-verified. If DBSCAN has no stable
+on `hpctpa3pc0009`; the V2 entry is locked to the separately versioned,
+66-package, A30-verified parity SIF. If DBSCAN has no stable
 cluster, receipts explicitly disclose the user-approved Seed1/Seed2 sampling
 adaptation; that branch is not described as exact historical sampling.
 It creates a new `results/classification_<timestamp>/` root and submits only:
