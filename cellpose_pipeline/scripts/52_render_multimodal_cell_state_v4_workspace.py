@@ -161,8 +161,12 @@ def fluorescence_crop(
     obj = selected_mask[y0:y1, x0:x1]
     boundary = RENDER.mask_boundary(obj)
     rgba = np.zeros((*value.shape, 4), dtype=np.uint8)
+    # Promote before applying the display color. Multiplying uint8 values by
+    # components such as 255 otherwise wraps modulo 256 and collapses nearly
+    # every fluorescence intensity to 0 or 1.
+    normalized = value.astype(np.float32) / 255.0
     for index, component in enumerate(color):
-        rgba[..., index] = np.rint(value * component / 255).astype(np.uint8)
+        rgba[..., index] = np.rint(normalized * component).astype(np.uint8)
     rgba[boundary, :3] = 255
     rgba[..., 3] = np.where(obj, 232, 0).astype(np.uint8)
     rgba[boundary, 3] = 255

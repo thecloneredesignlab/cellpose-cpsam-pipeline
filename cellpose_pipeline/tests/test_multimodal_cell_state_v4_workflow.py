@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import importlib.util
 import json
 import subprocess
 import sys
@@ -19,6 +20,16 @@ SELECT_UMAP = SCRIPTS / "56_select_multimodal_cell_state_v4_death_resolution.py"
 SELECT_REVIEW = SCRIPTS / "57_build_multimodal_cell_state_v4_broad_region_review.py"
 RENDER = SCRIPTS / "55_render_multimodal_cell_state_v4_review.py"
 IMPORT = SCRIPTS / "58_import_multimodal_cell_state_v4_review.py"
+WORKSPACE_RENDER = SCRIPTS / "52_render_multimodal_cell_state_v4_workspace.py"
+
+WORKSPACE_SPEC = importlib.util.spec_from_file_location(
+    "multimodal_cell_state_v4_workspace_test", WORKSPACE_RENDER
+)
+if WORKSPACE_SPEC is None or WORKSPACE_SPEC.loader is None:
+    raise ImportError(f"Cannot load V4 workspace renderer: {WORKSPACE_RENDER}")
+WORKSPACE = importlib.util.module_from_spec(WORKSPACE_SPEC)
+sys.modules[WORKSPACE_SPEC.name] = WORKSPACE
+WORKSPACE_SPEC.loader.exec_module(WORKSPACE)
 
 
 def sha(path: Path) -> str:
@@ -38,6 +49,25 @@ def read_tsv(path: Path) -> list[dict[str, str]]:
 
 
 class MultimodalCellStateV4WorkflowTests(unittest.TestCase):
+    def test_workspace_fluorescence_colors_preserve_uint8_intensity(self) -> None:
+        scaled = np.full((5, 5), 128, dtype=np.uint8)
+        selected_mask = np.ones((5, 5), dtype=bool)
+
+        dead = np.asarray(
+            WORKSPACE.fluorescence_crop(
+                scaled, selected_mask, (0, 0, 5, 5), (255, 45, 141)
+            )
+        )
+        nuclei = np.asarray(
+            WORKSPACE.fluorescence_crop(
+                scaled, selected_mask, (0, 0, 5, 5), (0, 255, 255)
+            )
+        )
+
+        self.assertEqual(dead[2, 2].tolist(), [128, 23, 71, 232])
+        self.assertEqual(nuclei[2, 2].tolist(), [0, 128, 128, 232])
+        self.assertFalse(np.array_equal(dead, nuclei))
+
     def run_ok(self, command: list[str]) -> str:
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         self.assertEqual(result.returncode, 0, result.stdout)
