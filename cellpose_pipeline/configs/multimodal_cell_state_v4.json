@@ -320,7 +320,7 @@
     "polygon_role": "provisional_broad_dead_region_for_sampling_and_navigation_not_training_truth"
   },
   "hpc": {
-    "calibration_host": "hpctpa3pc0009",
+    "calibration_host": "hpctpa3pc0028",
     "calibration_mode": "direct_no_sbatch_no_gpu",
     "calibration_output_namespace": "results/Tests_and_Parameters_calibration/multimodal_cell_state_v4_test_*",
     "formal_output_namespace": "results/multimodal_cell_state_v4_*",

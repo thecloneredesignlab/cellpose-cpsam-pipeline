@@ -185,7 +185,7 @@ Calibration entry:
 bash cellpose_pipeline/hpc/Parameter_calibration/34_run_multimodal_cell_state_v4_test.sh
 ```
 
-Calibration must run directly on `hpctpa3pc0009`, outside Slurm, without GPU,
+Calibration must run directly on `hpctpa3pc0028`, outside Slurm, without GPU,
 and may write only below
 `results/Tests_and_Parameters_calibration/multimodal_cell_state_v4_test_*`.
 The verified current SIF path and SHA are checked at runtime. The explicit bind

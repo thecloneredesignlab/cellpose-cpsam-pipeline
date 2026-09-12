@@ -32,7 +32,7 @@ is verified.
 
 `34_run_multimodal_cell_state_v4_test.sh` runs the independent V4 four-block
 Shape/Brightfield/Nuclei/raw-Dead calibration. It is direct-only on
-`hpctpa3pc0009`, requests no GPU, disables the site `/share` mount, and restores
+`hpctpa3pc0028`, requests no GPU, disables the site `/share` mount, and restores
 only the explicit read-only evidence roots. It stops at the blinded 300-cell
 three-channel anchor-review barrier; it does not consume the existing Dead
 segmentation or current classifier. `V4_ACTION=post-anchor`, `post-region`, and

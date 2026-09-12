@@ -14,7 +14,7 @@ class MultimodalCellStateV4HpcTests(unittest.TestCase):
     def test_calibration_is_direct_a30_no_gpu_latest_sif_and_exact_allowlist(self) -> None:
         launcher = DOCKER / "Parameter_calibration/34_run_multimodal_cell_state_v4_test.sh"
         text = launcher.read_text(encoding="utf-8")
-        self.assertIn("required_host=hpctpa3pc0009", text)
+        self.assertIn('required_host="${V4_REQUIRED_HOST:-hpctpa3pc0028}"', text)
         self.assertIn('[[ -z "${SLURM_JOB_ID:-}" ]]', text)
         self.assertNotIn("sbatch ", text)
         self.assertIn("HPC_CONTAINER_GPU=0", text)

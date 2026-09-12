@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-required_host=hpctpa3pc0009
+required_host="${V4_REQUIRED_HOST:-hpctpa3pc0028}"
 observed_host="$(hostname -s)"
 [[ "$observed_host" == "$required_host" ]] || {
   echo "Multimodal cell-state V4 calibration requires login-node ssh followed by ssh to $required_host; observed=$observed_host" >&2
